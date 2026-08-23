@@ -90,7 +90,14 @@ export interface OpenstConsensus {
   target_median?: number
   target_consensus?: number
   current_price?: number
-  recommendation?: string
+  recommendation?:
+    | string
+    | {
+        mean?: number | null
+        rating?: string | null
+        analysts?: number | null
+      }
+    | null
   recommendation_mean?: number
   number_of_analysts?: number
 }

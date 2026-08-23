@@ -327,6 +327,22 @@ export function createInstrumentsRoutes() {
   )
 
   registerPt2Routes(instruments)
+  instruments.get(
+    "/:symbol/ownership",
+    openApi({
+      tags: ["Instruments"],
+      summary: "Ownership (empty until a provider covers it — FMP premium)",
+      operationId: "getOwnership",
+      responses: {
+        200: { description: "Ownership", content: { "application/json": { schema: z.looseObject({}) } } },
+        401: UNAUTHORIZED,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      return c.json({ symbol, institutional: [], mutualFund: [], insider: [], insiderTransactions: [] })
+    },
+  )
   return instruments
 }
 
@@ -457,9 +473,15 @@ export function registerPt2Routes(instruments: Hono) {
         } catch {
           quote = undefined
         }
-        return c.json(
-          toProjections(symbol, consensus as any, quote as any),
-        )
+        // Baseline for the earnings/revenue estimate blocks: real reported
+        // quarters (analyst forward estimates are FMP-premium).
+        let quarterly: any[] = []
+        try {
+          quarterly = (await fetchFundamentals(symbol, "income", "quarter")) as any[]
+        } catch {
+          quarterly = []
+        }
+        return c.json(toProjections(symbol, consensus as any, quote as any, quarterly))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }

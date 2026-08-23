@@ -79,17 +79,51 @@ export async function userIdentityMiddleware(c: Context, next: Next) {
   // Fallback to X-User-* headers (Docker Compose with mock)
   const id = c.req.header("X-User-Id")
   const email = c.req.header("X-User-Email")
-  const firstName = c.req.header("X-User-FirstName") ?? ""
-  const lastName = c.req.header("X-User-LastName") ?? ""
-  const avatarUrl = c.req.header("X-User-AvatarUrl") || null
-  const groups = c.req.header("X-User-Groups")?.split(",") || ["portfoliost_admin"]
-
-  if (!id || !email) {
-    return c.json({ error: "Unauthorized", message: "Missing user identity" }, 401)
+  if (id && email) {
+    c.set("userIdentity", {
+      id,
+      email,
+      firstName: c.req.header("X-User-FirstName") ?? "",
+      lastName: c.req.header("X-User-LastName") ?? "",
+      avatarUrl: c.req.header("X-User-AvatarUrl") || null,
+      groups: c.req.header("X-User-Groups")?.split(",") || ["portfoliost_admin"],
+    })
+    await next()
+    return
   }
 
-  c.set("userIdentity", { id, email, firstName, lastName, avatarUrl, groups })
-  await next()
+  // Dev-only fallback: with the mock IdP there is no signature to verify and
+  // the SPA only sends a bearer token. Derive a stable identity from its
+  // claims when decodable, else from the token itself. Never reached in the
+  // cluster, where POCKETID_ISSUER_URL forces strict validation above.
+  const authHeader = c.req.header("Authorization")
+  if (authHeader?.startsWith("Bearer ")) {
+    const token = authHeader.slice(7)
+    const claims = tryDecodeJwtPayload(token)
+    c.set("userIdentity", {
+      id: typeof claims?.sub === "string" && claims.sub ? claims.sub : `mock-${token.slice(0, 12)}`,
+      email: typeof claims?.email === "string" && claims.email ? claims.email : "dev@localhost",
+      firstName: typeof claims?.given_name === "string" ? claims.given_name : "",
+      lastName: typeof claims?.family_name === "string" ? claims.family_name : "",
+      avatarUrl: null,
+      groups: ["portfoliost_admin"],
+    })
+    await next()
+    return
+  }
+
+  return c.json({ error: "Unauthorized", message: "Missing user identity" }, 401)
+}
+
+function tryDecodeJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split(".")
+  if (parts.length !== 3) return null
+  try {
+    const json = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"))
+    return JSON.parse(json) as Record<string, unknown>
+  } catch {
+    return null
+  }
 }
 
 export function requireGroup(group: string) {
