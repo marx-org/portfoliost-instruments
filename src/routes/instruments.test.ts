@@ -3,6 +3,13 @@ import { Hono } from "hono"
 import { createInstrumentsRoutes } from "./instruments.js"
 import * as cachest from "../adapters/cachest.js"
 
+const dbState = vi.hoisted(() => ({ db: null as unknown }))
+
+vi.mock("../db/index.js", () => ({
+  getDb: () => dbState.db,
+  closeDb: async () => {},
+}))
+
 vi.mock("../adapters/cachest.js", () => ({
   UpstreamError: class UpstreamError extends Error {
     constructor(
@@ -513,5 +520,43 @@ describe("GET /search result cap", () => {
     const body = await res.json()
     expect(body.results).toHaveLength(50)
     expect(body.count).toBe(50)
+  })
+})
+
+describe("GET /search — ticker reference (DB-first)", () => {
+  it("serves results from the reference table when populated", async () => {
+    const { createTestDb } = await import("../db/test-db.js")
+    const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const t = await createTestDb()
+    dbState.db = t.db
+    await syncTickerReference(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+WSE::PKN,PKN,WSE,"Polski Koncern Naftowy ORLEN SA",Stock,Energy,,Poland,PL,PLPKN0000018,polski koncern naftowy orlen|orlen
+NASDAQ::AAPL,AAPL,NASDAQ,Apple Inc,Stock,Information Technology,,United States,US,US0378331005,apple`,
+      t.db,
+    )
+    try {
+      const res = await req("/api/instruments/search?q=pkn")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.count).toBe(1)
+      expect(body.results[0]).toMatchObject({ symbol: "PKN", exchange: "WSE", type: "STOCK" })
+
+      // alias search hits ORLEN too
+      const alias = await req("/api/instruments/search?q=orlen")
+      expect(((await alias.json()).results ?? [])).toHaveLength(1)
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("falls back to the provider tier when the table is empty", async () => {
+    mocked.fetchSearch.mockResolvedValue([{ symbol: "AAPL", name: "Apple Inc", cik: "320193" }])
+    const res = await req("/api/instruments/search?q=apple")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.results[0].symbol).toBe("AAPL")
+    expect(mocked.fetchSearch).toHaveBeenCalledWith("apple")
   })
 })

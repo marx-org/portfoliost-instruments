@@ -253,6 +253,26 @@ export function toOverviewMetrics(symbol: string, metrics: Row, profile?: Openst
 
 export const SEARCH_RESULT_LIMIT = 50
 
+export interface TickerReferenceRow {
+  ticker: string
+  exchange: string
+  name: string
+  assetType: string
+}
+
+export function toReferenceSearchResponse(rows: TickerReferenceRow[]): Record<string, unknown> {
+  return {
+    count: rows.length,
+    results: rows.map((r) => ({
+      symbol: r.ticker,
+      name: r.name,
+      type: r.assetType === "ETF" ? "ETF" : "STOCK",
+      exchange: r.exchange,
+      source: "TICKERDB",
+    })),
+  }
+}
+
 export function toSearchResponse(rows: Array<Record<string, unknown>>): Record<string, unknown> {
   const results = rows
     .map((r) => ({

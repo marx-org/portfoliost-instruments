@@ -2,6 +2,8 @@ import { Hono } from "hono"
 import { z } from "zod"
 import { openApi } from "hono-zod-openapi"
 import { userIdentityMiddleware } from "../auth.js"
+import { getDb } from "../db/index.js"
+import { searchTickerReference } from "../db/tickerref-queries.js"
 import {
   fetchProfile,
   fetchQuote,
@@ -23,6 +25,7 @@ import {
   toInstrumentMetrics,
   toOverviewMetrics,
   toSearchResponse,
+  toReferenceSearchResponse,
   toFundamentals,
   toCalendar,
   toDividends,
@@ -101,9 +104,24 @@ export function createInstrumentsRoutes() {
       },
     }),
     async (c) => {
+      const q = (c.req.query("q") ?? c.req.query("query") ?? "").trim()
+      if (!q) return c.json({ count: 0, results: [] })
+
+      // Primary source: local ticker reference table (synced from
+      // adanos/free-ticker-database). Falls back to the provider tier when
+      // the table is empty or unavailable (e.g. pre-seed environments).
       try {
-        const q = (c.req.query("q") ?? c.req.query("query") ?? "").trim()
-        if (!q) return c.json({ count: 0, results: [] })
+        const rows = await searchTickerReference(getDb(), q)
+        if (rows.length > 0) {
+          return c.json(
+            toReferenceSearchResponse(rows),
+          )
+        }
+      } catch {
+        /* reference table unavailable — use the provider tier */
+      }
+
+      try {
         const rows = await fetchSearch(q)
         return c.json(toSearchResponse(rows))
       } catch (e) {
