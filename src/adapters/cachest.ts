@@ -63,3 +63,7 @@ export function fetchCalendarDividends(start: string, end: string): Promise<Arra
 export function fetchSearch(query: string): Promise<Array<Record<string, unknown>>> {
   return fetchJson(`${BASE_URL}/equity/search/${encodeURIComponent(query.trim().toLowerCase())}`)
 }
+
+export function fetchDividendHistory(symbol: string): Promise<Array<Record<string, unknown>>> {
+  return fetchJson(`${BASE_URL}/dividends/${encodeURIComponent(symbol)}`)
+}

@@ -23,4 +23,6 @@ EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
   CMD node -e "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["sh", "-c", "npm run db:migrate && node dist/server.js"]
+# Run migrations only when SQL files exist (drizzle-kit exits 1 on an empty
+# journal); the watchlist step will add real migrations.
+CMD ["sh", "-c", "ls drizzle/*.sql >/dev/null 2>&1 && npm run db:migrate; node dist/server.js"]

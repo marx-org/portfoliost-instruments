@@ -8,7 +8,11 @@ import {
   fetchMetrics,
   fetchProjections,
   fetchOhlcv,
+  fetchFundamentals,
+  fetchCalendarEarnings,
+  fetchCalendarDividends,
   fetchSearch,
+  fetchDividendHistory,
 } from "../adapters/cachest.js"
 import { UpstreamError } from "../adapters/cachest.js"
 import {
@@ -19,6 +23,12 @@ import {
   toInstrumentMetrics,
   toOverviewMetrics,
   toSearchResponse,
+  toFundamentals,
+  toCalendar,
+  toDividends,
+  toProjections,
+  toCompare,
+  toHistoricalPrice,
 } from "../adapters/translate.js"
 import type { OpenstProfile, OpenstQuote, OpenstOhlcvRow, OpenstConsensus } from "../adapters/openst-types.js"
 import {
@@ -42,11 +52,18 @@ const UPSTREAM_ERROR = {
   content: { "application/json": { schema: ErrorResponseSchema } },
 } as const
 
-function todayRange(): { start: string; end: string } {
+function todayRange(days = 365): { start: string; end: string } {
   const end = new Date()
-  const start = new Date(end.getTime() - 365 * 86400_000)
+  const start = new Date(end.getTime() - days * 86400_000)
   const fmt = (d: Date) => d.toISOString().slice(0, 10)
   return { start: fmt(start), end: fmt(end) }
+}
+
+function dateRange(date: string, days = 30): { start: string; end: string } {
+  const end = new Date(`${date}T00:00:00Z`)
+  const start = new Date(end.getTime() - days * 86400_000)
+  const fmt = (d: Date) => d.toISOString().slice(0, 10)
+  return { start: fmt(start), end: date }
 }
 
 function upstreamErrorResponse(c: any, e: unknown) {
@@ -60,6 +77,7 @@ function upstreamErrorResponse(c: any, e: unknown) {
 export function createInstrumentsRoutes() {
   const instruments = new Hono()
   instruments.use("*", userIdentityMiddleware)
+
 
   instruments.get(
     "/search",
@@ -280,7 +298,20 @@ export function createInstrumentsRoutes() {
     }),
     async (c) => {
       const symbol = c.req.param("symbol").toUpperCase()
+      const date = c.req.query("date")
       try {
+        if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          return c.json({ error: "BadRequest", message: "date must be YYYY-MM-DD" }, 400)
+        }
+        if (date) {
+          const { start, end } = dateRange(date)
+          const rows = (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
+          const last = rows[rows.length - 1]
+          if (!last) {
+            return c.json({ error: "NotFound", message: `No price found for ${symbol} on or before ${date}` }, 404)
+          }
+          return c.json({ symbol, price: Number(last.close), currency: null, date: last.date })
+        }
         const q = (await fetchQuote(symbol)) as OpenstQuote
         return c.json({ symbol, price: Number(q.last_price ?? 0), currency: q.currency ?? "USD" })
       } catch (e) {
@@ -289,5 +320,206 @@ export function createInstrumentsRoutes() {
     },
   )
 
+  registerPt2Routes(instruments)
   return instruments
+}
+
+// The route factories below are appended via createInstrumentsRoutes extension:
+export function registerPt2Routes(instruments: Hono) {
+  instruments.get(
+    "/:symbol/fundamentals",
+    openApi({
+      tags: ["Instruments"],
+      summary: "Get fundamentals",
+      operationId: "getFundamentals",
+      responses: {
+        200: {
+          description: "Fundamentals data",
+          content: { "application/json": { schema: z.looseObject({ financialHighlights: z.unknown() }) } },
+        },
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      try {
+        const [income, balance, cash] = await Promise.all([
+          fetchFundamentals(symbol, "income", "annual"),
+          fetchFundamentals(symbol, "balance", "annual"),
+          fetchFundamentals(symbol, "cash", "annual"),
+        ])
+        return c.json(toFundamentals(income as any[], balance as any[], cash as any[]))
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
+    },
+  )
+
+  instruments.get(
+    "/:symbol/calendar",
+    openApi({
+      tags: ["Instruments"],
+      summary: "Get earnings and dividend calendar for a symbol",
+      operationId: "getInstrumentCalendar",
+      responses: {
+        200: {
+          description: "Calendar entries near today",
+          content: { "application/json": { schema: z.looseObject({ earnings: z.array(z.unknown()).optional(), exDividend: z.array(z.unknown()).optional() }) } },
+        },
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      const { start, end } = todayRange(45)
+      // A missing calendar window (upstream 404) degrades to empty lists.
+      const orEmpty = async (p: Promise<unknown>) => {
+        try {
+          return await p
+        } catch (e) {
+          if (e instanceof UpstreamError && e.status === 404) return []
+          throw e
+        }
+      }
+      try {
+        const [earningsRows, dividendRows] = await Promise.all([
+          orEmpty(fetchCalendarEarnings(start, end)),
+          orEmpty(fetchCalendarDividends(start, end)),
+        ])
+        return c.json(toCalendar(symbol, earningsRows as any[], dividendRows as any[]))
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
+    },
+  )
+
+  instruments.get(
+    "/:symbol/dividends",
+    openApi({
+      tags: ["Instruments"],
+      summary: "Get dividend history",
+      operationId: "getDividends",
+      responses: {
+        200: {
+          description: "Dividend history",
+          content: { "application/json": { schema: z.looseObject({ history: z.array(z.unknown()).optional() }) } },
+        },
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      try {
+        const rows = await fetchDividendHistory(symbol)
+        return c.json(toDividends(rows as any[]))
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
+    },
+  )
+
+  instruments.get(
+    "/:symbol/projections",
+    openApi({
+      tags: ["Instruments"],
+      summary: "Analyst projections and price targets",
+      operationId: "getProjections",
+      responses: {
+        200: {
+          description: "Projections data",
+          content: { "application/json": { schema: z.looseObject({ priceTarget: z.unknown().optional() }) } },
+        },
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      try {
+        let consensus: Record<string, unknown> | undefined
+        try {
+          consensus = await fetchProjections(symbol)
+        } catch {
+          consensus = undefined
+        }
+        let quote: Record<string, unknown> | undefined
+        try {
+          quote = await fetchQuote(symbol)
+        } catch {
+          quote = undefined
+        }
+        return c.json(
+          toProjections(symbol, consensus as any, quote as any),
+        )
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
+    },
+  )
+
+  instruments.get(
+    "/:symbol/compare",
+    openApi({
+      tags: ["Instruments"],
+      summary: "Comparable metrics snapshot for a symbol",
+      operationId: "getCompare",
+      responses: {
+        200: {
+          description: "Comparison snapshot",
+          content: { "application/json": { schema: z.looseObject({}) } },
+        },
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      try {
+        const [profile, quote, metrics] = await Promise.all([
+          fetchProfile(symbol),
+          fetchQuote(symbol).catch(() => undefined),
+          fetchMetrics(symbol),
+        ])
+        return c.json(toCompare(profile as any, quote as any, metrics))
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
+    },
+  )
+
+  instruments.get(
+    "/:symbol/price",
+    openApi({
+      tags: ["Instruments"],
+      summary: "Historical price for a specific date",
+      operationId: "getHistoricalPriceRoute",
+      responses: {
+        200: {
+          description: "Historical price",
+          content: { "application/json": { schema: z.looseObject({ symbol: z.string().optional(), date: z.string().optional(), price: z.number().nullish(), currency: z.string().optional() }) } },
+        },
+        400: UNAUTHORIZED,
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      const date = c.req.query("date")
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return c.json({ error: "BadRequest", message: "date query parameter must be YYYY-MM-DD" }, 400 as any)
+      }
+      const startD = new Date(Date.parse(date + "T00:00:00Z") - 10 * 86400_000)
+      const { start, end } = { start: startD.toISOString().slice(0, 10), end: date }
+      try {
+        const rows = (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
+        return c.json(toHistoricalPrice(symbol, date, rows))
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
+    },
+  )
 }
