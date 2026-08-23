@@ -272,13 +272,40 @@ export function createInstrumentsRoutes() {
     async (c) => {
       const symbol = c.req.param("symbol").toUpperCase()
       const resolutionParam = c.req.query("resolution") === "monthly" ? "monthly" : "daily"
+      const compareParam = c.req.query("compare")
       try {
         // Serve deep history so client-side timeframe slicing (3Y/5Y/10Y/MAX)
         // has data: 11 years of daily bars, 20 years of monthly bars.
         const { start, end } = resolutionParam === "monthly" ? todayRange(7300) : todayRange(4018)
         const rows = (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
         const history = toPriceHistory(rows, resolutionParam)
-        return c.json({ ...history, symbol })
+
+        // Benchmarks are liquid ETF proxies fetched over the same window and
+        // aligned to the symbol's trading days (carry-forward on gaps).
+        const BENCHMARKS: Record<string, { etf: string; name: string }> = {
+          spy: { etf: "SPY", name: "S&P 500 (SPY)" },
+          qqq: { etf: "QQQ", name: "Invesco QQQ" },
+          iwm: { etf: "IWM", name: "iShares Russell 2000" },
+        }
+        const bench = compareParam && BENCHMARKS[compareParam.toLowerCase()] ? BENCHMARKS[compareParam.toLowerCase()] : null
+        let compare: Record<string, unknown> | undefined
+        if (bench && resolutionParam === "daily" && (history.timestamps as number[]).length) {
+          try {
+            const benchRows = (await fetchOhlcv(bench.etf, start, end)) as unknown as OpenstOhlcvRow[]
+            const byDate = new Map(benchRows.map((r) => [r.date, Number(r.close)]))
+            let last: number | null = null
+            const closePrices = (history.timestamps as number[]).map((ts) => {
+              const date = new Date(ts * 1000).toISOString().slice(0, 10)
+              const v = byDate.get(date)
+              if (v !== undefined && Number.isFinite(v) && v > 0) last = v
+              return last ?? 0
+            })
+            compare = { name: bench.name, closePrices, timestamps: history.timestamps }
+          } catch {
+            compare = undefined
+          }
+        }
+        return c.json({ ...history, symbol, ...(compare ? { compare } : {}) })
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }

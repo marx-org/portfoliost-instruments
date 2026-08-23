@@ -475,3 +475,30 @@ describe("GET /:symbol/ownership (provider gap stub)", () => {
     })
   })
 })
+
+describe("GET /:symbol/history compare", () => {
+  it("returns benchmark series aligned to the symbol's timestamps", async () => {
+    const day = (date: string, close: number) => ({ date, open: 1, high: 1, low: 1, close, volume: 1 })
+    const symbolTs = [1755475200, 1755561600] // 2025-08-18, 2025-08-19 (UTC)
+    const dateOf = (ts: number) => new Date(ts * 1000).toISOString().slice(0, 10)
+    mocked.fetchOhlcv.mockImplementation(async (sym: string) => {
+      if (sym === "SPY") {
+        return [day(dateOf(symbolTs[0]), 640), day("2025-08-17", 638), day(dateOf(symbolTs[1]), 645)]
+      }
+      return [day(dateOf(symbolTs[0]), 100), day(dateOf(symbolTs[1]), 102)]
+    })
+    const res = await req("/api/instruments/AAPL/history?resolution=daily&compare=spy")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.compare.name).toBe("S&P 500 (SPY)")
+    expect(body.compare.timestamps).toEqual(symbolTs)
+    expect(body.compare.closePrices).toEqual([640, 645])
+  })
+
+  it("omits compare for unknown benchmark keys", async () => {
+    mocked.fetchOhlcv.mockResolvedValue([])
+    const res = await req("/api/instruments/AAPL/history?resolution=daily&compare=nope")
+    const body = await res.json()
+    expect(body.compare).toBeUndefined()
+  })
+})
