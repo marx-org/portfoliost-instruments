@@ -560,3 +560,31 @@ NASDAQ::AAPL,AAPL,NASDAQ,Apple Inc,Stock,Information Technology,,United States,U
     expect(mocked.fetchSearch).toHaveBeenCalledWith("apple")
   })
 })
+
+describe("GET /:symbol/profile — reference enrichment", () => {
+  it("fills ISIN/sector/country from the reference table when provider omits them", async () => {
+    const { createTestDb } = await import("../db/test-db.js")
+    const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const t = await createTestDb()
+    dbState.db = t.db
+    await syncTickerReference(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+WSE::PKN,PKN,WSE,"Polski Koncern Naftowy ORLEN SA",Stock,Energy,,Poland,PL,PLPKN0000018,orlen`,
+      t.db,
+    )
+    mocked.fetchProfile.mockResolvedValue({ symbol: "PKN", name: "PKN Orlen" })
+    try {
+      const res = await req("/api/instruments/PKN/profile")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.isin).toBe("PLPKN0000018")
+      expect(body.country).toBe("Poland")
+      expect(body.gicsSector).toBe("Energy")
+      // provider-supplied fields win when present
+      expect(body.name).toBe("PKN Orlen")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+})

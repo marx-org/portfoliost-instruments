@@ -175,7 +175,22 @@ export function createInstrumentsRoutes() {
       const symbol = c.req.param("symbol").toUpperCase()
       try {
         const profile = (await fetchProfile(symbol)) as OpenstProfile
-        return c.json(toInstrumentProfile(symbol, profile))
+        const out = toInstrumentProfile(symbol, profile)
+        // Fill identity gaps (ISIN, sector, country, exchange) from the
+        // local reference table when the provider profile lacks them.
+        try {
+          const [ref] = await searchTickerReference(getDb(), symbol, 1)
+          if (ref && ref.ticker === symbol) {
+            out.isin = ref.isin ?? out.isin ?? null
+            out.country = out.country ?? ref.country
+            out.exchange = out.exchange ?? ref.exchange
+            out.finnhubIndustry = out.finnhubIndustry ?? ref.stockSector ?? ref.etfCategory
+            out.gicsSector = out.gicsSector ?? ref.stockSector
+          }
+        } catch {
+          /* reference table unavailable — provider profile is enough */
+        }
+        return c.json(out)
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
