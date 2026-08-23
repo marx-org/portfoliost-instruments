@@ -502,3 +502,16 @@ describe("GET /:symbol/history compare", () => {
     expect(body.compare).toBeUndefined()
   })
 })
+
+describe("GET /search result cap", () => {
+  it("caps broad queries to a bounded result set", async () => {
+    mocked.fetchSearch.mockResolvedValue(
+      Array.from({ length: 6004 }, (_, i) => ({ symbol: `S${i}`, name: `Stock ${i}` })),
+    )
+    const res = await req("/api/instruments/search?q=p")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.results).toHaveLength(50)
+    expect(body.count).toBe(50)
+  })
+})

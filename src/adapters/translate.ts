@@ -251,6 +251,8 @@ export function toOverviewMetrics(symbol: string, metrics: Row, profile?: Openst
   }
 }
 
+export const SEARCH_RESULT_LIMIT = 50
+
 export function toSearchResponse(rows: Array<Record<string, unknown>>): Record<string, unknown> {
   const results = rows
     .map((r) => ({
@@ -261,7 +263,9 @@ export function toSearchResponse(rows: Array<Record<string, unknown>>): Record<s
       source: "SEC",
     }))
     .filter((r) => r.symbol !== undefined || r.name !== undefined)
-  return { count: results.length, results }
+  // Broad queries (single letters) match thousands of instruments in the SEC
+  // universe — cap the payload so clients never render unbounded lists.
+  return { count: Math.min(results.length, SEARCH_RESULT_LIMIT), results: results.slice(0, SEARCH_RESULT_LIMIT) }
 }
 
 // ---------------------------------------------------------------------------
