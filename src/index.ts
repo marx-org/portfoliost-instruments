@@ -21,7 +21,6 @@ const api = new Hono()
 api.route("/instruments", createInstrumentsRoutes())
 
 const doc = createDoc(api)
-
 app.get("/api/doc", (c) => c.json(doc))
 app.route("/api", api)
 
