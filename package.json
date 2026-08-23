@@ -10,6 +10,8 @@
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "tickerref:sync": "node dist/scripts/tickerref-sync.js",
+    "tickerref:sync:dev": "tsx src/scripts/tickerref-sync.ts",
     "gen:openapi": "tsx src/gen-openapi.ts"
   },
   "dependencies": {

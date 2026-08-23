@@ -12,6 +12,7 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY drizzle.config.ts ./
 COPY drizzle/ drizzle/
+COPY seed/ seed/
 COPY src/ src/
 
 RUN npm run build
@@ -23,6 +24,8 @@ EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
   CMD node -e "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# Run migrations only when SQL files exist (drizzle-kit exits 1 on an empty
-# journal); the watchlist step will add real migrations.
-CMD ["sh", "-c", "ls drizzle/*.sql >/dev/null 2>&1 && npm run db:migrate; node dist/server.js"]
+# Run migrations when SQL files exist (drizzle-kit exits 1 on an empty
+# journal), then seed the ticker reference from the bundled snapshot when
+# the table is still empty. Seed failure is non-fatal: /search falls back
+# to the provider tier. The k8s CronJob refreshes live data via --url.
+CMD ["sh", "-c", "ls drizzle/*.sql >/dev/null 2>&1 && npm run db:migrate; node dist/scripts/tickerref-sync.js --file seed/ticker_reference.csv --if-empty || echo '[boot] tickerref seed skipped'; node dist/server.js"]
