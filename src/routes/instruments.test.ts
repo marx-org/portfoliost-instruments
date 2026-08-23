@@ -461,3 +461,17 @@ describe("pt2b routes", () => {
     })
   })
 })
+
+describe("GET /:symbol/ownership (provider gap stub)", () => {
+  it("returns valid empty ownership content", async () => {
+    const res = await req("/api/instruments/AAPL/ownership")
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      symbol: "AAPL",
+      institutional: [],
+      mutualFund: [],
+      insider: [],
+      insiderTransactions: [],
+    })
+  })
+})

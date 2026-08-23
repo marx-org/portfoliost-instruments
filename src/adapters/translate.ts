@@ -414,6 +414,7 @@ export function toProjections(
   symbol: string,
   consensus: OpenstConsensus | undefined,
   quote: OpenstQuote | undefined,
+  quarterly: EpsQuarter[] = [],
 ): Record<string, unknown> {
   const current = quote?.last_price !== undefined ? num(quote.last_price) : num(quote?.current_price)
   return {
@@ -426,7 +427,59 @@ export function toProjections(
           high: num(consensus.target_high) ?? null,
         }
       : { lastUpdated: new Date().toISOString().slice(0, 19), low: null, mean: null, current: current ?? null, high: null },
+    recommendation: toRecommendationBuckets(consensus?.recommendation),
+    // No free analyst-estimate provider exists in the tier (FMP forward_eps
+    // is premium), so the estimate blocks show a real historical baseline:
+    // distribution of actual EPS/revenue over the reported quarters.
+    earnings: toEstimateBlock(quarterly.map((q) => num(q.diluted_earnings_per_share))),
+    revenue: toEstimateBlock(quarterly.map(quarterRevenue)),
   }
+}
+
+const RATING_BUCKETS = ["strongBuy", "buy", "hold", "sell", "strongSell"] as const
+
+/** yfinance exposes only the mean rating (1=strong buy … 5=strong sell) and
+ * the analyst count; place all analysts in the bucket matching the rounded
+ * mean rather than inventing a fake distribution. */
+function toRecommendationBuckets(rec: OpenstConsensus["recommendation"]): Record<string, unknown> {
+  const buckets = Object.fromEntries(RATING_BUCKETS.map((k) => [k, 0])) as Record<(typeof RATING_BUCKETS)[number], number>
+  const period = new Date().toISOString().slice(0, 10)
+  const mean = typeof rec === "object" && rec !== null ? rec.mean : undefined
+  const analysts = typeof rec === "object" && rec !== null ? rec.analysts : null
+  if (typeof mean !== "number" || !Number.isFinite(mean)) return { period, ...buckets, analysts: analysts ?? null }
+  const idx = Math.min(4, Math.max(0, Math.round(mean) - 1))
+  buckets[RATING_BUCKETS[idx]] = typeof analysts === "number" ? analysts : 0
+  return { period, strongBuy: buckets.strongBuy, buy: buckets.buy, hold: buckets.hold, sell: buckets.sell, strongSell: buckets.strongSell, analysts: analysts ?? null }
+}
+
+function toEstimateBlock(values: Array<number | undefined>): Record<string, unknown> {
+  const clean = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+  const periods = nextQuarterLabels(4)
+  if (clean.length === 0) return { avg: null, high: null, low: null, mean: null, periods }
+  const avg = clean.reduce((a, b) => a + b, 0) / clean.length
+  return {
+    avg: round(avg, avg < 100 ? 2 : 0),
+    high: round(Math.max(...clean), Math.max(...clean) < 100 ? 2 : 0),
+    low: round(Math.min(...clean), Math.min(...clean) < 100 ? 2 : 0),
+    mean: round(avg, avg < 100 ? 2 : 0),
+    periods,
+  }
+}
+
+function nextQuarterLabels(count: number): string[] {
+  const labels: string[] = []
+  const now = new Date()
+  let y = now.getUTCFullYear()
+  let q = Math.floor(now.getUTCMonth() / 3) + 1
+  for (let i = 0; i < count; i++) {
+    labels.push(`Q${q} ${y}`)
+    q += 1
+    if (q > 4) {
+      q = 1
+      y += 1
+    }
+  }
+  return labels
 }
 
 export function toCompare(
@@ -531,6 +584,13 @@ export interface EpsQuarter {
   period_ending?: string | null
   diluted_earnings_per_share?: number | string | null
   revenue?: number | string | null
+  total_revenue?: number | string | null
+  operating_revenue?: number | string | null
+}
+
+/** Quarterly statements name revenue differently across providers/periods. */
+export function quarterRevenue(q: EpsQuarter): number | undefined {
+  return num(q.revenue) ?? num((q as Row).total_revenue) ?? num((q as Row).operating_revenue)
 }
 
 /** Derive EPS surprise rows from quarterly income statements. With no analyst
@@ -540,7 +600,7 @@ export function toEpsSurprises(symbol: string, quarters: EpsQuarter[]): Record<s
   const sorted = [...quarters].sort((a, b) => str(a.period_ending)!.localeCompare(str(b.period_ending)!))
   const rows = sorted.map((q, i): Row => {
     const eps = num(q.diluted_earnings_per_share)
-    const revenue = num(q.revenue)
+    const revenue = quarterRevenue(q)
     const date = (str(q.period_ending) ?? "").slice(0, 10)
     const priorYear = sorted.find(
       (p) => p !== q && (str(p.period_ending) ?? "").slice(0, 10) === shiftYear(date, -1),

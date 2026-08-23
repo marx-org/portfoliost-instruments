@@ -8,6 +8,7 @@ import {
   toInstrumentMetrics,
   toOverviewMetrics,
   toSearchResponse,
+  toProjections,
 } from "./translate.js"
 import type { OpenstOhlcvRow } from "./openst-types.js"
 
@@ -184,5 +185,32 @@ describe("toSearchResponse", () => {
     expect(r.count).toBe(2)
     expect(r.results[0]).toEqual({ symbol: "AAPL", name: "Apple Inc.", type: "STOCK", exchange: "US", source: "SEC" })
     expect(r.results[1].symbol).toBeUndefined()
+  })
+})
+
+describe("toProjections estimate/recommendation blocks", () => {
+  it("derives earnings/revenue baselines from reported quarters", () => {
+    const out = toProjections(
+      "AAPL",
+      { target_high: 400, target_low: 215, target_consensus: 324, recommendation: { mean: 2.18, rating: "buy", analysts: 39 } },
+      { last_price: 309.35 },
+      [
+        { period_ending: "2025-09-30", diluted_earnings_per_share: 1.0, total_revenue: 100 },
+        { period_ending: "2025-12-31", diluted_earnings_per_share: 1.5, revenue: 200 },
+        { period_ending: "2026-03-31", diluted_earnings_per_share: 1.25, operating_revenue: 150 },
+      ],
+    )
+    expect(out.earnings).toMatchObject({ avg: 1.25, high: 1.5, low: 1 })
+    expect(out.revenue).toMatchObject({ avg: 150, high: 200, low: 100 })
+    expect((out.earnings as any).periods).toHaveLength(4)
+    // mean 2.18 rounds to "buy" — all analysts land in that bucket
+    expect(out.recommendation).toMatchObject({ buy: 39, strongBuy: 0, hold: 0, analysts: 39 })
+  })
+
+  it("survives missing consensus and fundamentals with null blocks", () => {
+    const out = toProjections("ZZZ", undefined, undefined, [])
+    expect(out.priceTarget).toMatchObject({ low: null, high: null })
+    expect(out.earnings).toMatchObject({ avg: null, periods: expect.any(Array) })
+    expect(out.recommendation).toMatchObject({ buy: 0, analysts: null })
   })
 })
