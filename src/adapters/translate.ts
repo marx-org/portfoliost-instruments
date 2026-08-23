@@ -258,3 +258,215 @@ export function toSearchResponse(rows: Array<Record<string, unknown>>): Record<s
     .filter((r) => r.symbol !== undefined || r.name !== undefined)
   return { count: results.length, results }
 }
+
+// ---------------------------------------------------------------------------
+// pt2: fundamentals / calendar / dividends / projections / compare /
+// historical price
+// ---------------------------------------------------------------------------
+
+function n(v: unknown): number | undefined {
+  return num(v)
+}
+
+function growth(current: number | undefined, previous: number | undefined): number | null {
+  if (current === undefined || previous === undefined || previous === 0) return null
+  return Math.round(((current - previous) / Math.abs(previous)) * 100 * 100) / 100
+}
+
+export function toFundamentals(
+  income: Row[],
+  balance: Row[],
+  cash: Row[],
+): Record<string, unknown> {
+  const year = (r: Row): number | undefined => {
+    const fy = num(pick(r, "fiscal_year", "calendar_year"))
+    if (fy !== undefined) return fy
+    const pe = str(pick(r, "period_ending", "date"))
+    return pe ? Number(pe.slice(0, 4)) || undefined : undefined
+  }
+
+  const incomeStatement = income.map((r, i) => ({
+    year: year(r),
+    revenue: num(r.revenue),
+    ebit: num(pick(r, "ebit", "operating_income")),
+    netIncome: num(pick(r, "net_income", "bottom_line_net_income")),
+    netIncomeGrowth: growth(num(r.net_income), num(income[i + 1]?.net_income)),
+    netIncomeMargin:
+      num(r.net_income) !== undefined && num(r.revenue)
+        ? Math.round((num(r.net_income)! / num(r.revenue)!) * 10000) / 100
+        : undefined,
+    earningsPerShare: num(pick(r, "diluted_earnings_per_share", "basic_earnings_per_share", "eps")),
+    earningsPerShareGrowth: growth(
+      num(pick(r, "diluted_earnings_per_share", "eps")),
+      num(pick(income[i + 1] ?? {}, "diluted_earnings_per_share", "eps")),
+    ),
+    dilutedSharesOutstanding: num(pick(r, "diluted_average_shares", "weighted_average_shares_diluted")),
+    ebitda: num(r.ebitda),
+  }))
+
+  const balanceSheet = balance.map((r) => ({
+    year: year(r),
+    totalAssets: num(r.total_assets),
+    totalLiabilities: num(r.total_liabilities),
+    shareholdersEquity: num(pick(r, "shareholders_equity", "total_equity")),
+    cash: num(pick(r, "cash_and_equivalents", "cash_n_equivalents", "cash_and_short_term_investments")),
+    cashAndShortTermInvestments: num(
+      pick(r, "cash_and_short_term_investments", "cash_and_equivalents"),
+    ),
+    totalDebt: num(pick(r, "total_debt", "long_term_debt")),
+    netDebt: num(r.net_debt),
+    workingCapital:
+      num(r.total_current_assets) !== undefined && num(r.total_current_liabilities) !== undefined
+        ? num(r.total_current_assets)! - num(r.total_current_liabilities)!
+        : undefined,
+    retainedEarnings: num(r.retained_earnings),
+    debtEquityRatio:
+      num(pick(r, "total_debt")) !== undefined && num(r.shareholders_equity)
+        ? Math.round((num(r.total_debt)! / num(r.shareholders_equity)!) * 100) / 100
+        : undefined,
+  }))
+
+  const cashFlow = cash.map((r, i) => {
+    const op = num(pick(r, "operating_cash_flow", "cash_flow_from_operating_activities", "net_cash_from_operating_activities"))
+    const capexRaw = num(pick(r, "capital_expenditure", "capex"))
+    const fcf = op !== undefined && capexRaw !== undefined ? op - capexRaw : undefined
+    const prevOp = num(pick(cash[i + 1] ?? {}, "operating_cash_flow", "net_cash_from_operating_activities"))
+    const prevCapex = num(pick(cash[i + 1] ?? {}, "capital_expenditure"))
+    const prevFcf = prevOp !== undefined && prevCapex !== undefined ? prevOp - prevCapex : undefined
+    return {
+      year: year(r),
+      cashFlowFromOperatingActivities: op,
+      cashFlowFromFinancingActivities: num(pick(r, "financing_cash_flow", "net_cash_from_financing_activities")),
+      cashFlowFromInvestingActivities: num(pick(r, "investing_cash_flow", "net_cash_from_investing_activities")),
+      freeCashFlow: fcf,
+      freeCashFlowGrowth: growth(fcf, prevFcf),
+      cashFlowFromOperatingActivitiesGrowth: growth(op, prevOp),
+      capitalExpenditures: capexRaw,
+      depreciation: num(pick(r, "depreciation_and_amortization", "depreciation")),
+      dividendPayment: num(pick(r, "dividends_paid", "dividend_payment")),
+    }
+  })
+
+  return { financialHighlights: { incomeStatement, balanceSheet, cashFlow } }
+}
+
+function quarterFromDate(date: string): number {
+  const month = Number(date.slice(5, 7))
+  return month >= 1 && month <= 12 ? Math.floor((month - 1) / 3) + 1 : 0
+}
+
+export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Row[]): Record<string, unknown> {
+  const sym = symbol.toUpperCase()
+  const earnings = earningsRows
+    .filter((r) => str(r.symbol)?.toUpperCase() === sym && str(r.report_date))
+    .map((r) => {
+      const date = str(r.report_date)!
+      return {
+        date,
+        title: `Earnings Report`,
+        year: Number(date.slice(0, 4)),
+        quarter: quarterFromDate(date),
+      }
+    })
+    .sort((a, b) => a.date.localeCompare(b.date))
+
+  const exDividend = dividendRows
+    .filter((r) => str(r.symbol)?.toUpperCase() === sym && str(r.ex_dividend_date))
+    .map((r) => {
+      const date = str(r.ex_dividend_date)!
+      const amount = num(r.amount)
+      return {
+        date,
+        title: "Ex-Dividend",
+        year: Number(date.slice(0, 4)),
+        amount: amount ?? undefined,
+      }
+    })
+    .sort((a, b) => a.date.localeCompare(b.date))
+
+  return { earnings, exDividend }
+}
+
+export function toDividends(rows: Row[], currencyFallback = "USD"): Record<string, unknown> {
+  const history = rows
+    .map((r) => {
+      const date = str(r.date) ?? str(r.ex_dividend_date)
+      const amount = num(r.amount)
+      if (!date || amount === undefined) return null
+      return {
+        date,
+        year: Number(date.slice(0, 4)),
+        amount,
+        currency: str(r.currency) ?? currencyFallback,
+        type: str(r.type) ?? "regular",
+      }
+    })
+    .filter(Boolean)
+  return { history }
+}
+
+export function toProjections(
+  symbol: string,
+  consensus: OpenstConsensus | undefined,
+  quote: OpenstQuote | undefined,
+): Record<string, unknown> {
+  const current = quote?.last_price !== undefined ? num(quote.last_price) : num(quote?.current_price)
+  return {
+    priceTarget: consensus
+      ? {
+          lastUpdated: new Date().toISOString().slice(0, 19),
+          low: num(consensus.target_low) ?? null,
+          mean: num(consensus.target_consensus) ?? num(consensus.target_median) ?? null,
+          current: current ?? null,
+          high: num(consensus.target_high) ?? null,
+        }
+      : { lastUpdated: new Date().toISOString().slice(0, 19), low: null, mean: null, current: current ?? null, high: null },
+  }
+}
+
+export function toCompare(
+  profile: OpenstProfile,
+  quote: OpenstQuote | undefined,
+  metrics: Row,
+): Record<string, unknown> {
+  const price = quote?.last_price !== undefined ? num(quote.last_price) : num(metrics.market_cap)
+  return {
+    symbol: (str(profile.symbol) ?? "").toUpperCase(),
+    name: str(profile.name) ?? "",
+    price: price ?? undefined,
+    marketCap: num(metrics.market_cap) ?? num(profile.market_cap),
+    peRatio: num(metrics.pe_ratio),
+    forwardPe: num(metrics.forward_pe),
+    pbRatio: num(metrics.pb_ratio),
+    psRatio: num(metrics.ps_ratio),
+    dividendYield: num(metrics.dividend_yield),
+    revenueGrowth: num(pick(metrics, "revenue_growth", "revenue_growth_annual")),
+    netMargin: num(pick(metrics, "net_profit_margin", "net_margin")),
+    roe: num(metrics.return_on_equity),
+    grossMargin: num(metrics.gross_margin),
+    operatingMargin: num(metrics.operating_margin),
+    evToEbitda: num(metrics.ev_to_ebitda),
+    evToSales: num(metrics.ev_to_sales),
+    netIncome: num(metrics.net_income),
+    revenue: num(metrics.revenue),
+    sharesOutstanding: num(metrics.shares_outstanding),
+    currency: str(profile.currency) ?? "USD",
+  }
+}
+
+export function toHistoricalPrice(
+  symbol: string,
+  date: string,
+  rows: OpenstOhlcvRow[],
+  currencyFallback = "USD",
+): Record<string, unknown> {
+  const target = date.slice(0, 10)
+  const candidates = rows.filter((r) => r.date <= target).sort((a, b) => b.date.localeCompare(a.date))
+  const row = candidates[0]
+  return {
+    symbol: symbol.toUpperCase(),
+    date: row?.date ?? target,
+    price: row?.close,
+    currency: currencyFallback,
+  }
+}
