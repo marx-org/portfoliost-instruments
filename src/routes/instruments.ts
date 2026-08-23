@@ -273,7 +273,9 @@ export function createInstrumentsRoutes() {
       const symbol = c.req.param("symbol").toUpperCase()
       const resolutionParam = c.req.query("resolution") === "monthly" ? "monthly" : "daily"
       try {
-        const { start, end } = todayRange()
+        // Serve deep history so client-side timeframe slicing (3Y/5Y/10Y/MAX)
+        // has data: 11 years of daily bars, 20 years of monthly bars.
+        const { start, end } = resolutionParam === "monthly" ? todayRange(7300) : todayRange(4018)
         const rows = (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
         const history = toPriceHistory(rows, resolutionParam)
         return c.json({ ...history, symbol })
