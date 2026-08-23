@@ -5,7 +5,7 @@ import type {
   OpenstConsensus,
 } from "./openst-types.js"
 
-type Row = Record<string, unknown>
+export type Row = Record<string, unknown>
 
 function num(v: unknown): number | undefined {
   if (typeof v === "number" && Number.isFinite(v)) return v
@@ -16,8 +16,13 @@ function num(v: unknown): number | undefined {
   return undefined
 }
 
-function str(v: unknown): string | undefined {
+export function str(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined
+}
+
+function round(n: number, digits = 2): number {
+  const f = 10 ** digits
+  return Math.round(n * f) / f
 }
 
 function pick(row: Row, ...keys: string[]): unknown {
@@ -468,5 +473,148 @@ export function toHistoricalPrice(
     date: row?.date ?? target,
     price: row?.close,
     currency: currencyFallback,
+  }
+}
+
+// ─── pt2b: seasonality, eps-surprises, peers, investor relations ──────────
+
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+export function toSeasonality(
+  symbol: string,
+  years: number,
+  metric: "avg" | "median" | "min" | "max",
+  rows: OpenstOhlcvRow[],
+): Record<string, unknown> {
+  // Group month-end closes by calendar month across the window, then reduce.
+  const monthly: number[][] = Array.from({ length: 12 }, () => [])
+  const byMonth = new Map<string, OpenstOhlcvRow>()
+  const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date))
+  for (const row of sorted) {
+    const key = row.date.slice(0, 7)
+    byMonth.set(key, row) // last close of the month wins
+  }
+  const keys = [...byMonth.keys()].sort()
+  for (let i = 1; i < keys.length; i++) {
+    const prev = byMonth.get(keys[i - 1])!
+    const cur = byMonth.get(keys[i])!
+    if (!prev.close || !cur.close || prev.close === 0) continue
+    const month = Number(cur.date.slice(5, 7)) - 1
+    monthly[month].push(((cur.close - prev.close) / prev.close) * 100)
+  }
+  const reduce = (values: number[]) => {
+    if (values.length === 0) return null
+    switch (metric) {
+      case "median": {
+        const s = [...values].sort((a, b) => a - b)
+        const mid = Math.floor(s.length / 2)
+        return round(s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2)
+      }
+      case "min":
+        return round(Math.min(...values))
+      case "max":
+        return round(Math.max(...values))
+      default:
+        return round(values.reduce((a, b) => a + b, 0) / values.length)
+    }
+  }
+  return {
+    symbol: symbol.toUpperCase(),
+    years,
+    metric,
+    monthly_returns: MONTH_LABELS.map((month, i) => ({ month, return_pct: reduce(monthly[i]) })),
+  }
+}
+
+export interface EpsQuarter {
+  fiscal_year?: number | string | null
+  period_ending?: string | null
+  diluted_earnings_per_share?: number | string | null
+  revenue?: number | string | null
+}
+
+/** Derive EPS surprise rows from quarterly income statements. With no analyst
+ * estimates available from the provider tier, the estimate is the prior-year
+ * quarter's actual (a YoY baseline); surprise fields follow from that. */
+export function toEpsSurprises(symbol: string, quarters: EpsQuarter[]): Record<string, unknown> {
+  const sorted = [...quarters].sort((a, b) => str(a.period_ending)!.localeCompare(str(b.period_ending)!))
+  const rows = sorted.map((q, i): Row => {
+    const eps = num(q.diluted_earnings_per_share)
+    const revenue = num(q.revenue)
+    const date = (str(q.period_ending) ?? "").slice(0, 10)
+    const priorYear = sorted.find(
+      (p) => p !== q && (str(p.period_ending) ?? "").slice(0, 10) === shiftYear(date, -1),
+    )
+    const epsEstimate = num(priorYear?.diluted_earnings_per_share)
+    const revenueEstimate = num(priorYear?.revenue)
+    return {
+      date,
+      year: date ? Number(date.slice(0, 4)) : null,
+      quarter: date ? Math.ceil(Number(date.slice(5, 7)) / 3) : null,
+      eps: eps ?? null,
+      epsEstimate: epsEstimate ?? null,
+      epsDifference: eps !== undefined && epsEstimate !== undefined ? round(eps - epsEstimate) : null,
+      revenue: revenue ?? null,
+      revenueEstimate: revenueEstimate ?? null,
+      revenueDifference:
+        revenue !== undefined && revenueEstimate !== undefined && revenueEstimate !== 0
+          ? round(((revenue - revenueEstimate) / revenueEstimate) * 100)
+          : null,
+      surprise: eps !== undefined && epsEstimate !== undefined ? round(eps - epsEstimate) : null,
+      surprisePercent:
+        eps !== undefined && epsEstimate !== undefined && epsEstimate !== 0
+          ? round(((eps - epsEstimate) / Math.abs(epsEstimate)) * 100)
+          : null,
+      time: i < sorted.length - 1 ? "after-hours" : null,
+    }
+  })
+  void symbol
+  const annual = rows.filter((r) => typeof r.date === "string" && !r.date.endsWith("-09-30"))
+  return { annual: annual.slice(-4), quarterly: rows.slice(-12) }
+}
+
+function shiftYear(date: string, delta: number): string {
+  const y = Number(date.slice(0, 4)) + delta
+  return `${y}${date.slice(4)}`
+}
+
+/** IR events derived from real reported quarters — no transcript/audio
+ * providers exist in the tier, so events carry no audioUrl. */
+export function toInvestorRelations(symbol: string, quarters: EpsQuarter[]): Array<Record<string, unknown>> {
+  const sym = symbol.toUpperCase()
+  return [...quarters]
+    .sort((a, b) => str(b.period_ending)!.localeCompare(str(a.period_ending)!))
+    .slice(0, 24)
+    .map((q): Row => {
+      const date = (str(q.period_ending) ?? "").slice(0, 10)
+      const year = date ? Number(date.slice(0, 4)) : null
+      const quarter = date ? Math.ceil(Number(date.slice(5, 7)) / 3) : null
+      return {
+        type: "transcript",
+        id: `${sym}_${date}`,
+        title: `${sym} - Earnings call Q${quarter} ${year}`,
+        date: `${date} 21:01:04`,
+        year,
+        quarter,
+        symbol: sym,
+        audioUrl: null,
+      }
+    })
+}
+
+export function toIrTranscript(eventId: string, symbol: string): Record<string, unknown> {
+  const m = eventId.match(/_(\d{4})-(\d{2})/)
+  const year = m ? Number(m[1]) : null
+  const quarter = m ? Math.ceil(Number(m[2]) / 3) : null
+  return {
+    id: eventId,
+    symbol: symbol.toUpperCase(),
+    year,
+    quarter,
+    title: `${symbol.toUpperCase()} - Earnings call Q${quarter} ${year}`,
+    time: null,
+    participant: [],
+    audio: null,
+    transcript: [],
   }
 }

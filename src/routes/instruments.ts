@@ -29,6 +29,12 @@ import {
   toProjections,
   toCompare,
   toHistoricalPrice,
+  toSeasonality,
+  toEpsSurprises,
+  toInvestorRelations,
+  toIrTranscript,
+  str,
+  type Row,
 } from "../adapters/translate.js"
 import type { OpenstProfile, OpenstQuote, OpenstOhlcvRow, OpenstConsensus } from "../adapters/openst-types.js"
 import {
@@ -522,4 +528,170 @@ export function registerPt2Routes(instruments: Hono) {
       }
     },
   )
+
+  instruments.get(
+    "/:symbol/seasonality",
+    openApi({
+      tags: ["Instruments"],
+      summary: "Average monthly returns over a lookback window",
+      operationId: "getSeasonality",
+      responses: {
+        200: { description: "Seasonality", content: { "application/json": { schema: z.looseObject({}) } } },
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      const years = [3, 5, 10, 20].includes(Number(c.req.query("years"))) ? Number(c.req.query("years")) : 5
+      const metricParam = c.req.query("metric")
+      const metric = ["avg", "median", "min", "max"].includes(metricParam ?? "")
+        ? (metricParam as "avg" | "median" | "min" | "max")
+        : "avg"
+      const start = new Date(Date.now() - (years + 1) * 365 * 86400_000).toISOString().slice(0, 10)
+      const end = new Date().toISOString().slice(0, 10)
+      try {
+        const rows = (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
+        return c.json(toSeasonality(symbol, years, metric, rows))
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
+    },
+  )
+
+  instruments.get(
+    "/:symbol/eps-surprises",
+    openApi({
+      tags: ["Instruments"],
+      summary: "EPS surprise history derived from quarterly statements",
+      operationId: "getEpsSurprises",
+      responses: {
+        200: { description: "EPS surprises", content: { "application/json": { schema: z.looseObject({}) } } },
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      const quartersParam = Number(c.req.query("quarters"))
+      const quarters = [5, 8, 12].includes(quartersParam) ? quartersParam : 8
+      try {
+        const rows = await fetchFundamentals(symbol, "income", "quarter")
+        const all = toEpsSurprises(symbol, rows)
+        return c.json({ ...all, quarterly: (all.quarterly as unknown[]).slice(-quarters) })
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
+    },
+  )
+
+  instruments.get(
+    "/:symbol/investor-relations",
+    openApi({
+      tags: ["Instruments"],
+      summary: "IR events derived from reported quarters",
+      operationId: "getInvestorRelations",
+      responses: {
+        200: { description: "Events", content: { "application/json": { schema: z.array(z.looseObject({})) } } },
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      try {
+        const rows = await fetchFundamentals(symbol, "income", "quarter")
+        return c.json(toInvestorRelations(symbol, rows))
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
+    },
+  )
+
+  instruments.get(
+    "/:symbol/investor-relations/:eventId/transcript",
+    openApi({
+      tags: ["Instruments"],
+      summary: "Transcript placeholder for an IR event (no provider in tier)",
+      operationId: "getIrTranscript",
+      responses: {
+        200: { description: "Transcript", content: { "application/json": { schema: z.looseObject({}) } } },
+        401: UNAUTHORIZED,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      const eventId = c.req.param("eventId")
+      return c.json(toIrTranscript(eventId, symbol))
+    },
+  )
+
+  instruments.get(
+    "/:symbol/peers",
+    openApi({
+      tags: ["Instruments"],
+      summary: "Same-sector peers composed into compare rows",
+      operationId: "getPeers",
+      responses: {
+        200: { description: "Peers", content: { "application/json": { schema: z.looseObject({}) } } },
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      try {
+        const profile = (await fetchProfile(symbol)) as OpenstProfile
+        // Curated liquid large-cap candidate universe; peers are filtered by
+        // live sector data from the provider tier.
+        const candidates = PEER_UNIVERSE.filter((s) => s !== symbol).slice(0, 24)
+        const profiles = await Promise.all(
+          candidates.map(async (s) => {
+            try {
+              return { s, p: (await fetchProfile(s)) as OpenstProfile }
+            } catch {
+              return null
+            }
+          }),
+        )
+        const sector = str(profile.sector ?? profile.sector_long)
+        const peerSymbols = profiles
+          .filter((x): x is { s: string; p: OpenstProfile } =>
+            Boolean(x && sector && str(x.p.sector ?? x.p.sector_long) === sector),
+          )
+          .slice(0, 4)
+          .map((x) => x.s)
+        const items = await Promise.all(
+          [symbol, ...peerSymbols].map(async (sym) => {
+            const prof = sym === symbol ? profile : ((await fetchProfile(sym)) as OpenstProfile)
+            let quote: OpenstQuote | undefined
+            let metrics: Row = {}
+            try {
+              quote = (await fetchQuote(sym)) as OpenstQuote
+            } catch {
+              /* price/metrics optional for peers */
+            }
+            try {
+              metrics = (await fetchMetrics(sym)) as Row
+            } catch {
+              /* optional */
+            }
+            return toCompare(prof, quote, metrics)
+          }),
+        )
+        return c.json({ symbol, items })
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
+    },
+  )
 }
+
+// Liquid US large caps spanning major sectors used as the peer-candidate pool.
+const PEER_UNIVERSE = [
+  "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AVGO", "ORCL", "CRM",
+  "AMD", "ADBE", "CSCO", "INTC", "QCOM", "TXN", "IBM", "NOW", "UBER", "SHOP",
+  "JPM", "BAC", "WFC", "GS", "MS", "C", "V", "MA", "BRK.B", "BLK",
+  "JNJ", "PFE", "MRK", "UNH", "ABBV", "TMO", "LLY", "NKE", "MCD", "SBUX",
+  "WMT", "COST", "HD", "TGT", "KO", "PEP", "PG", "XOM", "CVX", "BA",
+]
