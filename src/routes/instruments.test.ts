@@ -321,3 +321,143 @@ describe("pt2 routes", () => {
     })
   })
 })
+
+describe("pt2b routes", () => {
+  describe("GET /:symbol/seasonality", () => {
+    const monthRow = (date: string, close: number) => ({ date, open: 1, high: 1, low: 1, close, volume: 1 })
+
+    it("computes average monthly returns from monthly last closes", async () => {
+      mocked.fetchOhlcv.mockResolvedValue([
+        monthRow("2025-01-31", 100),
+        monthRow("2025-02-28", 110), // Feb +10%
+        monthRow("2026-01-30", 100),
+        monthRow("2026-02-27", 90), // Feb -10%
+      ])
+      const res = await req("/api/instruments/AAPL/seasonality?years=5")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.symbol).toBe("AAPL")
+      expect(body.years).toBe(5)
+      const feb = body.monthly_returns.find((m: any) => m.month === "Feb")
+      expect(feb.return_pct).toBe(0) // avg(+10, -10)
+      const jan = body.monthly_returns.find((m: any) => m.month === "Jan")
+      expect(jan.return_pct).toBeCloseTo(-9.09, 1) // Feb'25 110 → Jan'26 100
+    })
+
+    it("supports median/min/max metrics and defaults years to 5", async () => {
+      mocked.fetchOhlcv.mockResolvedValue([
+        monthRow("2025-01-31", 100),
+        monthRow("2025-02-10", 80),
+        monthRow("2025-02-28", 120),
+        monthRow("2026-01-30", 100),
+        monthRow("2026-02-10", 60),
+        monthRow("2026-02-28", 140),
+      ])
+      const med = await req("/api/instruments/AAPL/seasonality?metric=median")
+      const febMed = (await med.json()).monthly_returns.find((m: any) => m.month === "Feb")
+      // monthly closes are last-of-month: Feb'25 120 (+20%), Feb'26 140 (+40%) → median 30
+      expect(febMed.return_pct).toBeCloseTo(30, 1)
+      const mx = await req("/api/instruments/AAPL/seasonality?metric=max")
+      const febMax = (await mx.json()).monthly_returns.find((m: any) => m.month === "Feb")
+      expect(febMax.return_pct).toBeCloseTo(40, 1)
+    })
+  })
+
+  describe("GET /:symbol/eps-surprises", () => {
+    it("derives rows with YoY-baseline estimates", async () => {
+      mocked.fetchFundamentals.mockResolvedValue([
+        { period_ending: "2024-03-31 00:00:00", diluted_earnings_per_share: 1.0, revenue: 900 },
+        { period_ending: "2025-03-31 00:00:00", diluted_earnings_per_share: 1.2, revenue: 1000 },
+        { period_ending: "2025-06-30 00:00:00", diluted_earnings_per_share: 1.3, revenue: 1050 },
+      ])
+      const res = await req("/api/instruments/AAPL/eps-surprises")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      const q1 = body.quarterly.find((r: any) => r.date === "2025-03-31")
+      expect(q1.eps).toBe(1.2)
+      expect(q1.epsEstimate).toBe(1.0)
+      expect(q1.surprisePercent).toBeCloseTo(20)
+      expect(q1.revenueDifference).toBeCloseTo(11.11, 1)
+      expect(body.quarterly.length).toBeLessThanOrEqual(8)
+    })
+
+    it("honors the quarters parameter", async () => {
+      mocked.fetchFundamentals.mockResolvedValue(
+        Array.from({ length: 12 }, (_, i) => ({
+          period_ending: `20${25 + Math.floor(i / 4)}-0${(i % 4) * 3 + 1}-15 00:00:00`,
+          diluted_earnings_per_share: 1,
+          revenue: 100,
+        })),
+      )
+      const res = await req("/api/instruments/AAPL/eps-surprises?quarters=12")
+      expect((await res.json()).quarterly).toHaveLength(12)
+    })
+  })
+
+  describe("GET /:symbol/investor-relations", () => {
+    it("lists earnings-call events per reported quarter", async () => {
+      mocked.fetchFundamentals.mockResolvedValue([
+        { period_ending: "2026-03-31 00:00:00" },
+        { period_ending: "2025-12-31 00:00:00" },
+      ])
+      const res = await req("/api/instruments/AAPL/investor-relations")
+      expect(res.status).toBe(200)
+      const events = await res.json()
+      expect(events[0]).toMatchObject({
+        type: "transcript",
+        symbol: "AAPL",
+        id: "AAPL_2026-03-31",
+        year: 2026,
+        quarter: 1,
+        audioUrl: null,
+      })
+    })
+
+    it("returns a structured transcript stub for an event", async () => {
+      const res = await req("/api/instruments/AAPL/investor-relations/AAPL_2026-03-31/transcript")
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({
+        id: "AAPL_2026-03-31",
+        symbol: "AAPL",
+        year: 2026,
+        quarter: 1,
+        participant: [],
+        transcript: [],
+      })
+    })
+  })
+
+  describe("GET /:symbol/peers", () => {
+    it("composes compare rows for same-sector candidates", async () => {
+      mocked.fetchProfile.mockImplementation(async (s: string) =>
+        s.startsWith("AAPL") || ["MSFT", "GOOGL"].includes(s)
+          ? { symbol: s, name: `${s} Inc.`, sector: "Technology" }
+          : { symbol: s, name: `${s} Corp.`, sector: "Financials" },
+      )
+      mocked.fetchQuote.mockResolvedValue({ last_price: 100 })
+      mocked.fetchMetrics.mockResolvedValue({ market_cap: 1e9, pe_ratio: 10 })
+      const res = await req("/api/instruments/AAPL/peers")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.symbol).toBe("AAPL")
+      expect(body.items[0].symbol).toBe("AAPL")
+      const peerSymbols = body.items.slice(1).map((r: any) => r.symbol)
+      expect(peerSymbols).toEqual(expect.arrayContaining(["MSFT", "GOOGL"]))
+      expect(peerSymbols).toHaveLength(2)
+    })
+
+    it("still returns self row when no same-sector candidate exists", async () => {
+      mocked.fetchProfile.mockImplementation(async (s: string) => {
+        if (s === "ZZZ") return { symbol: "ZZZ", name: "Oddity", sector: "Space" }
+        throw new cachest.UpstreamError("p", 404)
+      })
+      mocked.fetchQuote.mockRejectedValue(new cachest.UpstreamError("q", 404))
+      mocked.fetchMetrics.mockRejectedValue(new cachest.UpstreamError("m", 404))
+      const res = await req("/api/instruments/ZZZ/peers")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.items).toHaveLength(1)
+      expect(body.items[0].symbol).toBe("ZZZ")
+    })
+  })
+})
