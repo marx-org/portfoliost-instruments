@@ -184,7 +184,10 @@ export function createInstrumentsRoutes() {
             out.isin = ref.isin ?? out.isin ?? null
             out.country = out.country ?? ref.country
             out.countryCode = out.countryCode ?? ref.countryCode
-            out.exchange = out.exchange ?? ref.exchange
+            // "YHD" is Yahoo's placeholder for delisted/unknown exchanges —
+            // the reference table is more trustworthy there.
+            const exchangePlaceholder = !out.exchange || out.exchange === "YHD"
+            out.exchange = exchangePlaceholder && ref.exchange ? ref.exchange : out.exchange
             out.finnhubIndustry = out.finnhubIndustry ?? ref.stockSector ?? ref.etfCategory
             out.gicsSector = out.gicsSector ?? ref.stockSector
           }
