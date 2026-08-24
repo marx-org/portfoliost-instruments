@@ -181,6 +181,7 @@ export function createInstrumentsRoutes() {
         try {
           const [ref] = await searchTickerReference(getDb(), symbol, 1)
           if (ref && ref.ticker === symbol) {
+            out.name = out.name ?? ref.name
             out.isin = ref.isin ?? out.isin ?? null
             out.country = out.country ?? ref.country
             out.countryCode = out.countryCode ?? ref.countryCode
