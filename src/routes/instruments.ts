@@ -3,6 +3,8 @@ import { z } from "zod"
 import { openApi } from "hono-zod-openapi"
 import { userIdentityMiddleware } from "../auth.js"
 import { getDb } from "../db/index.js"
+import { providerSymbol, symbolSuffix } from "../adapters/symbol.js"
+import { getExchangeBySuffix } from "../db/tickerref-queries.js"
 import { searchTickerReference } from "../db/tickerref-queries.js"
 import {
   fetchProfile,
@@ -146,7 +148,7 @@ export function createInstrumentsRoutes() {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
         const profile = (await fetchProfile(symbol)) as OpenstProfile
         return c.json(toInstrumentDetail(symbol, profile))
@@ -172,15 +174,19 @@ export function createInstrumentsRoutes() {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const routeSymbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(routeSymbol)
       try {
         const profile = (await fetchProfile(symbol)) as OpenstProfile
         const out = toInstrumentProfile(symbol, profile)
         // Fill identity gaps (ISIN, sector, country, exchange) from the
         // local reference table when the provider profile lacks them.
         try {
-          const [ref] = await searchTickerReference(getDb(), symbol, 1)
-          if (ref && ref.ticker === symbol) {
+          const suffix = symbolSuffix(routeSymbol)
+          const venueExchange = suffix ? await getExchangeBySuffix(getDb(), suffix) : null
+          const [ref] = await searchTickerReference(getDb(), symbol, 1, venueExchange)
+          const baseTicker = symbol.split(".")[0]
+          if (ref && ref.ticker === baseTicker) {
             out.name = out.name ?? ref.name
             out.isin = ref.isin ?? out.isin ?? null
             out.country = out.country ?? ref.country
@@ -218,7 +224,7 @@ export function createInstrumentsRoutes() {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
         const metrics = await fetchMetrics(symbol)
         let consensus: OpenstConsensus | undefined
@@ -250,7 +256,7 @@ export function createInstrumentsRoutes() {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
         const metrics = await fetchMetrics(symbol)
         let profile: OpenstProfile | undefined
@@ -282,7 +288,7 @@ export function createInstrumentsRoutes() {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
         const q = (await fetchQuote(symbol)) as OpenstQuote
         return c.json(toQuote({ symbol, ...q }))
@@ -308,7 +314,7 @@ export function createInstrumentsRoutes() {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       const resolutionParam = c.req.query("resolution") === "monthly" ? "monthly" : "daily"
       const compareParam = c.req.query("compare")
       try {
@@ -370,7 +376,7 @@ export function createInstrumentsRoutes() {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       const date = c.req.query("date")
       try {
         if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -406,7 +412,7 @@ export function createInstrumentsRoutes() {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       return c.json({ symbol, institutional: [], mutualFund: [], insider: [], insiderTransactions: [] })
     },
   )
@@ -431,7 +437,7 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
         const [income, balance, cash] = await Promise.all([
           fetchFundamentals(symbol, "income", "annual"),
@@ -461,7 +467,7 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       const { start, end } = todayRange(45)
       // A missing calendar window (upstream 404) degrades to empty lists.
       const orEmpty = async (p: Promise<unknown>) => {
@@ -500,7 +506,7 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
         const rows = await fetchDividendHistory(symbol)
         return c.json(toDividends(rows as any[]))
@@ -526,7 +532,7 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
         let consensus: Record<string, unknown> | undefined
         try {
@@ -571,7 +577,7 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
         const [profile, quote, metrics] = await Promise.all([
           fetchProfile(symbol),
@@ -602,7 +608,7 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       const date = c.req.query("date")
       if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
         return c.json({ error: "BadRequest", message: "date query parameter must be YYYY-MM-DD" }, 400 as any)
@@ -631,7 +637,7 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       const years = [3, 5, 10, 20].includes(Number(c.req.query("years"))) ? Number(c.req.query("years")) : 5
       const metricParam = c.req.query("metric")
       const metric = ["avg", "median", "min", "max"].includes(metricParam ?? "")
@@ -661,7 +667,7 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       const quartersParam = Number(c.req.query("quarters"))
       const quarters = [5, 8, 12].includes(quartersParam) ? quartersParam : 8
       try {
@@ -687,7 +693,7 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
         const rows = await fetchFundamentals(symbol, "income", "quarter")
         return c.json(toInvestorRelations(symbol, rows))
@@ -709,7 +715,7 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       const eventId = c.req.param("eventId")
       return c.json(toIrTranscript(eventId, symbol))
     },
@@ -728,7 +734,7 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
         const profile = (await fetchProfile(symbol)) as OpenstProfile
         // Curated liquid large-cap candidate universe; peers are filtered by

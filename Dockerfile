@@ -28,4 +28,4 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
 # journal), then seed the ticker reference from the bundled snapshot when
 # the table is still empty. Seed failure is non-fatal: /search falls back
 # to the provider tier. The k8s CronJob refreshes live data via --url.
-CMD ["sh", "-c", "ls drizzle/*.sql >/dev/null 2>&1 && npm run db:migrate; node dist/scripts/tickerref-sync.js --file seed/ticker_reference.csv --if-empty || echo '[boot] tickerref seed skipped'; node dist/server.js"]
+CMD ["sh", "-c", "ls drizzle/*.sql >/dev/null 2>&1 && npm run db:migrate; node dist/scripts/tickerref-sync.js --file seed --if-empty || echo '[boot] tickerref seed skipped'; node dist/server.js"]

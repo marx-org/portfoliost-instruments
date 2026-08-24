@@ -3,7 +3,7 @@ import { like, or, sql } from "drizzle-orm"
 import { createTestDb, migrationsFolder } from "../db/test-db.js"
 import type { DB } from "../db/index.js"
 import { tickerReference } from "../db/schema.js"
-import { parseCsv, parseCsvLine, syncTickerReference } from "../scripts/tickerref-sync.js"
+import { parseCsv, parseCsvLine, syncExchangeReference, syncTickerReference } from "../scripts/tickerref-sync.js"
 
 const FIXTURE = `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
 NASDAQ::AAPL,AAPL,NASDAQ,Apple Inc,Stock,Information Technology,,United States,US,US0378331005,apple
@@ -70,5 +70,43 @@ describe("tickerref sync + search against PGlite", () => {
       .where(sql`${tickerReference.aliases} ILIKE ${"%apple%"}`)
     expect(rows).toHaveLength(1)
     expect(rows[0].ticker).toBe("AAPL")
+  })
+})
+
+const VENUES = `venue_id,exchange_code,operating_mic,segment_mic,canonical_name,country_code,status
+v1,WSE,XWAR,,Warsaw Stock Exchange,PL,active
+v2,XETRA,XETR,,Deutsche Boerse XETRA,DE,active
+v3,UNKNOWN,,,Mystery Exchange,XX,active`
+
+describe("syncExchangeReference", () => {
+  it("joins MIC → Yahoo suffix onto venue rows", async () => {
+    const { createTestDb } = await import("../db/test-db.js")
+    const t = await createTestDb()
+    try {
+      const { total } = await syncExchangeReference(VENUES, "XWAR: ignored\n\"XWAR\": \"WA\"\n\"XETR\": \"DE\"", t.db)
+      void total
+      const { exchangeReference } = await import("../db/schema.js")
+      const rows = await t.db.select().from(exchangeReference)
+      expect(rows).toHaveLength(3)
+      const wse = rows.find((r) => r.exchangeCode === "WSE")
+      expect(wse).toMatchObject({ yahooSuffix: "WA", operatingMic: "XWAR", canonicalName: "Warsaw Stock Exchange" })
+      const unknown = rows.find((r) => r.exchangeCode === "UNKNOWN")
+      expect(unknown?.yahooSuffix).toBeNull()
+    } finally {
+      await t.client.close()
+    }
+  })
+
+  it("accepts the bundled CSV format for the MIC map too", async () => {
+    const { createTestDb } = await import("../db/test-db.js")
+    const t = await createTestDb()
+    try {
+      await syncExchangeReference(VENUES, "operating_mic,yahoo_suffix\nXWAR,WA", t.db)
+      const { exchangeReference } = await import("../db/schema.js")
+      const rows = await t.db.select().from(exchangeReference)
+      expect(rows.find((r) => r.exchangeCode === "WSE")?.yahooSuffix).toBe("WA")
+    } finally {
+      await t.client.close()
+    }
   })
 })

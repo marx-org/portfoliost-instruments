@@ -526,7 +526,7 @@ describe("GET /search result cap", () => {
 describe("GET /search — ticker reference (DB-first)", () => {
   it("serves results from the reference table when populated", async () => {
     const { createTestDb } = await import("../db/test-db.js")
-    const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const { syncExchangeReference, syncTickerReference } = await import("../scripts/tickerref-sync.js")
     const t = await createTestDb()
     dbState.db = t.db
     await syncTickerReference(
@@ -535,12 +535,19 @@ WSE::PKN,PKN,WSE,"Polski Koncern Naftowy ORLEN SA",Stock,Energy,,Poland,PL,PLPKN
 NASDAQ::AAPL,AAPL,NASDAQ,Apple Inc,Stock,Information Technology,,United States,US,US0378331005,apple`,
       t.db,
     )
+    await syncExchangeReference(
+      `venue_id,exchange_code,operating_mic,segment_mic,canonical_name,country_code,status
+v1,WSE,XWAR,,Warsaw Stock Exchange,PL,active
+v2,NASDAQ,XNAS,,Nasdaq,US,active`,
+      '"XWAR": "WA"',
+      t.db,
+    )
     try {
       const res = await req("/api/instruments/search?q=pkn")
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.count).toBe(1)
-      expect(body.results[0]).toMatchObject({ symbol: "PKN", exchange: "WSE", type: "STOCK" })
+      expect(body.results[0]).toMatchObject({ symbol: "PKN.WA", exchange: "WSE", type: "STOCK" })
 
       // alias search hits ORLEN too
       const alias = await req("/api/instruments/search?q=orlen")
@@ -564,7 +571,7 @@ NASDAQ::AAPL,AAPL,NASDAQ,Apple Inc,Stock,Information Technology,,United States,U
 describe("GET /:symbol/profile — reference enrichment", () => {
   it("fills ISIN/sector/country from the reference table when provider omits them", async () => {
     const { createTestDb } = await import("../db/test-db.js")
-    const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const { syncExchangeReference, syncTickerReference } = await import("../scripts/tickerref-sync.js")
     const t = await createTestDb()
     dbState.db = t.db
     await syncTickerReference(
@@ -582,6 +589,43 @@ WSE::PKN,PKN,WSE,"Polski Koncern Naftowy ORLEN SA",Stock,Energy,,Poland,PL,PLPKN
       expect(body.gicsSector).toBe("Energy")
       // provider-supplied fields win when present
       expect(body.name).toBe("PKN Orlen")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+})
+
+describe("GET /:symbol/profile — venue collision (SNT)", () => {
+  it("enriches the venue-matched listing for suffixed route symbols", async () => {
+    const { createTestDb } = await import("../db/test-db.js")
+    const { syncExchangeReference, syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const t = await createTestDb()
+    dbState.db = t.db
+    await syncTickerReference(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+WSE::SNT,SNT,WSE,"Synektik Spolka Akcyjna",Stock,Healthcare,,Poland,PL,PLSNT0000016,synektik
+NYSE::SNT,SNT,NYSE,"Senstar Technologies Corp",Stock,Technology,,Canada,CA,CA81728N1006,senstar`,
+      t.db,
+    )
+    await syncExchangeReference(
+      `venue_id,exchange_code,operating_mic,segment_mic,canonical_name,country_code,status
+v1,WSE,XWAR,,Warsaw Stock Exchange,PL,active`,
+      '"XWAR": "WA"',
+      t.db,
+    )
+    // provider (Yahoo) returns the correct WSE company for SNT.WA but lacks
+    // identity fields — those must come from the WSE reference row.
+    mocked.fetchProfile.mockResolvedValue({ symbol: "SNT.WA", name: "Synektik Spolka Akcyjna", stock_exchange: "WSE" })
+    try {
+      const res = await req("/api/instruments/SNT.WA/profile")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.isin).toBe("PLSNT0000016")
+      expect(body.country).toBe("Poland")
+      expect(body.countryCode).toBe("PL")
+      expect(body.exchange).toBe("WSE")
+      expect(body.gicsSector).toBe("Healthcare")
     } finally {
       await t.client.close()
       dbState.db = null
