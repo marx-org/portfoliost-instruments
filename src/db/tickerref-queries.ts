@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm"
 import type { DB } from "./index.js"
-import { tickerReference } from "./schema.js"
+import { exchangeReference, tickerReference } from "./schema.js"
 
 export interface TickerSearchRow {
   ticker: string
@@ -12,14 +12,58 @@ export interface TickerSearchRow {
   country: string | null
   countryCode: string | null
   isin: string | null
+  yahooSuffix: string | null
+}
+
+/** Resolve a Yahoo-style venue suffix (WA, DE, L…) to the reference exchange
+ * code (WSE, XETRA, LSE…) via the exchange_reference table. */
+export async function getExchangeBySuffix(db: DB, suffix: string): Promise<string | null> {
+  const rows = await db
+    .select({ code: exchangeReference.exchangeCode })
+    .from(exchangeReference)
+    .where(sql`UPPER(${exchangeReference.yahooSuffix}) = ${suffix.toUpperCase()}`)
+    .limit(1)
+  return rows[0]?.code ?? null
 }
 
 /** Symbol/name/alias search over the reference table. Exact ticker matches
  * rank first, then ticker prefixes, then name/alias substring hits. */
-export async function searchTickerReference(db: DB, query: string, limit = 50): Promise<TickerSearchRow[]> {
+export async function searchTickerReference(
+  db: DB,
+  query: string,
+  limit = 50,
+  exchange?: string | null,
+): Promise<TickerSearchRow[]> {
   const q = query.trim()
   if (q.length === 0) return []
   const upper = q.toUpperCase()
+  const select = {
+    ticker: tickerReference.ticker,
+    exchange: tickerReference.exchange,
+    name: tickerReference.name,
+    assetType: tickerReference.assetType,
+    stockSector: tickerReference.stockSector,
+    etfCategory: tickerReference.etfCategory,
+    country: tickerReference.country,
+    countryCode: tickerReference.countryCode,
+    isin: tickerReference.isin,
+    yahooSuffix: exchangeReference.yahooSuffix,
+  }
+  // Venue-qualified lookup (route symbol suffix → exchange): when the exact
+  // listing exists, return it alone — cross-exchange ticker collisions
+  // (SNT on WSE vs North America) must not bleed into each other.
+  if (exchange) {
+    // The query may arrive venue-qualified (SNT.WA) — the reference table
+    // stores the bare ticker (SNT).
+    const baseTicker = upper.split(".")[0]
+    const exact = await db
+      .select(select)
+      .from(tickerReference)
+      .leftJoin(exchangeReference, sql`${exchangeReference.exchangeCode} = ${tickerReference.exchange}`)
+      .where(sql`${tickerReference.ticker} = ${baseTicker} AND ${tickerReference.exchange} = ${exchange.toUpperCase()}`)
+      .limit(1)
+    if (exact.length > 0) return exact
+  }
   // Users type venue-qualified symbols like "PKN.WA" / "PKN.US" — the base
   // segment before the dot is the ticker they are actually after.
   const base = upper.split(".")[0]
@@ -27,18 +71,9 @@ export async function searchTickerReference(db: DB, query: string, limit = 50): 
     base !== upper ? sql` OR ${tickerReference.ticker} ILIKE ${base + "%"}` : sql``
   const baseMatches = base !== upper ? sql`${tickerReference.ticker} ILIKE ${base + "%"}` : sql`FALSE`
   return db
-    .select({
-      ticker: tickerReference.ticker,
-      exchange: tickerReference.exchange,
-      name: tickerReference.name,
-      assetType: tickerReference.assetType,
-      stockSector: tickerReference.stockSector,
-      etfCategory: tickerReference.etfCategory,
-      country: tickerReference.country,
-      countryCode: tickerReference.countryCode,
-      isin: tickerReference.isin,
-    })
+    .select(select)
     .from(tickerReference)
+    .leftJoin(exchangeReference, sql`${exchangeReference.exchangeCode} = ${tickerReference.exchange}`)
     .where(
       sql`${tickerReference.ticker} ILIKE ${upper + "%"}
         OR ${tickerReference.name} ILIKE ${"%" + q + "%"}

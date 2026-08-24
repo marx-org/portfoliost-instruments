@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { sql } from "drizzle-orm"
 import { closeDb, getDb, type DB } from "../db/index.js"
-import { tickerReference } from "../db/schema.js"
+import { exchangeReference, tickerReference } from "../db/schema.js"
 
 // Syncs ticker reference data from adanos/free-ticker-database into the
 // ticker_reference table. Designed to run as a one-shot job (k8s CronJob,
@@ -9,6 +9,10 @@ import { tickerReference } from "../db/schema.js"
 
 const DEFAULT_SOURCE_URL =
   "https://raw.githubusercontent.com/adanos-software/free-ticker-database/main/data/core_listings.csv"
+const DEFAULT_VENUES_URL =
+  "https://raw.githubusercontent.com/adanos-software/free-ticker-database/main/data/canonical_v4/venues.csv"
+const DEFAULT_MIC_URL =
+  "https://raw.githubusercontent.com/wnjoon/go-yfinance/main/pkg/utils/mic.go"
 
 const BATCH_SIZE = 500
 
@@ -105,40 +109,118 @@ function sqlExcluded(column: string) {
   return sql.raw(`excluded.${column}`)
 }
 
+/** Extract MIC → Yahoo-suffix pairs. Accepts go-yfinance's mic.go source
+ * (live sync) or the bundled seed/mic_yahoo_suffixes.csv (seed mode). */
+export function parseMicSuffixes(input: string): Array<{ operatingMic: string; yahooSuffix: string | null }> {
+  if (input.includes("operating_mic")) {
+    return parseCsv(input)
+      .filter((r) => r.operating_mic)
+      .map((r) => ({ operatingMic: r.operating_mic, yahooSuffix: r.yahoo_suffix || null }))
+  }
+  const pairs = input.match(/"([A-Z0-9]{4})":\s*"([A-Za-z]*)"/g) ?? []
+  const seen = new Map<string, string | null>()
+  for (const pair of pairs) {
+    const m = pair.match(/"([A-Z0-9]{4})":\s*"([A-Za-z]*)"/)!
+    seen.set(m[1], m[2] || null)
+  }
+  return [...seen.entries()].map(([operatingMic, yahooSuffix]) => ({ operatingMic, yahooSuffix }))
+}
+
+/** Upsert venue metadata (adanos canonical_v4/venues.csv) enriched with
+ * Yahoo suffixes via the MIC mapping. */
+export async function syncExchangeReference(venuesCsv: string, micGoSource: string, db: DB = getDb()): Promise<{ total: number }> {
+  const suffixByMic = new Map(parseMicSuffixes(micGoSource).map((r) => [r.operatingMic, r.yahooSuffix]))
+  const venues = parseCsv(venuesCsv).filter((v) => v.exchange_code)
+  if (venues.length === 0) return { total: 0 }
+  await db
+    .insert(exchangeReference)
+    .values(
+      venues.map((v) => ({
+        exchangeCode: v.exchange_code.toUpperCase(),
+        operatingMic: v.operating_mic || null,
+        canonicalName: v.canonical_name || null,
+        countryCode: v.country_code || null,
+        yahooSuffix: suffixByMic.get((v.operating_mic || "").toUpperCase()) ?? null,
+      })),
+    )
+    .onConflictDoUpdate({
+      target: exchangeReference.exchangeCode,
+      set: {
+        operatingMic: sqlExcluded("operating_mic"),
+        canonicalName: sqlExcluded("canonical_name"),
+        countryCode: sqlExcluded("country_code"),
+        yahooSuffix: sqlExcluded("yahoo_suffix"),
+        updatedAt: new Date(),
+      },
+    })
+  return { total: venues.length }
+}
+
+async function fetchOrRead(url: string, file: string): Promise<string> {
+  if (file) {
+    console.log(`[tickerref] reading ${file}`)
+    return readFile(file, "utf8")
+  }
+  console.log(`[tickerref] fetching ${url}`)
+  const res = await fetch(url)
+  if (!res.ok) {
+    throw new Error(`source fetch failed: HTTP ${res.status}`)
+  }
+  return res.text()
+}
+
 async function main() {
   const fileArgIdx = process.argv.indexOf("--file")
   const urlArgIdx = process.argv.indexOf("--url")
-  const fileArg = fileArgIdx > -1 ? process.argv[fileArgIdx + 1] : undefined
-  const urlArg = urlArgIdx > -1 ? process.argv[urlArgIdx + 1] : undefined
+  const fileBase = fileArgIdx > -1 ? process.argv[fileArgIdx + 1] : undefined
+  const urlBase = urlArgIdx > -1 ? process.argv[urlArgIdx + 1] : undefined
   const ifEmpty = process.argv.includes("--if-empty")
-  const sourceUrl = urlArg || process.env.TICKERREF_SOURCE_URL || DEFAULT_SOURCE_URL
+  const sourceUrl = urlBase || process.env.TICKERREF_SOURCE_URL || DEFAULT_SOURCE_URL
 
   const db = getDb()
+
+  // Tickers: seed mode reads the bundled snapshot; live mode fetches from
+  // adanos GitHub. fileBase/urlBase act as path-prefix / URL-override.
+  let skipTickers = false
   if (ifEmpty) {
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(tickerReference)
     if (count > 0) {
-      console.log(`[tickerref] table already has ${count} rows — skipping seed (--if-empty)`)
-      return
+      console.log(`[tickerref] ticker_reference already has ${count} rows — skipping (--if-empty)`)
+      skipTickers = true
     }
+  }
+  if (!skipTickers) {
+    const tickersCsv = await fetchOrRead(sourceUrl, fileBase ? `${fileBase}/ticker_reference.csv` : "")
+    console.log(`[tickerref] ${(tickersCsv.length / 1e6).toFixed(1)} MB loaded, syncing`)
+    const { total } = await syncTickerReference(tickersCsv, db)
+    console.log(`[tickerref] synced ${total} tickers`)
   }
 
-  let csv: string
-  if (fileArg) {
-    console.log(`[tickerref] reading ${fileArg}`)
-    csv = await readFile(fileArg, "utf8")
-  } else {
-    console.log(`[tickerref] fetching ${sourceUrl}`)
-    const res = await fetch(sourceUrl)
-    if (!res.ok) {
-      throw new Error(`source fetch failed: HTTP ${res.status}`)
+  // Venues + MIC→Yahoo-suffix map: failure is non-fatal — identity search
+  // still works, only suffix→exchange resolution degrades. --if-empty gates
+  // this dataset independently of the ticker seed.
+  try {
+    if (ifEmpty) {
+      const [{ count }] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(exchangeReference)
+      if (count > 0) {
+        console.log(`[tickerref] exchange_reference already has ${count} rows — skipping (--if-empty)`)
+        return
+      }
     }
-    csv = await res.text()
+    const venuesCsv = await fetchOrRead(DEFAULT_VENUES_URL, fileBase ? `${fileBase}/venues.csv` : "")
+    const micData = await fetchOrRead(
+      DEFAULT_MIC_URL,
+      fileBase ? `${fileBase}/mic_yahoo_suffixes.csv` : "",
+    )
+    const { total: venueCount } = await syncExchangeReference(venuesCsv, micData, db)
+    console.log(`[tickerref] synced ${venueCount} exchanges`)
+  } catch (e) {
+    console.error(`[tickerref] exchange reference sync skipped: ${e}`)
   }
-  console.log(`[tickerref] ${(csv.length / 1e6).toFixed(1)} MB loaded, syncing`)
-  const { total } = await syncTickerReference(csv, db)
-  console.log(`[tickerref] synced ${total} tickers`)
 }
 
 if (process.argv[1] && process.argv[1].endsWith("tickerref-sync.js")) {
