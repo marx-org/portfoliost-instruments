@@ -67,3 +67,12 @@ export function fetchSearch(query: string): Promise<Array<Record<string, unknown
 export function fetchDividendHistory(symbol: string): Promise<Array<Record<string, unknown>>> {
   return fetchJson(`${BASE_URL}/dividends/${encodeURIComponent(symbol)}`)
 }
+
+export interface LogoResolution {
+  source: string
+  remote_url: string
+}
+
+export function fetchLogo(symbol: string): Promise<LogoResolution> {
+  return fetchJson(`${BASE_URL}/logo/${encodeURIComponent(symbol)}`)
+}

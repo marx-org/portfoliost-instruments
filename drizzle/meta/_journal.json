@@ -15,6 +15,13 @@
       "when": 1787566782098,
       "tag": "0001_tearful_misty_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787653266439,
+      "tag": "0002_brave_hawkeye",
+      "breakpoints": true
     }
   ]
 }
