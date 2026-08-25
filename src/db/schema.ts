@@ -1,4 +1,4 @@
-import { index, pgSchema, text, timestamp } from "drizzle-orm/pg-core"
+import { index, integer, pgSchema, text, timestamp } from "drizzle-orm/pg-core"
 
 export const instrumentsSchema = pgSchema("instruments")
 
@@ -42,3 +42,19 @@ export const tickerReference = instrumentsSchema.table(
     index("ticker_reference_isin_idx").on(t.isin),
   ],
 )
+
+/**
+ * Logo cache index (logos.md D35). The row is the index; the binary lives on
+ * disc at `LOGOS_DIR/{file}`. `refresh_after` drives lazy background
+ * revalidation on read; failures never persist (initials serve instead).
+ */
+export const logos = instrumentsSchema.table("logos", {
+  symbol: text("symbol").primaryKey(),
+  source: text("source").notNull(),
+  remoteUrl: text("remote_url").notNull(),
+  file: text("file").notNull(),
+  bytes: integer("bytes").notNull(),
+  sha256: text("sha256").notNull(),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+  refreshAfter: timestamp("refresh_after", { withTimezone: true }).notNull(),
+})
