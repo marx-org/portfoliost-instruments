@@ -388,7 +388,7 @@ function quarterFromDate(date: string): number {
   return month >= 1 && month <= 12 ? Math.floor((month - 1) / 3) + 1 : 0
 }
 
-export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Row[]): Record<string, unknown> {
+export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Row[], currency = "USD"): Record<string, unknown> {
   const sym = symbol.toUpperCase()
   const earnings = earningsRows
     .filter((r) => str(r.symbol)?.toUpperCase() === sym && str(r.report_date))
@@ -417,7 +417,7 @@ export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Ro
     })
     .sort((a, b) => a.date.localeCompare(b.date))
 
-  return { earnings, exDividend }
+  return { earnings, exDividend, currency }
 }
 
 export function toDividends(rows: Row[], currencyFallback = "USD"): Record<string, unknown> {
@@ -445,7 +445,9 @@ export function toProjections(
   quarterly: EpsQuarter[] = [],
 ): Record<string, unknown> {
   const current = quote?.last_price !== undefined ? num(quote.last_price) : num(quote?.current_price)
+  const currency = str(quote?.currency) ?? "USD"
   return {
+    currency,
     priceTarget: consensus
       ? {
           lastUpdated: new Date().toISOString().slice(0, 19),

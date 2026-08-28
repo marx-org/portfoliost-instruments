@@ -479,11 +479,13 @@ export function registerPt2Routes(instruments: Hono) {
         }
       }
       try {
-        const [earningsRows, dividendRows] = await Promise.all([
+        const [earningsRows, dividendRows, profileData] = await Promise.all([
           orEmpty(fetchCalendarEarnings(start, end)),
           orEmpty(fetchCalendarDividends(start, end)),
+          Promise.resolve(fetchProfile(symbol)).catch(() => null),
         ])
-        return c.json(toCalendar(symbol, earningsRows as any[], dividendRows as any[]))
+        const currency = (profileData as Record<string, unknown> | null)?.currency as string ?? "USD"
+        return c.json(toCalendar(symbol, earningsRows as any[], dividendRows as any[], currency))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
