@@ -286,7 +286,7 @@ describe("pt2 routes", () => {
     it("composes profile+quote+metrics into compare snapshot", async () => {
       mocked.fetchProfile.mockResolvedValue({ symbol: "AAPL", name: "Apple Inc.", currency: "USD" })
       mocked.fetchQuote.mockResolvedValue({ last_price: 309.35 })
-      mocked.fetchMetrics.mockResolvedValue({ market_cap: 4514709504000, pe_ratio: 35.47, dividend_yield: 0.44 })
+      mocked.fetchMetrics.mockResolvedValue({ market_cap: 4514709504000, pe_ratio: 35.47, dividend_yield: 0.44, fcf_margin: 28.54, shares_outstanding: 2515201893 })
       const res = await req("/api/instruments/AAPL/compare")
       expect(res.status).toBe(200)
       const body = await res.json()
@@ -294,6 +294,8 @@ describe("pt2 routes", () => {
       expect(body.price).toBe(309.35)
       expect(body.peRatio).toBe(35.47)
       expect(body.marketCap).toBe(4514709504000)
+      expect(body.fcfMargin).toBe(28.54)
+      expect(body.sharesOutstanding).toBe(2515201893)
     })
   })
 

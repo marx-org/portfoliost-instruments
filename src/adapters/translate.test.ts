@@ -9,6 +9,7 @@ import {
   toOverviewMetrics,
   toSearchResponse,
   toProjections,
+  toCompare,
 } from "./translate.js"
 import type { OpenstOhlcvRow } from "./openst-types.js"
 
@@ -212,5 +213,27 @@ describe("toProjections estimate/recommendation blocks", () => {
     expect(out.priceTarget).toMatchObject({ low: null, high: null })
     expect(out.earnings).toMatchObject({ avg: null, periods: expect.any(Array) })
     expect(out.recommendation).toMatchObject({ buy: 0, analysts: null })
+  })
+})
+
+describe("toCompare", () => {
+  it("emits a ResearchCompare-shaped snapshot including fcfMargin and sharesOutstanding", () => {
+    const out = toCompare(
+      { symbol: "AAPL", name: "Apple Inc.", currency: "USD" } as never,
+      { last_price: 309.35 } as never,
+      { pe_ratio: 35.47, fcf_margin: 28.54, shares_outstanding: 2515201893 } as never,
+    )
+    expect(out.symbol).toBe("AAPL")
+    expect(out.price).toBe(309.35)
+    expect(out.peRatio).toBe(35.47)
+    expect(out.fcfMargin).toBe(28.54)
+    expect(out.sharesOutstanding).toBe(2515201893)
+    expect(out.currency).toBe("USD")
+  })
+
+  it("leaves unavailable metrics undefined", () => {
+    const out = toCompare({ symbol: "ZZZ", name: "Z", currency: "USD" } as never, undefined, {} as never)
+    expect(out.fcfMargin).toBeUndefined()
+    expect(out.peRatio).toBeUndefined()
   })
 })

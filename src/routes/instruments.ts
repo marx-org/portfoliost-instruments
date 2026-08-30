@@ -42,6 +42,7 @@ import {
   type Row,
 } from "../adapters/translate.js"
 import type { OpenstProfile, OpenstQuote, OpenstOhlcvRow, OpenstConsensus } from "../adapters/openst-types.js"
+import type { components } from "../generated/api-types.js"
 import {
   ErrorResponseSchema,
   InstrumentSearchResponseSchema,
@@ -51,6 +52,9 @@ import {
   PriceHistorySchema,
   InstrumentMetricsSchema,
   InstrumentOverviewMetricsSchema,
+  ResearchCompareSchema,
+  PeersResponseSchema,
+  OwnershipDataSchema,
 } from "../schemas/instruments.js"
 
 const UNAUTHORIZED = {
@@ -107,7 +111,7 @@ export function createInstrumentsRoutes() {
     }),
     async (c) => {
       const q = (c.req.query("q") ?? c.req.query("query") ?? "").trim()
-      if (!q) return c.json({ count: 0, results: [] })
+      if (!q) return c.json({ count: 0, results: [] } satisfies components["schemas"]["InstrumentSearchResponse"])
 
       // Primary source: local ticker reference table (synced from
       // adanos/free-ticker-database). Falls back to the provider tier when
@@ -178,7 +182,7 @@ export function createInstrumentsRoutes() {
       const symbol = providerSymbol(routeSymbol)
       try {
         const profile = (await fetchProfile(symbol)) as OpenstProfile
-        const out = toInstrumentProfile(symbol, profile)
+        const out: ReturnType<typeof toInstrumentProfile> = toInstrumentProfile(symbol, profile)
         // Fill identity gaps (ISIN, sector, country, exchange) from the
         // local reference table when the provider profile lacks them.
         try {
@@ -407,7 +411,7 @@ export function createInstrumentsRoutes() {
       summary: "Ownership (empty until a provider covers it — FMP premium)",
       operationId: "getOwnership",
       responses: {
-        200: { description: "Ownership", content: { "application/json": { schema: z.looseObject({}) } } },
+        200: { description: "Ownership", content: { "application/json": { schema: OwnershipDataSchema } } },
         401: UNAUTHORIZED,
       },
     }),
@@ -572,7 +576,7 @@ export function registerPt2Routes(instruments: Hono) {
       responses: {
         200: {
           description: "Comparison snapshot",
-          content: { "application/json": { schema: z.looseObject({}) } },
+          content: { "application/json": { schema: ResearchCompareSchema } },
         },
         401: UNAUTHORIZED,
         502: UPSTREAM_ERROR,
@@ -730,7 +734,7 @@ export function registerPt2Routes(instruments: Hono) {
       summary: "Same-sector peers composed into compare rows",
       operationId: "getPeers",
       responses: {
-        200: { description: "Peers", content: { "application/json": { schema: z.looseObject({}) } } },
+        200: { description: "Peers", content: { "application/json": { schema: PeersResponseSchema } } },
         401: UNAUTHORIZED,
         502: UPSTREAM_ERROR,
       },
