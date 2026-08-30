@@ -4,6 +4,9 @@ import type {
   OpenstOhlcvRow,
   OpenstConsensus,
 } from "./openst-types.js"
+import type { components } from "../generated/api-types.js"
+
+type S = components["schemas"]
 
 export type Row = Record<string, unknown>
 
@@ -58,7 +61,7 @@ export function marketPhase(now = new Date()): { session: string; phase: string 
   return { session: "closed", phase: "closed" }
 }
 
-export function toInstrumentDetail(symbol: string, profile: OpenstProfile): Record<string, unknown> {
+export function toInstrumentDetail(symbol: string, profile: OpenstProfile): S["InstrumentDetail"] {
   return {
     id: `${symbol.toUpperCase()}.US`,
     symbol: symbol.toUpperCase(),
@@ -69,7 +72,7 @@ export function toInstrumentDetail(symbol: string, profile: OpenstProfile): Reco
   }
 }
 
-export function toInstrumentProfile(symbol: string, p: OpenstProfile): Record<string, unknown> {
+export function toInstrumentProfile(symbol: string, p: OpenstProfile): S["InstrumentProfile"] {
   const marketCap = num(pick(p as Row, "market_cap"))
   const currency = str(p.currency) ?? "USD"
   return {
@@ -100,7 +103,7 @@ export function toInstrumentProfile(symbol: string, p: OpenstProfile): Record<st
   }
 }
 
-export function toQuote(q: OpenstQuote): Record<string, unknown> {
+export function toQuote(q: OpenstQuote): S["Quote"] {
   const lastPrice = num(pick(q as Row, "last_price")) ?? 0
   const prevClose = num(pick(q as Row, "prev_close")) ?? lastPrice
   let percentChange = num(q.change_percent)
@@ -142,7 +145,7 @@ function dayStartEpoch(date: string): number {
 export function toPriceHistory(
   rows: OpenstOhlcvRow[],
   resolution: "daily" | "monthly",
-): Record<string, unknown> {
+): S["PriceHistory"] {
   if (resolution === "monthly") {
     const buckets = new Map<string, OpenstOhlcvRow[]>()
     for (const r of rows) {
@@ -177,7 +180,7 @@ export function toInstrumentMetrics(
   symbol: string,
   metrics: Row,
   consensus?: OpenstConsensus,
-): Record<string, unknown> {
+): S["InstrumentMetrics"] {
   const n = (k: string) => num(metrics[k])
   const targetMean =
     consensus?.target_consensus ?? consensus?.target_median
@@ -237,7 +240,7 @@ export function toInstrumentMetrics(
   }
 }
 
-export function toOverviewMetrics(symbol: string, metrics: Row, profile?: OpenstProfile): Record<string, unknown> {
+export function toOverviewMetrics(symbol: string, metrics: Row, profile?: OpenstProfile): S["InstrumentOverviewMetrics"] {
   const n = (k: string) => num(metrics[k])
   return {
     symbol: symbol.toUpperCase(),
@@ -261,7 +264,7 @@ export interface TickerReferenceRow {
   yahooSuffix?: string | null
 }
 
-export function toReferenceSearchResponse(rows: TickerReferenceRow[]): Record<string, unknown> {
+export function toReferenceSearchResponse(rows: TickerReferenceRow[]): S["InstrumentSearchResponse"] {
   return {
     count: rows.length,
     results: rows.map((r) => ({
@@ -277,7 +280,7 @@ export function toReferenceSearchResponse(rows: TickerReferenceRow[]): Record<st
   }
 }
 
-export function toSearchResponse(rows: Array<Record<string, unknown>>): Record<string, unknown> {
+export function toSearchResponse(rows: Array<Record<string, unknown>>): S["InstrumentSearchResponse"] {
   const results = rows
     .map((r) => ({
       symbol: str(r.symbol),
@@ -310,7 +313,7 @@ export function toFundamentals(
   income: Row[],
   balance: Row[],
   cash: Row[],
-): Record<string, unknown> {
+): S["FundamentalsData"] {
   const year = (r: Row): number | undefined => {
     const fy = num(pick(r, "fiscal_year", "calendar_year"))
     if (fy !== undefined) return fy
@@ -388,7 +391,7 @@ function quarterFromDate(date: string): number {
   return month >= 1 && month <= 12 ? Math.floor((month - 1) / 3) + 1 : 0
 }
 
-export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Row[], currency = "USD"): Record<string, unknown> {
+export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Row[], currency = "USD"): S["CalendarData"] {
   const sym = symbol.toUpperCase()
   const earnings = earningsRows
     .filter((r) => str(r.symbol)?.toUpperCase() === sym && str(r.report_date))
@@ -420,30 +423,40 @@ export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Ro
   return { earnings, exDividend, currency }
 }
 
-export function toDividends(rows: Row[], currencyFallback = "USD"): Record<string, unknown> {
+export function toDividends(rows: Row[], currencyFallback = "USD"): S["DividendsData"] {
+  type DividendRow = {
+    date: string
+    year: number
+    amount: number
+    currency: string
+    type: string
+  }
   const history = rows
     .map((r) => {
       const date = str(r.date) ?? str(r.ex_dividend_date)
       const amount = num(r.amount)
       if (!date || amount === undefined) return null
-      return {
+      const row: DividendRow = {
         date,
         year: Number(date.slice(0, 4)),
         amount,
         currency: str(r.currency) ?? currencyFallback,
         type: str(r.type) ?? "regular",
       }
+      return row
     })
-    .filter(Boolean)
+    .filter((r): r is DividendRow => r !== null)
   return { history }
 }
+
+type ProjectionsResult = S["ProjectionsData"]
 
 export function toProjections(
   symbol: string,
   consensus: OpenstConsensus | undefined,
   quote: OpenstQuote | undefined,
   quarterly: EpsQuarter[] = [],
-): Record<string, unknown> {
+): ProjectionsResult {
   const current = quote?.last_price !== undefined ? num(quote.last_price) : num(quote?.current_price)
   const currency = str(quote?.currency) ?? "USD"
   return {
@@ -516,7 +529,7 @@ export function toCompare(
   profile: OpenstProfile,
   quote: OpenstQuote | undefined,
   metrics: Row,
-): Record<string, unknown> {
+): S["ResearchCompare"] {
   const price = quote?.last_price !== undefined ? num(quote.last_price) : num(metrics.market_cap)
   return {
     symbol: (str(profile.symbol) ?? "").toUpperCase(),
@@ -535,9 +548,10 @@ export function toCompare(
     operatingMargin: num(metrics.operating_margin),
     evToEbitda: num(metrics.ev_to_ebitda),
     evToSales: num(metrics.ev_to_sales),
+    fcfMargin: num(pick(metrics, "fcf_margin", "fcfMargin")),
     netIncome: num(metrics.net_income),
     revenue: num(metrics.revenue),
-    sharesOutstanding: num(metrics.shares_outstanding),
+    sharesOutstanding: num(pick(metrics, "shares_outstanding", "sharesOutstanding")),
     currency: str(profile.currency) ?? "USD",
   }
 }
@@ -547,7 +561,7 @@ export function toHistoricalPrice(
   date: string,
   rows: OpenstOhlcvRow[],
   currencyFallback = "USD",
-): Record<string, unknown> {
+): S["HistoricalPrice"] {
   const target = date.slice(0, 10)
   const candidates = rows.filter((r) => r.date <= target).sort((a, b) => b.date.localeCompare(a.date))
   const row = candidates[0]
@@ -563,12 +577,14 @@ export function toHistoricalPrice(
 
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
+type SeasonalityResult = S["SeasonalityData"]
+
 export function toSeasonality(
   symbol: string,
   years: number,
   metric: "avg" | "median" | "min" | "max",
   rows: OpenstOhlcvRow[],
-): Record<string, unknown> {
+): SeasonalityResult {
   // Group month-end closes by calendar month across the window, then reduce.
   const monthly: number[][] = Array.from({ length: 12 }, () => [])
   const byMonth = new Map<string, OpenstOhlcvRow>()
@@ -626,7 +642,7 @@ export function quarterRevenue(q: EpsQuarter): number | undefined {
 /** Derive EPS surprise rows from quarterly income statements. With no analyst
  * estimates available from the provider tier, the estimate is the prior-year
  * quarter's actual (a YoY baseline); surprise fields follow from that. */
-export function toEpsSurprises(symbol: string, quarters: EpsQuarter[]): Record<string, unknown> {
+export function toEpsSurprises(symbol: string, quarters: EpsQuarter[]): S["EPSSurprises"] {
   const sorted = [...quarters].sort((a, b) => str(a.period_ending)!.localeCompare(str(b.period_ending)!))
   const rows = sorted.map((q, i): Row => {
     const eps = num(q.diluted_earnings_per_share)
@@ -670,7 +686,7 @@ function shiftYear(date: string, delta: number): string {
 
 /** IR events derived from real reported quarters — no transcript/audio
  * providers exist in the tier, so events carry no audioUrl. */
-export function toInvestorRelations(symbol: string, quarters: EpsQuarter[]): Array<Record<string, unknown>> {
+export function toInvestorRelations(symbol: string, quarters: EpsQuarter[]): Array<S["InvestorRelationEvent"]> {
   const sym = symbol.toUpperCase()
   return [...quarters]
     .sort((a, b) => str(b.period_ending)!.localeCompare(str(a.period_ending)!))
@@ -692,7 +708,9 @@ export function toInvestorRelations(symbol: string, quarters: EpsQuarter[]): Arr
     })
 }
 
-export function toIrTranscript(eventId: string, symbol: string): Record<string, unknown> {
+type IrTranscriptResult = S["IRTranscript"]
+
+export function toIrTranscript(eventId: string, symbol: string): IrTranscriptResult {
   const m = eventId.match(/_(\d{4})-(\d{2})/)
   const year = m ? Number(m[1]) : null
   const quarter = m ? Math.ceil(Number(m[2]) / 3) : null

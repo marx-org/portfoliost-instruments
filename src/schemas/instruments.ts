@@ -133,3 +133,48 @@ export const InstrumentOverviewMetricsSchema = z.looseObject({
   cash: z.number().nullish(),
   netDebt: z.number().nullish(),
 })
+
+export const ResearchCompareSchema = z.looseObject({
+  symbol: z.string().optional(),
+  name: z.string().optional(),
+  price: z.number().nullish(),
+  marketCap: z.number().nullish(),
+  peRatio: z.number().nullish(),
+  forwardPe: z.number().nullish(),
+  pbRatio: z.number().nullish(),
+  psRatio: z.number().nullish(),
+  dividendYield: z.number().nullish(),
+  revenueGrowth: z.number().nullish(),
+  netMargin: z.number().nullish(),
+  roe: z.number().nullish(),
+  grossMargin: z.number().nullish(),
+  operatingMargin: z.number().nullish(),
+  evToEbitda: z.number().nullish(),
+  evToSales: z.number().nullish(),
+  fcfMargin: z.number().nullish(),
+  netIncome: z.number().nullish(),
+  revenue: z.number().nullish(),
+  sharesOutstanding: z.number().nullish(),
+  currency: z.string().nullish(),
+})
+
+export const PeersResponseSchema = z.looseObject({
+  symbol: z.string().optional(),
+  items: z.array(ResearchCompareSchema).optional(),
+})
+
+export const HoldingGroupSchema = z.object({
+  date: z.string().optional(),
+  holdingPercentage: z.number().nullish(),
+  holdersCount: z.number().nullish(),
+  sumOfCurrentPositions: z.number().nullish(),
+  sumOfCurrentPositionsValue: z.number().nullish(),
+})
+
+export const OwnershipDataSchema = z.looseObject({
+  symbol: z.string().optional(),
+  institutional: z.array(HoldingGroupSchema).optional(),
+  mutualFund: z.array(HoldingGroupSchema).optional(),
+  insider: z.array(HoldingGroupSchema).optional(),
+  insiderTransactions: z.array(z.record(z.string(), z.unknown())).optional(),
+})
