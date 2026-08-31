@@ -1701,7 +1701,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get last import log for all stooq datasets */
+        /**
+         * Get last import log for all stooq datasets
+         * @description Returns one entry per StooqDataset sourced from admin.job_run. No cross-module call — importedAt = started_at until the post-import hook (open item D53) writes confirmed latestDate/rowsDeleted values.
+         */
         get: operations["getStooqImportLog"];
         put?: never;
         post?: never;
@@ -1817,11 +1820,15 @@ export interface components {
             /** Format: date-time */
             updatedAt: string;
             isDemoUser: boolean;
+            /** @description User's last 10 searched stock symbols, most recent first */
+            recentSearches?: string[];
         };
         UpdateProfileRequest: {
             firstName?: string | null;
             lastName?: string | null;
             language?: string;
+            /** @description User's last 10 searched stock symbols, most recent first */
+            recentSearches?: string[];
         };
         UserPreferences: {
             /** Format: uuid */
@@ -3018,19 +3025,20 @@ export interface components {
                 failed?: number;
             };
         };
+        /** @description Per-dataset import history sourced from admin.job_run. importedAt reflects started_at (job trigger time) until the post-import hook writes a confirmed value. latestDate and rowsDeleted are null until the post-import hook is wired (open item D53). */
         StooqImportLogEntry: {
             dataset: components["schemas"]["StooqDataset"];
             /**
              * Format: date
-             * @description MAX(date) confirmed from foreign table after last import
+             * @description MAX(date) confirmed from stooq foreign table after import (written by post-import hook)
              */
             latestDate?: string | null;
             /**
              * Format: date-time
-             * @description Timestamp of the last successful import hook call
+             * @description When the import job was started (started_at); updated to hook-call time once post-import hook is wired
              */
             importedAt?: string | null;
-            /** @description Overflow rows cleaned up in the last run */
+            /** @description Overflow rows cleaned up in the last run (written by post-import hook) */
             rowsDeleted?: number | null;
         };
         AdminUser: {
