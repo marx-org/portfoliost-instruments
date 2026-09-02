@@ -22,6 +22,13 @@
       "when": 1787653266439,
       "tag": "0002_brave_hawkeye",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788384742750,
+      "tag": "0003_red_paladin",
+      "breakpoints": true
     }
   ]
 }
