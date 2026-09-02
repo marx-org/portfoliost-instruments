@@ -1,4 +1,4 @@
-import { index, integer, pgSchema, text, timestamp } from "drizzle-orm/pg-core"
+import { date, index, integer, numeric, pgSchema, primaryKey, text, timestamp } from "drizzle-orm/pg-core"
 
 export const instrumentsSchema = pgSchema("instruments")
 
@@ -58,3 +58,71 @@ export const logos = instrumentsSchema.table("logos", {
   fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
   refreshAfter: timestamp("refresh_after", { withTimezone: true }).notNull(),
 })
+
+/**
+ * Price history overflow store (price-data-architecture H2). Prices NOT
+ * covered by stooq (recent tail after the last import + symbols stooq does
+ * not carry) live here. Only `close` is stored — all downstream consumers
+ * (analytics, charts) render close-price series. The `price_bars_all` view
+ * unifies this with the stooq foreign tables in one query.
+ */
+export const priceBars = instrumentsSchema.table(
+  "price_bars",
+  {
+    symbol: text("symbol").notNull(), // system format: AAPL, KRU.WA, RHM.DE
+    date: date("date").notNull(),
+    close: numeric("close", { precision: 28, scale: 8 }).notNull(),
+    source: text("source").notNull().default("openst"),
+  },
+  (t) => [primaryKey({ columns: [t.symbol, t.date] })],
+)
+
+/**
+ * Per-symbol fetch circuit breaker (price-data-architecture H2): after a
+ * fetch failure the read endpoint serves stale data for an hour before
+ * retrying upstream, instead of hammering openst on every request.
+ */
+export const priceBarMetadata = instrumentsSchema.table("price_bar_metadata", {
+  symbol: text("symbol").primaryKey(),
+  lastFetchedAt: timestamp("last_fetched_at", { withTimezone: true }),
+  fetchStatus: text("fetch_status").notNull().default("ok"), // 'ok' | 'failed'
+})
+
+/**
+ * Detected split discontinuities at the stooq/overflow boundary awaiting
+ * admin review (price-data-architecture H2/H10). `suggested_factor` is NULL
+ * when the ratio is ambiguous (extreme move, not a clean split).
+ */
+export const splitCandidates = instrumentsSchema.table(
+  "split_candidates",
+  {
+    symbol: text("symbol").notNull(),
+    detectedAt: date("detected_at").notNull(),
+    lastStooqDate: date("last_stooq_date"),
+    lastStooqClose: numeric("last_stooq_close", { precision: 28, scale: 8 }),
+    firstOverflowDate: date("first_overflow_date"),
+    firstOverflowClose: numeric("first_overflow_close", { precision: 28, scale: 8 }),
+    ratio: numeric("ratio", { precision: 10, scale: 6 }),
+    suggestedFactor: numeric("suggested_factor", { precision: 10, scale: 6 }),
+    suggestedRatio: text("suggested_ratio"),
+    status: text("status").notNull().default("pending"), // 'pending'|'applied'|'dismissed'
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    reviewedBy: text("reviewed_by"),
+  },
+  (t) => [primaryKey({ columns: [t.symbol, t.detectedAt] })],
+)
+
+/**
+ * Admin-approved split factors applied by the `price_bars_all` view until the
+ * next stooq import heals the boundary (price-data-architecture H2/H10).
+ */
+export const splitAdjustments = instrumentsSchema.table(
+  "split_adjustments",
+  {
+    symbol: text("symbol").notNull(),
+    detectedAt: date("detected_at").notNull(),
+    factor: numeric("factor", { precision: 10, scale: 6 }).notNull(),
+    splitRatio: text("split_ratio"),
+  },
+  (t) => [primaryKey({ columns: [t.symbol, t.detectedAt] })],
+)

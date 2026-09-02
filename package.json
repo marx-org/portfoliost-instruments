@@ -10,6 +10,7 @@
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:pricebars:sim": "tsx src/scripts/price-bars-sim.ts",
     "tickerref:sync": "node dist/scripts/tickerref-sync.js",
     "tickerref:sync:dev": "tsx src/scripts/tickerref-sync.ts",
     "gen:openapi": "tsx src/gen-openapi.ts",
