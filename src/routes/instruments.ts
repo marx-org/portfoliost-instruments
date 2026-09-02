@@ -3,6 +3,7 @@ import { z } from "zod"
 import { openApi } from "hono-zod-openapi"
 import { userIdentityMiddleware } from "../auth.js"
 import { getDb } from "../db/index.js"
+import { getPriceBarSeries } from "../services/price-bars.js"
 import { providerSymbol, symbolSuffix } from "../adapters/symbol.js"
 import { getExchangeBySuffix } from "../db/tickerref-queries.js"
 import { searchTickerReference } from "../db/tickerref-queries.js"
@@ -59,6 +60,11 @@ import {
 
 const UNAUTHORIZED = {
   description: "Unauthorized",
+  content: { "application/json": { schema: ErrorResponseSchema } },
+} as const
+
+const BAD_REQUEST = {
+  description: "Bad request",
   content: { "application/json": { schema: ErrorResponseSchema } },
 } as const
 
@@ -400,6 +406,56 @@ export function createInstrumentsRoutes() {
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
+    },
+  )
+
+  instruments.get(
+    "/:symbol/price-bars",
+    openApi({
+      tags: ["Instruments"],
+      summary: "Daily close-price series over a date range (stooq + overflow)",
+      operationId: "getPriceBars",
+      parameters: [
+        { name: "from", in: "query", required: true, schema: { type: "string", format: "date" } },
+        { name: "to", in: "query", required: true, schema: { type: "string", format: "date" } },
+      ],
+      responses: {
+        200: {
+          description: "Daily close-price series",
+          content: {
+            "application/json": {
+              schema: z.object({
+                symbol: z.string(),
+                timeframe: z.string(),
+                stale: z.boolean(),
+                currency: z.string().nullable(),
+                dates: z.array(z.string()),
+                closes: z.array(z.number()),
+              }),
+            },
+          },
+        },
+        400: BAD_REQUEST,
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const symbol = c.req.param("symbol").toUpperCase()
+      const from = c.req.query("from")
+      const to = c.req.query("to")
+      if (!from || !to || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+        return c.json({ error: "BadRequest", message: "from and to must be YYYY-MM-DD" }, 400)
+      }
+      const series = await getPriceBarSeries(getDb(), symbol, from, to)
+      return c.json({
+        symbol: series.symbol,
+        timeframe: "daily",
+        stale: series.stale,
+        currency: series.currency,
+        dates: series.dates,
+        closes: series.closes,
+      })
     },
   )
 

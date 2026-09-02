@@ -781,6 +781,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/instruments/{symbol}/price-bars": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Instrument symbol, e.g. AAPL or AAPL.US */
+                symbol: components["parameters"]["symbol"];
+            };
+            cookie?: never;
+        };
+        /** Daily close-price series for a symbol over a date range (stooq + overflow) */
+        get: operations["getPriceBars"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/instruments/{symbol}/investor-relations": {
         parameters: {
             query?: never;
@@ -2331,6 +2351,14 @@ export interface components {
             price?: number;
             currency?: string;
         };
+        PriceBarSeries: {
+            symbol: string;
+            timeframe: string;
+            stale: boolean;
+            currency?: string | null;
+            dates: string[];
+            closes: number[];
+        };
         InvestorRelationEvent: {
             type?: string;
             id?: string;
@@ -2994,7 +3022,7 @@ export interface components {
          * @description Identifies a stooq bulk-download dataset (region + timeframe)
          * @enum {string}
          */
-        StooqDataset: "daily_world" | "hourly_world" | "5min_world" | "daily_us" | "hourly_us" | "5min_us" | "daily_uk" | "hourly_uk" | "5min_uk" | "daily_jp" | "daily_hk" | "hourly_hk" | "5min_hk" | "daily_pl" | "hourly_pl" | "5min_pl" | "daily_hu" | "hourly_hu" | "5min_hu" | "daily_macro";
+        StooqDataset: "daily_world" | "daily_us" | "daily_uk" | "daily_jp" | "daily_hk" | "daily_pl" | "daily_hu" | "daily_macro";
         StooqImportUploadResponse: {
             /** Format: uuid */
             uploadId: string;
@@ -4123,6 +4151,32 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HistoricalPrice"];
+                };
+            };
+        };
+    };
+    getPriceBars: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+            };
+            header?: never;
+            path: {
+                /** @description Instrument symbol, e.g. AAPL or AAPL.US */
+                symbol: components["parameters"]["symbol"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Daily close-price series */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PriceBarSeries"];
                 };
             };
         };
