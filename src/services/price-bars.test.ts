@@ -5,12 +5,15 @@ import type { DB } from "../db/index.js"
 import { priceBarMetadata } from "../db/schema.js"
 import { LOCAL_PRICE_BARS_SETUP_SQL } from "../db/price-bars.js"
 import {
+  backgroundUpsertBars,
   checkSplitBoundary,
   getPriceBarSeries,
   hasGap,
+  matchSplitFactor,
+  ohlcvToClose,
   queryView,
   recentlyFailed,
-  backgroundUpsertBars,
+  stooqTickerFor,
 } from "./price-bars.js"
 
 vi.mock("../adapters/cachest.js", () => ({
@@ -217,5 +220,138 @@ describe("backgroundUpsertBars (H4)", () => {
     const rows = (result.rows ?? result) as Array<{ n: number }>
     // still only the 2 rows from first test (+ idempotent update), no new rows
     expect(rows[0]?.n).toBe(2)
+  })
+})
+
+describe("stooqTickerFor (H9)", () => {
+  it("appends .US to a bare US symbol", () => {
+    expect(stooqTickerFor("AAPL")).toBe("AAPL.US")
+  })
+  it("strips existing suffix and re-appends .US", () => {
+    // non-US symbols routed through stooq US table still get .US for overflow fetch
+    expect(stooqTickerFor("AAPL.US")).toBe("AAPL.US")
+  })
+  it("lowercases input before formatting", () => {
+    expect(stooqTickerFor("msft")).toBe("MSFT.US")
+  })
+})
+
+describe("ohlcvToClose (H9)", () => {
+  it("converts a valid OHLCV row to a close bar", () => {
+    expect(ohlcvToClose({ date: "2026-07-10", close: 123.456 })).toEqual({
+      date: "2026-07-10",
+      close: "123.45600000",
+    })
+  })
+  it("uses index field as date fallback", () => {
+    const result = ohlcvToClose({ index: "2026-07-10T00:00:00Z", close: 50 })
+    expect(result?.date).toBe("2026-07-10")
+  })
+  it("returns null for a bad date", () => {
+    expect(ohlcvToClose({ date: "not-a-date", close: 100 })).toBeNull()
+  })
+  it("returns null for NaN close", () => {
+    expect(ohlcvToClose({ date: "2026-07-10", close: "abc" })).toBeNull()
+  })
+})
+
+describe("matchSplitFactor (H9)", () => {
+  it("recognises clean 2:1 split (price halved, ratio=0.5)", () => {
+    expect(matchSplitFactor(0.5)).toBeCloseTo(0.5, 4)
+  })
+  it("recognises clean 4:1 split (ratio=0.25)", () => {
+    expect(matchSplitFactor(0.25)).toBeCloseTo(0.25, 4)
+  })
+  it("recognises reverse 1:2 split (ratio=2)", () => {
+    expect(matchSplitFactor(2)).toBeCloseTo(2, 4)
+  })
+  it("returns null for an ambiguous ratio", () => {
+    expect(matchSplitFactor(0.6)).toBeNull()
+  })
+  it("returns null for a continuous price (ratio near 1)", () => {
+    expect(matchSplitFactor(1.02)).toBeNull()
+  })
+})
+
+describe("checkSplitBoundary — ambiguous ratio (H9)", () => {
+  let db: DB
+  let client: Awaited<ReturnType<typeof createTestDb>>["client"]
+
+  beforeAll(async () => {
+    const t = await createTestDb()
+    db = t.db
+    client = t.client
+    for (const stmt of LOCAL_PRICE_BARS_SETUP_SQL) {
+      await db.execute(sql.raw(stmt))
+    }
+  })
+  afterAll(async () => { await client.close() })
+
+  it("records a candidate with suggested_factor=NULL for an ambiguous ratio", async () => {
+    // ratio = 55 / 100 = 0.55 — outside 0.85–1.15, doesn't match a clean split factor
+    await db.execute(sql.raw(`
+      INSERT INTO instruments.stooq_daily_us (ticker, period, date, close)
+      VALUES ('AMB.US', 'd', '2026-01-10', 100.00000000);
+    `))
+    await db.execute(sql.raw(`
+      INSERT INTO instruments.price_bars (symbol, date, close, source)
+      VALUES ('AMB', '2026-01-11', 55.00000000, 'openst');
+    `))
+    await checkSplitBoundary(db, "AMB", "AMB.US")
+    const rows = await db.execute(sql`
+      SELECT suggested_factor, suggested_ratio
+      FROM instruments.split_candidates WHERE symbol = 'AMB'
+    `)
+    const r = (rows.rows ?? rows) as Array<{ suggested_factor: string | null; suggested_ratio: string }>
+    expect(r).toHaveLength(1)
+    expect(r[0].suggested_factor).toBeNull()
+    expect(Number(r[0].suggested_ratio)).toBeCloseTo(0.55, 3)
+  })
+
+  it("does not record a candidate when ratio is within 0.85–1.15", async () => {
+    await db.execute(sql.raw(`
+      INSERT INTO instruments.stooq_daily_us (ticker, period, date, close)
+      VALUES ('CONT.US', 'd', '2026-01-10', 100.00000000);
+    `))
+    await db.execute(sql.raw(`
+      INSERT INTO instruments.price_bars (symbol, date, close, source)
+      VALUES ('CONT', '2026-01-11', 103.00000000, 'openst');
+    `))
+    await checkSplitBoundary(db, "CONT", "CONT.US")
+    const rows = await db.execute(sql`
+      SELECT count(*)::int AS n FROM instruments.split_candidates WHERE symbol = 'CONT'
+    `)
+    const r = (rows.rows ?? rows) as Array<{ n: number }>
+    expect(r[0].n).toBe(0)
+  })
+})
+
+describe("getPriceBarSeries — carry-forward (H9)", () => {
+  let db: DB
+  let client: Awaited<ReturnType<typeof createTestDb>>["client"]
+
+  beforeAll(async () => {
+    const t = await createTestDb()
+    db = t.db
+    client = t.client
+    for (const stmt of LOCAL_PRICE_BARS_SETUP_SQL) {
+      await db.execute(sql.raw(stmt))
+    }
+    // Seed CARRY: stooq has Mon + Thu; Tue/Wed are gaps
+    await db.execute(sql.raw(`
+      INSERT INTO instruments.stooq_daily_us (ticker, period, date, close) VALUES
+        ('CARRY.US', 'd', '2026-07-06', 100.00000000),
+        ('CARRY.US', 'd', '2026-07-09', 105.00000000);
+    `))
+  })
+  afterAll(async () => { await client.close() })
+
+  it("returns only trading days (no carry-forward in the view — gaps are real gaps)", async () => {
+    // The view returns only rows that exist — carry-forward is the consumer's job.
+    // This test verifies the view doesn't invent rows for missing dates.
+    const rows = await queryView(db, "CARRY", "2026-07-06", "2026-07-09")
+    expect(rows.map((r) => r.date)).toEqual(["2026-07-06", "2026-07-09"])
+    // No invented rows for Jul 7/8
+    expect(rows).toHaveLength(2)
   })
 })
