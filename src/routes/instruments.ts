@@ -3,7 +3,7 @@ import { z } from "zod"
 import { openApi } from "hono-zod-openapi"
 import { userIdentityMiddleware } from "../auth.js"
 import { getDb } from "../db/index.js"
-import { getPriceBarSeries } from "../services/price-bars.js"
+import { getPriceBarSeries, backgroundUpsertBars } from "../services/price-bars.js"
 import { providerSymbol, symbolSuffix } from "../adapters/symbol.js"
 import { getExchangeBySuffix } from "../db/tickerref-queries.js"
 import { searchTickerReference } from "../db/tickerref-queries.js"
@@ -332,6 +332,8 @@ export function createInstrumentsRoutes() {
         // has data: 11 years of daily bars, 20 years of monthly bars.
         const { start, end } = resolutionParam === "monthly" ? todayRange(7300) : todayRange(4018)
         const rows = (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
+        // H4: background write-through — accumulates price_bars organically
+        backgroundUpsertBars(getDb(), c.req.param("symbol").toUpperCase(), rows)
         const history = toPriceHistory(rows, resolutionParam)
 
         // Benchmarks are liquid ETF proxies fetched over the same window and
@@ -395,6 +397,8 @@ export function createInstrumentsRoutes() {
         if (date) {
           const { start, end } = dateRange(date)
           const rows = (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
+          // H4: background write-through
+          backgroundUpsertBars(getDb(), c.req.param("symbol").toUpperCase(), rows)
           const last = rows[rows.length - 1]
           if (!last) {
             return c.json({ error: "NotFound", message: `No price found for ${symbol} on or before ${date}` }, 404)

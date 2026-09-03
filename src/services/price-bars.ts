@@ -268,3 +268,30 @@ export async function getPriceBarSeries(
     closes: rows.map((r) => Number(r.close)),
   }
 }
+
+/**
+ * H4 — passive write-through.
+ *
+ * Called fire-and-forget (non-blocking) after a `/history` or `/price?date=`
+ * response is served from openst. Upserts daily close bars into `price_bars`
+ * so the overflow table accumulates organically for well-queried symbols,
+ * without any dedicated scheduler.
+ *
+ * Errors are swallowed — the write-through is best-effort and must never
+ * affect the response already sent to the client.
+ */
+export function backgroundUpsertBars(
+  db: DB,
+  symbol: string,
+  rows: Array<{ date: string; close: number | string }>,
+): void {
+  if (rows.length === 0) return
+  const bars = rows
+    .map((r) => ({
+      date: String(r.date).slice(0, 10),
+      close: Number(r.close).toFixed(8),
+    }))
+    .filter((b) => /^\d{4}-\d{2}-\d{2}$/.test(b.date) && Number.isFinite(Number(b.close)))
+  if (bars.length === 0) return
+  void upsertOverflowBars(db, symbol, bars).catch(() => undefined)
+}
