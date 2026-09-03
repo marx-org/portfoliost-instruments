@@ -10,6 +10,7 @@ import {
   hasGap,
   queryView,
   recentlyFailed,
+  backgroundUpsertBars,
 } from "./price-bars.js"
 
 vi.mock("../adapters/cachest.js", () => ({
@@ -154,5 +155,67 @@ describe("price-bars (H3) service", () => {
       select count(*)::int as n from instruments.split_candidates where symbol = 'ORCL'
     `)
     expect(rows.rows[0].n).toBe(0)
+  })
+})
+
+describe("backgroundUpsertBars (H4)", () => {
+  let db: DB
+  let client: Awaited<ReturnType<typeof createTestDb>>["client"]
+
+  beforeAll(async () => {
+    const t = await createTestDb()
+    db = t.db
+    client = t.client
+    for (const stmt of LOCAL_PRICE_BARS_SETUP_SQL) {
+      await db.execute(sql.raw(stmt))
+    }
+  })
+
+  afterAll(async () => {
+    await client.close()
+  })
+
+  it("persists daily close bars into price_bars from an OHLCV response", async () => {
+    backgroundUpsertBars(db, "TSLA", [
+      { date: "2026-08-01", close: 210.5 },
+      { date: "2026-08-04", close: 215.0 },
+    ])
+    // give the async write a tick to complete
+    await new Promise((r) => setTimeout(r, 50))
+    const result = await db.execute(sql`
+      select date, close from instruments.price_bars
+      where symbol = 'TSLA' order by date
+    `)
+    const rows = (result.rows ?? result) as Array<{ date: string; close: string }>
+    expect(rows.map((r) => [r.date, Number(r.close)])).toEqual([
+      ["2026-08-01", 210.5],
+      ["2026-08-04", 215.0],
+    ])
+  })
+
+  it("is idempotent — duplicate rows update close in place", async () => {
+    backgroundUpsertBars(db, "TSLA", [{ date: "2026-08-01", close: 211.0 }])
+    await new Promise((r) => setTimeout(r, 50))
+    const result = await db.execute(sql`
+      select close from instruments.price_bars
+      where symbol = 'TSLA' and date = '2026-08-01'
+    `)
+    const rows = (result.rows ?? result) as Array<{ close: string }>
+    expect(Number(rows[0]?.close)).toBe(211.0)
+  })
+
+  it("silently skips rows with invalid dates or closes", async () => {
+    // should not throw
+    backgroundUpsertBars(db, "TSLA", [
+      { date: "bad-date", close: 100 },
+      { date: "2026-08-05", close: NaN },
+    ])
+    await new Promise((r) => setTimeout(r, 50))
+    const result = await db.execute(sql`
+      select count(*)::int as n from instruments.price_bars where symbol = 'TSLA'
+    `)
+    const rows = (result.rows ?? result) as Array<{ n: number }>
+    // still only the 2 rows from first test (+ idempotent update), no new rows
+    expect(rows[0]?.n).toBe(2)
   })
 })
