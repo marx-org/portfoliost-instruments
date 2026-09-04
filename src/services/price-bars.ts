@@ -11,6 +11,7 @@ import { eq, sql } from "drizzle-orm"
 import type { DB } from "../db/index.js"
 import { priceBarMetadata, priceBars, splitCandidates } from "../db/schema.js"
 import { fetchOhlcv } from "../adapters/cachest.js"
+import { providerSymbol } from "../adapters/symbol.js"
 
 const STALE_AFTER_DAYS = 3
 const COOLDOWN_MS = 60 * 60 * 1000 // retry upstream at most hourly after a failure
@@ -225,10 +226,11 @@ export async function getPriceBarSeries(
     if (recentlyFailed(meta, now)) {
       stale = true
     } else {
-      const ticker = stooqTickerFor(symbol)
+      const cachestSymbol = providerSymbol(symbol) // strip .US for cachest/openst/OpenBB
+      const stooqTicker = stooqTickerFor(symbol)    // keep .US for stooq boundary check
       const hadRowsBefore = (await minOverflowDate(db, symbol)) !== null
       try {
-        const raw = (await fetchOhlcv(ticker, lastDate ?? "1900-01-01", to)) ?? []
+        const raw = (await fetchOhlcv(cachestSymbol, lastDate ?? "1900-01-01", to)) ?? []
         const have = new Set(rows.map((r) => r.date))
         const bars = raw
           .map(ohlcvToClose)
@@ -243,7 +245,7 @@ export async function getPriceBarSeries(
             set: { lastFetchedAt: sql`now()`, fetchStatus: "ok" },
           })
         if (!hadRowsBefore && hadNewBars) {
-          await checkSplitBoundary(db, symbol, ticker).catch(() => undefined)
+          await checkSplitBoundary(db, symbol, stooqTicker).catch(() => undefined)
         }
         rows = await queryView(db, symbol, from, to)
         stale = false

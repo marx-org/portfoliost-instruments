@@ -118,6 +118,8 @@ describe("price-bars (H3) service", () => {
     // metadata marked ok
     const meta = await db.select().from(priceBarMetadata).where(sql`symbol = 'GOOG'`)
     expect(meta[0].fetchStatus).toBe("ok")
+    // fetchOhlcv called with provider symbol (bare "GOOG"), not stooq ticker ("GOOG.US")
+    expect(mockFetchOhlcv).toHaveBeenCalledWith("GOOG", expect.any(String), expect.any(String))
   })
 
   it("serves stale data without fetching when a fetch failed within the hour", async () => {
