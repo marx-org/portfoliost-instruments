@@ -31,6 +31,7 @@ vi.mock("../adapters/cachest.js", () => ({
   fetchDividendHistory: vi.fn(),
   fetchFilings: vi.fn(),
   fetchMda: vi.fn(),
+  fetchInsiderTrading: vi.fn(),
 }))
 
 function appWithUser() {
@@ -57,6 +58,7 @@ beforeEach(() => {
   mocked.fetchDividendHistory.mockReset()
   mocked.fetchFilings.mockReset()
   mocked.fetchMda.mockReset()
+  mocked.fetchInsiderTrading.mockReset()
 })
 
 describe("GET /api/instruments/search", () => {
@@ -551,8 +553,70 @@ describe("pt2b routes", () => {
   })
 })
 
-describe("GET /:symbol/ownership (provider gap stub)", () => {
-  it("returns valid empty ownership content", async () => {
+describe("GET /:symbol/ownership", () => {
+  it("translates SEC Form 4 insider rows into insiderTransactions", async () => {
+    mocked.fetchInsiderTrading.mockResolvedValue([
+      {
+        symbol: "AAPL",
+        company_cik: "0000320193",
+        filing_date: "2026-09-03",
+        transaction_date: "2026-09-01",
+        owner_name: "Newstead Jennifer",
+        owner_title: "SVP, GC and Government Affairs",
+        acquisition_or_disposition: "Disposition",
+        transaction_type: "Open market or private sale",
+        security_type: "Common Stock",
+        securities_transacted: 1439.0,
+        transaction_price: 317.01,
+      },
+    ])
+    const res = await req("/api/instruments/AAPL/ownership")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.symbol).toBe("AAPL")
+    expect(body.insiderTransactions).toHaveLength(1)
+    expect(body.insiderTransactions[0]).toMatchObject({
+      title: "Newstead Jennifer",
+      transactionDate: "2026-09-01",
+      transactionText: "Open market or private sale",
+      transactionAmount: 1439,
+      transactionValue: 456177.39,
+      filingDate: "2026-09-03",
+    })
+    expect(body.institutional).toEqual([])
+    expect(body.mutualFund).toEqual([])
+    expect(body.insider).toEqual([])
+  })
+
+  it("sorts transactions newest-first and drops rows without a date", async () => {
+    mocked.fetchInsiderTrading.mockResolvedValue([
+      {
+        symbol: "AAPL",
+        filing_date: "2026-08-01",
+        transaction_date: "2026-08-01",
+        owner_name: "Older Insider",
+        securities_transacted: 100,
+        transaction_price: 300,
+      },
+      {
+        symbol: "AAPL",
+        filing_date: "2026-09-10",
+        transaction_date: "2026-09-10",
+        owner_name: "Newer Insider",
+        securities_transacted: 200,
+        transaction_price: 310,
+      },
+      { symbol: "AAPL", owner_name: "No Date" },
+    ])
+    const res = await req("/api/instruments/AAPL/ownership")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.insiderTransactions.map((t: any) => t.transactionDate)).toEqual(["2026-09-10", "2026-08-01"])
+    expect(mocked.fetchInsiderTrading).toHaveBeenCalledWith("AAPL")
+  })
+
+  it("returns empty ownership content when upstream has no data", async () => {
+    mocked.fetchInsiderTrading.mockResolvedValue([])
     const res = await req("/api/instruments/AAPL/ownership")
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
@@ -562,6 +626,12 @@ describe("GET /:symbol/ownership (provider gap stub)", () => {
       insider: [],
       insiderTransactions: [],
     })
+  })
+
+  it("propagates an upstream failure", async () => {
+    mocked.fetchInsiderTrading.mockRejectedValue(new cachest.UpstreamError("o", 502))
+    const res = await req("/api/instruments/AAPL/ownership")
+    expect(res.status).toBe(502)
   })
 })
 

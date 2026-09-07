@@ -10,6 +10,7 @@ import {
   toSearchResponse,
   toProjections,
   toCompare,
+  toOwnershipData,
 } from "./translate.js"
 import type { OpenstOhlcvRow } from "./openst-types.js"
 
@@ -237,3 +238,47 @@ describe("toCompare", () => {
     expect(out.peRatio).toBeUndefined()
   })
 })
+
+describe("toOwnershipData", () => {
+  it("maps Form 4 rows to insiderTransactions with company-value and filing date", () => {
+    const out = toOwnershipData("aapl", [
+      {
+        symbol: "AAPL",
+        filing_date: "2026-09-03T10:00:00",
+        transaction_date: "2026-09-01",
+        owner_name: "Newstead Jennifer",
+        acquisition_or_disposition: "Disposition",
+        transaction_type: "Open market or private sale",
+        securities_transacted: 1439,
+        transaction_price: 317.011,
+      },
+    ])
+    expect(out.insiderTransactions).toHaveLength(1)
+    expect(out.insiderTransactions![0]).toMatchObject({
+      title: "Newstead Jennifer",
+      transactionDate: "2026-09-01",
+      transactionCode: "Disposition",
+      transactionText: "Open market or private sale",
+      transactionAmount: 1439,
+      transactionValue: roundish(1439 * 317.011),
+      filingDate: "2026-09-03",
+    })
+    expect(out.institutional).toEqual([])
+    expect(out.mutualFund).toEqual([])
+    expect(out.insider).toEqual([])
+  })
+
+  it("drops rows without any usable content", () => {
+    const out = toOwnershipData("AAPL", [{ symbol: "AAPL", filing_date: "2026-01-01" }])
+    expect(out.insiderTransactions).toEqual([])
+  })
+
+  it("keeps holder groups empty when no rows given", () => {
+    const out = toOwnershipData("AAPL", null)
+    expect(out).toEqual({ institutional: [], mutualFund: [], insider: [], insiderTransactions: [] })
+  })
+})
+
+function roundish(n: number): number {
+  return Math.round(n * 100) / 100
+}

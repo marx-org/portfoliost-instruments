@@ -20,6 +20,7 @@ import {
   fetchDividendHistory,
   fetchFilings,
   fetchMda,
+  fetchInsiderTrading,
 } from "../adapters/cachest.js"
 import { UpstreamError } from "../adapters/cachest.js"
 import {
@@ -41,6 +42,7 @@ import {
   toEpsSurprises,
   toInvestorRelations,
   toIrTranscript,
+  toOwnershipData,
   str,
   type Row,
 } from "../adapters/translate.js"
@@ -470,7 +472,7 @@ export function createInstrumentsRoutes() {
     "/:symbol/ownership",
     openApi({
       tags: ["Instruments"],
-      summary: "Ownership (empty until a provider covers it — FMP premium)",
+      summary: "Ownership — SEC Form 4 insider transactions; aggregated 13F holder groups pending a provider",
       operationId: "getOwnership",
       responses: {
         200: { description: "Ownership", content: { "application/json": { schema: OwnershipDataSchema } } },
@@ -479,7 +481,15 @@ export function createInstrumentsRoutes() {
     }),
     async (c) => {
       const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
-      return c.json({ symbol, institutional: [], mutualFund: [], insider: [], insiderTransactions: [] })
+      try {
+        // SEC Form 4 insider transactions (openst). Aggregated 13F holder groups
+        // (institutional/mutual-fund/insider) have no provider in this tier yet —
+        // they degrade to empty arrays; upstream 404 also degrades to empty.
+        const insider = await fetchInsiderTrading(symbol)
+        return c.json({ symbol, ...toOwnershipData(symbol, insider) })
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
     },
   )
   return instruments
