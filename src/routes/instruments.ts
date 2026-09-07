@@ -18,6 +18,8 @@ import {
   fetchCalendarDividends,
   fetchSearch,
   fetchDividendHistory,
+  fetchFilings,
+  fetchMda,
 } from "../adapters/cachest.js"
 import { UpstreamError } from "../adapters/cachest.js"
 import {
@@ -750,7 +752,7 @@ export function registerPt2Routes(instruments: Hono) {
     "/:symbol/investor-relations",
     openApi({
       tags: ["Instruments"],
-      summary: "IR events derived from reported quarters",
+      summary: "IR events derived from reported quarters + SEC filings",
       operationId: "getInvestorRelations",
       responses: {
         200: { description: "Events", content: { "application/json": { schema: z.array(z.looseObject({})) } } },
@@ -762,7 +764,13 @@ export function registerPt2Routes(instruments: Hono) {
       const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
         const rows = await fetchFundamentals(symbol, "income", "quarter")
-        return c.json(toInvestorRelations(symbol, rows))
+        let filings: Array<Record<string, unknown>> | null = null
+        try {
+          filings = await fetchFilings(symbol)
+        } catch {
+          // filings may be missing for some tickers — degrade to quarters only
+        }
+        return c.json(toInvestorRelations(symbol, rows, filings))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
@@ -773,17 +781,28 @@ export function registerPt2Routes(instruments: Hono) {
     "/:symbol/investor-relations/:eventId/transcript",
     openApi({
       tags: ["Instruments"],
-      summary: "Transcript placeholder for an IR event (no provider in tier)",
+      summary: "Transcript / MD&A text for an investor relations event",
       operationId: "getIrTranscript",
       responses: {
         200: { description: "Transcript", content: { "application/json": { schema: z.looseObject({}) } } },
         401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
       },
     }),
     async (c) => {
       const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       const eventId = c.req.param("eventId")
-      return c.json(toIrTranscript(eventId, symbol))
+      try {
+        let mda: Record<string, unknown> | null = null
+        try {
+          mda = await fetchMda(symbol)
+        } catch {
+          // MD&A unavailable — return structured empty transcript
+        }
+        return c.json(toIrTranscript(eventId, symbol, mda))
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
     },
   )
 

@@ -29,6 +29,8 @@ vi.mock("../adapters/cachest.js", () => ({
   fetchCalendarDividends: vi.fn(),
   fetchSearch: vi.fn(),
   fetchDividendHistory: vi.fn(),
+  fetchFilings: vi.fn(),
+  fetchMda: vi.fn(),
 }))
 
 function appWithUser() {
@@ -52,6 +54,9 @@ beforeEach(() => {
   mocked.fetchProjections.mockReset()
   mocked.fetchOhlcv.mockReset()
   mocked.fetchSearch.mockReset()
+  mocked.fetchDividendHistory.mockReset()
+  mocked.fetchFilings.mockReset()
+  mocked.fetchMda.mockReset()
 })
 
 describe("GET /api/instruments/search", () => {
@@ -409,6 +414,7 @@ describe("pt2b routes", () => {
         { period_ending: "2026-03-31 00:00:00" },
         { period_ending: "2025-12-31 00:00:00" },
       ])
+      mocked.fetchFilings.mockResolvedValue([])
       const res = await req("/api/instruments/AAPL/investor-relations")
       expect(res.status).toBe(200)
       const events = await res.json()
@@ -422,7 +428,80 @@ describe("pt2b routes", () => {
       })
     })
 
-    it("returns a structured transcript stub for an event", async () => {
+    it("blends SEC filing events with earnings-call events", async () => {
+      mocked.fetchFundamentals.mockResolvedValue([{ period_ending: "2026-06-30 00:00:00" }])
+      mocked.fetchFilings.mockResolvedValue([
+        {
+          symbol: "AAPL",
+          form_type: "10-K",
+          filing_date: "2025-11-03",
+          report_url: "https://www.sec.gov/Archives/edgar/data/320193/000032019325000132/aapl-20250928.htm",
+          accession_number: "0000320193-25-000132",
+        },
+        {
+          symbol: "AAPL",
+          form_type: "8-K",
+          filing_date: "2026-07-30",
+          report_url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000045/aapl-20260730.htm",
+          accession_number: "0000320193-26-000045",
+        },
+        {
+          symbol: "AAPL",
+          form_type: "4",
+          filing_date: "2026-09-03",
+          report_url: "https://www.sec.gov/Archives/edgar/data/320193/000114036126035636/form4.xml",
+          accession_number: "0001140361-26-035636",
+        },
+      ])
+      const res = await req("/api/instruments/AAPL/investor-relations")
+      expect(res.status).toBe(200)
+      const events = await res.json()
+      const secEvents = events.filter((e: any) => e.type === "press-release")
+      expect(secEvents).toHaveLength(2)
+      expect(secEvents.every((e: any) => e.formType !== "4")).toBe(true)
+      expect(secEvents[0]).toMatchObject({
+        type: "press-release",
+        symbol: "AAPL",
+        formType: "8-K",
+        year: 2026,
+        reportUrl: expect.stringContaining("aapl-20260730.htm"),
+      })
+      expect(secEvents[1]).toMatchObject({ formType: "10-K", year: 2025 })
+    })
+
+    it("falls back to quarters-only when filings are missing", async () => {
+      mocked.fetchFundamentals.mockResolvedValue([{ period_ending: "2026-03-31 00:00:00" }])
+      mocked.fetchFilings.mockRejectedValue(new Error("404"))
+      const res = await req("/api/instruments/AAPL/investor-relations")
+      expect(res.status).toBe(200)
+      const events = await res.json()
+      expect(events).toHaveLength(1)
+      expect(events[0].type).toBe("transcript")
+    })
+
+    it("returns MD&A text body for a transcript event", async () => {
+      mocked.fetchMda.mockResolvedValue({
+        symbol: "AAPL",
+        calendar_year: 2025,
+        calendar_period: 4,
+        period_ending: "2025-09-27",
+        content: "This is the management discussion and analysis narrative for Apple.",
+        url: "https://www.sec.gov/Archives/edgar/data/320193/000032019325000132/aapl-20250928.htm",
+      })
+      const res = await req("/api/instruments/AAPL/investor-relations/AAPL_10-K_0000320193-25-000132/transcript")
+      expect(res.status).toBe(200)
+      const t = await res.json()
+      expect(t).toMatchObject({
+        id: "AAPL_10-K_0000320193-25-000132",
+        symbol: "AAPL",
+        year: 2025,
+        quarter: 4,
+        body: "This is the management discussion and analysis narrative for Apple.",
+      })
+    })
+
+    it("returns a structured empty transcript when MD&A is unavailable", async () => {
+      mocked.fetchMda.mockRejectedValue(new Error("404"))
       const res = await req("/api/instruments/AAPL/investor-relations/AAPL_2026-03-31/transcript")
       expect(res.status).toBe(200)
       expect(await res.json()).toMatchObject({
@@ -432,6 +511,7 @@ describe("pt2b routes", () => {
         quarter: 1,
         participant: [],
         transcript: [],
+        body: null,
       })
     })
   })

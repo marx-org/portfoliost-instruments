@@ -89,6 +89,6 @@ export function fetchFilings(symbol: string): Promise<Array<Record<string, unkno
   return fetchJson(`${BASE_URL}/filings/${encodeURIComponent(symbol)}`)
 }
 
-export function fetchMda(symbol: string): Promise<Array<Record<string, unknown>>> {
+export function fetchMda(symbol: string): Promise<Record<string, unknown> | null> {
   return fetchJson(`${BASE_URL}/fundamentals/${encodeURIComponent(symbol)}/mda`)
 }

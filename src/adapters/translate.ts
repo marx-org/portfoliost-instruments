@@ -23,6 +23,16 @@ export function str(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined
 }
 
+function _safeYear(v: unknown): number | undefined {
+  const n = num(v)
+  return n !== undefined && n > 0 ? n : undefined
+}
+
+function _safeQuarter(v: unknown): number | undefined {
+  const n = num(v)
+  return n !== undefined && n >= 1 && n <= 4 ? n : undefined
+}
+
 function round(n: number, digits = 2): number {
   const f = 10 ** digits
   return Math.round(n * f) / f
@@ -684,11 +694,50 @@ function shiftYear(date: string, delta: number): string {
   return `${y}${date.slice(4)}`
 }
 
-/** IR events derived from real reported quarters — no transcript/audio
- * providers exist in the tier, so events carry no audioUrl. */
-export function toInvestorRelations(symbol: string, quarters: EpsQuarter[]): Array<S["InvestorRelationEvent"]> {
+/** SEC report forms surfaced as IR events — exclude insider-trade Form 4/5,
+ * 144, etc. that would drown the investor-relations list. */
+const IR_REPORT_FORMS = new Set(["10-K", "10-Q", "8-K", "20-F", "6-K"])
+
+/** Normalise a raw SEC filing row into the docs needed for an IR event. Filings
+ * arrive as OpenBB `company_filings` records shaped like
+ * `{ symbol, form_type, filing_date, report_date, report_url, accession_number }`. */
+function secFilingEvent(sym: string, f: Row): S["InvestorRelationEvent"] | undefined {
+  const formType = (str(f.form_type) ?? str(f.report_type) ?? "").toUpperCase()
+  if (!IR_REPORT_FORMS.has(formType)) return undefined
+  let date = (str(f.filing_date) ?? str(f.report_date) ?? "").slice(0, 10)
+  if (!date) date = (str(f.report_date) ?? "").slice(0, 10)
+  if (!date) return undefined
+  const yearNum = Number(date.slice(0, 4))
+  const year = Number.isFinite(yearNum) && yearNum > 0 ? yearNum : undefined
+  const month = date.slice(5, 7)
+  const quarter = month ? Math.ceil(Number(month) / 3) : null
+  const accn = str(f.accession_number) ?? ""
+  const reportUrl = str(f.report_url) ?? str(f.document_url) ?? str(f.filing_url)
+  return {
+    type: "press-release",
+    id: `${sym}_${formType}_${accn || date}`,
+    title: `${sym} - SEC Form ${formType} (filed ${date})`,
+    date: `${date} 00:00:00`,
+    year,
+    quarter,
+    symbol: sym,
+    audioUrl: null,
+    reportUrl: reportUrl ?? null,
+    formType,
+  }
+}
+
+/** IR events derived from real reported quarters blended with SEC filings
+ * (10-K/10-Q/8-K) exposed via cachest. Earnings-call events carry no audioUrl
+ * (no audio transcript provider in the tier); SEC filing events carry the
+ * report URL + form type. */
+export function toInvestorRelations(
+  symbol: string,
+  quarters: EpsQuarter[],
+  filings?: Row[] | null,
+): Array<S["InvestorRelationEvent"]> {
   const sym = symbol.toUpperCase()
-  return [...quarters]
+  const callEvents = [...quarters]
     .sort((a, b) => str(b.period_ending)!.localeCompare(str(a.period_ending)!))
     .slice(0, 24)
     .map((q): Row => {
@@ -704,25 +753,44 @@ export function toInvestorRelations(symbol: string, quarters: EpsQuarter[]): Arr
         quarter,
         symbol: sym,
         audioUrl: null,
+        reportUrl: null,
+        formType: null,
       }
     })
+  const secEvents = (filings ?? [])
+    .map((f) => secFilingEvent(sym, f))
+    .filter((e): e is S["InvestorRelationEvent"] => Boolean(e))
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+  return [...secEvents, ...callEvents].sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 48)
 }
 
 type IrTranscriptResult = S["IRTranscript"]
 
-export function toIrTranscript(eventId: string, symbol: string): IrTranscriptResult {
-  const m = eventId.match(/_(\d{4})-(\d{2})/)
-  const year = m ? Number(m[1]) : null
-  const quarter = m ? Math.ceil(Number(m[2]) / 3) : null
+export function toIrTranscript(
+  eventId: string,
+  symbol: string,
+  mda?: Row | null,
+): IrTranscriptResult {
+  const sym = symbol.toUpperCase()
+  // Earnings-call ids look like `${SYM}_YYYY-MM-DD`; SEC filing ids look like
+  // `${SYM}_FORM_<accession>` where no year is encoded. Only parse the former,
+  // otherwise fall back to the MD&A record's calendar year/period.
+  const m = eventId.match(/_(\d{4})-(\d{2})-\d{2}/)
+  const year = m ? Number(m[1]) : _safeYear(mda?.calendar_year)
+  const quarter = m ? Math.ceil(Number(m[2]) / 3) : (_safeQuarter(mda?.calendar_period) ?? null)
+  const bodyText = str(mda?.content)
   return {
     id: eventId,
-    symbol: symbol.toUpperCase(),
+    symbol: sym,
     year,
     quarter,
-    title: `${symbol.toUpperCase()} - Earnings call Q${quarter} ${year}`,
-    time: null,
+    title: bodyText
+      ? `${sym} - Management Discussion & Analysis`
+      : `${sym} - Earnings call Q${quarter ?? "-"} ${year ?? ""}`.replace(/\s+/g, " ").trim(),
+    time: str(mda?.period_ending) ?? null,
     participant: [],
     audio: null,
     transcript: [],
+    body: bodyText ?? null,
   }
 }
