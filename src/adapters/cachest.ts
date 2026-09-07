@@ -76,3 +76,19 @@ export interface LogoResolution {
 export function fetchLogo(symbol: string): Promise<LogoResolution> {
   return fetchJson(`${BASE_URL}/logo/${encodeURIComponent(symbol)}`)
 }
+
+export function fetchInsiderTrading(symbol: string): Promise<Array<Record<string, unknown>>> {
+  return fetchJson(`${BASE_URL}/ownership/${encodeURIComponent(symbol)}`)
+}
+
+export function fetchInstitutionalOwnership(symbol: string): Promise<Array<Record<string, unknown>>> {
+  return fetchJson(`${BASE_URL}/ownership/institutional/${encodeURIComponent(symbol)}`)
+}
+
+export function fetchFilings(symbol: string): Promise<Array<Record<string, unknown>>> {
+  return fetchJson(`${BASE_URL}/filings/${encodeURIComponent(symbol)}`)
+}
+
+export function fetchMda(symbol: string): Promise<Array<Record<string, unknown>>> {
+  return fetchJson(`${BASE_URL}/fundamentals/${encodeURIComponent(symbol)}/mda`)
+}
