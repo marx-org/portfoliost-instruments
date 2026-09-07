@@ -794,3 +794,36 @@ export function toIrTranscript(
     body: bodyText ?? null,
   }
 }
+
+/** Normalise SEC Form 4 insider rows into the contract's ownership payload.
+ * OpenBB `insider_trading` records carry per-transaction fields (owner, dates,
+ * code, shares, price); aggregated holder groups (institutional / mutual-fund /
+ * insider 13F) have no source in this tier yet, so those stay empty arrays. */
+type OwnershipItem = NonNullable<S["OwnershipData"]["insiderTransactions"]>[number]
+
+export function toOwnershipData(symbol: string, insiderRows?: Row[] | null): S["OwnershipData"] {
+  const insiderTransactions = (insiderRows ?? [])
+    .map((r): OwnershipItem | undefined => {
+      const date = (str(r.transaction_date) ?? str(r.filing_date) ?? "").slice(0, 10)
+      if (!date) return undefined
+      const amount = num(r.securities_transacted)
+      const price = num(r.transaction_price)
+      const owner = str(r.owner_name)
+      const code = str(r.acquisition_or_disposition) ?? str(r.transaction_code)
+      const text = str(r.transaction_type) ?? str(r.security_type)
+      if (!owner && !code && !text && amount === undefined) return undefined
+      const value = amount !== undefined && price !== undefined ? round(amount * price, 2) : undefined
+      return {
+        title: owner ?? text ?? "Insider",
+        transactionDate: date,
+        transactionCode: code,
+        transactionText: text,
+        transactionAmount: amount,
+        transactionValue: value,
+        filingDate: (str(r.filing_date) ?? "").slice(0, 10) || undefined,
+      }
+    })
+    .filter((t): t is OwnershipItem => Boolean(t))
+    .sort((a, b) => String(b.transactionDate).localeCompare(String(a.transactionDate)))
+  return { institutional: [], mutualFund: [], insider: [], insiderTransactions }
+}
