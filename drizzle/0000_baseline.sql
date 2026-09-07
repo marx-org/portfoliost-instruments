@@ -1,3 +1,25 @@
+CREATE SCHEMA "instruments";
+--> statement-breakpoint
+CREATE TABLE "instruments"."exchange_reference" (
+	"exchange_code" text PRIMARY KEY NOT NULL,
+	"operating_mic" text,
+	"canonical_name" text,
+	"country_code" text,
+	"yahoo_suffix" text,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "instruments"."logos" (
+	"symbol" text PRIMARY KEY NOT NULL,
+	"source" text NOT NULL,
+	"remote_url" text NOT NULL,
+	"file" text NOT NULL,
+	"bytes" integer NOT NULL,
+	"sha256" text NOT NULL,
+	"fetched_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"refresh_after" timestamp with time zone NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "instruments"."price_bar_metadata" (
 	"symbol" text PRIMARY KEY NOT NULL,
 	"last_fetched_at" timestamp with time zone,
@@ -36,6 +58,23 @@ CREATE TABLE "instruments"."split_candidates" (
 	CONSTRAINT "split_candidates_symbol_detected_at_pk" PRIMARY KEY("symbol","detected_at")
 );
 --> statement-breakpoint
+CREATE TABLE "instruments"."ticker_reference" (
+	"listing_key" text PRIMARY KEY NOT NULL,
+	"ticker" text NOT NULL,
+	"exchange" text NOT NULL,
+	"name" text NOT NULL,
+	"asset_type" text NOT NULL,
+	"stock_sector" text,
+	"etf_category" text,
+	"country" text,
+	"country_code" text,
+	"isin" text,
+	"aliases" text,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX "ticker_reference_ticker_idx" ON "instruments"."ticker_reference" USING btree ("ticker");--> statement-breakpoint
+CREATE INDEX "ticker_reference_isin_idx" ON "instruments"."ticker_reference" USING btree ("isin");--> statement-breakpoint
 -- price_bars_all: unified close-price view over every stooq DAILY dataset +
 -- the overflow (price_bars) table. All daily foreign tables are wired here
 -- (us, pl, jp, world, uk, hk, hu, macro) — see pfire-init-sql ConfigMap for

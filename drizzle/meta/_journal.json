@@ -5,29 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1787525442778,
-      "tag": "0000_ordinary_leper_queen",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1787566782098,
-      "tag": "0001_tearful_misty_knight",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1787653266439,
-      "tag": "0002_brave_hawkeye",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1788384742750,
-      "tag": "0003_red_paladin",
+      "when": 1788806370094,
+      "tag": "0000_baseline",
       "breakpoints": true
     }
   ]
