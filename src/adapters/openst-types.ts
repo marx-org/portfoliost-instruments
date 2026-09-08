@@ -101,3 +101,18 @@ export interface OpenstConsensus {
   recommendation_mean?: number
   number_of_analysts?: number
 }
+
+/**
+ * Company news record as mapped by openst's `get_company_news()`
+ * (stock-news.md N1): `{date, title, text, url, symbols, source}`.
+ * `symbols` is always a list ([] when the provider omits it); `source` is the
+ * outlet (publisher name, else author).
+ */
+export interface OpenstNewsArticle {
+  date?: string
+  title?: string
+  text?: string
+  url?: string
+  symbols?: string[]
+  source?: string
+}

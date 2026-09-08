@@ -92,3 +92,68 @@ export function fetchFilings(symbol: string): Promise<Array<Record<string, unkno
 export function fetchMda(symbol: string): Promise<Record<string, unknown> | null> {
   return fetchJson(`${BASE_URL}/fundamentals/${encodeURIComponent(symbol)}/mda`)
 }
+
+/**
+ * DB-facing translation of a company-news record (stock-news.md N4). Persists
+ * what `news_articles` stores: `text` becomes `summary`, `date` becomes
+ * `published_at`, and a provider-omitted `symbols` falls back to the ticker it
+ * was fetched under (keeps the row queryable + `symbols` NOT NULL). Returns
+ * null for records missing the url/title/published_at trio.
+ */
+export interface NewsArticleInput {
+  url: string
+  title: string
+  summary: string | null
+  source: string | null
+  publishedAt: Date
+  symbols: string[]
+}
+
+export function translateCompanyNews(
+  raw: Record<string, unknown>,
+  fallbackTicker: string,
+): NewsArticleInput | null {
+  const url = typeof raw.url === "string" ? raw.url : undefined
+  const title = typeof raw.title === "string" ? raw.title : undefined
+  if (!url || !title) return null
+
+  const publishedAt = new Date(typeof raw.date === "string" ? raw.date : "")
+  if (Number.isNaN(publishedAt.getTime())) return null
+
+  const summary = typeof raw.text === "string" && raw.text ? raw.text : null
+  const source = typeof raw.source === "string" && raw.source ? raw.source : null
+  const rawSymbols = Array.isArray(raw.symbols)
+    ? raw.symbols.map((s) => String(s).trim().toUpperCase()).filter(Boolean)
+    : []
+  const symbols = rawSymbols.length > 0 ? rawSymbols : [fallbackTicker.toUpperCase()]
+
+  return { url, title, summary, source, publishedAt, symbols }
+}
+
+/** Filter openst company-news records into DB-ready rows ([] skips bad ones). */
+export function translateCompanyNewsList(
+  raw: Array<Record<string, unknown>>,
+  fallbackTicker: string,
+): NewsArticleInput[] {
+  const out: NewsArticleInput[] = []
+  for (const r of raw) {
+    const mapped = translateCompanyNews(r, fallbackTicker)
+    if (mapped && !out.some((a) => a.url === mapped.url)) out.push(mapped)
+  }
+  return out
+}
+
+/**
+ * Company news via cachest (stock-news.md N4). `start_date` is day-granular at
+ * the provider (OpenBB `CompanyNewsQueryParams`), so overlapping re-fetch
+ * windows are absorbed by the url-PK dedup in the news service.
+ */
+export function fetchCompanyNews(
+  ticker: string,
+  startDate?: string,
+  limit = 50,
+): Promise<Array<Record<string, unknown>>> {
+  const q = new URLSearchParams({ limit: String(limit) })
+  if (startDate) q.set("start_date", startDate)
+  return fetchJson(`${BASE_URL}/news/company/${encodeURIComponent(ticker)}?${q}`)
+}
