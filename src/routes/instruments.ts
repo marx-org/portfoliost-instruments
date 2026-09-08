@@ -4,7 +4,7 @@ import { openApi } from "hono-zod-openapi"
 import { userIdentityMiddleware } from "../auth.js"
 import { getDb } from "../db/index.js"
 import { getPriceBarSeries, backgroundUpsertBars } from "../services/price-bars.js"
-import { getNewsForTicker, getRecentNews } from "../services/news.js"
+import { getNewsForTicker, getRecentNews, getNewsStats } from "../services/news.js"
 import { providerSymbol, symbolSuffix } from "../adapters/symbol.js"
 import { getExchangeBySuffix } from "../db/tickerref-queries.js"
 import { searchTickerReference } from "../db/tickerref-queries.js"
@@ -533,6 +533,33 @@ export function createNewsRoutes() {
           ? await getNewsForTicker(getDb(), ticker, limit)
           : await getRecentNews(getDb(), limit)
         return c.json(toNewsArticleList(rows, ticker || undefined))
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
+    },
+  )
+
+  news.get(
+    "/stats",
+    openApi({
+      tags: ["News"],
+      summary: "News stats for a ticker (stored rows; legacy wire shape)",
+      operationId: "getNewsStats",
+      parameters: [{ name: "ticker", in: "query", schema: { type: "string" } }],
+      responses: {
+        200: {
+          description: "Stats",
+          content: { "application/json": { schema: z.looseObject({}) } },
+        },
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const ticker = (c.req.query("ticker") ?? "AAPL").trim()
+      try {
+        const stats = await getNewsStats(getDb(), ticker)
+        return c.json({ error: null, data: stats as unknown as Record<string, unknown> } satisfies components["schemas"]["NewsStats"])
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }

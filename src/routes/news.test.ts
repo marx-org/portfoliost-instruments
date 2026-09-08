@@ -5,11 +5,13 @@ import { createNewsRoutes } from "./instruments.js"
 const mocks = vi.hoisted(() => ({
   getNewsForTicker: vi.fn(),
   getRecentNews: vi.fn(),
+  getNewsStats: vi.fn(),
 }))
 
 vi.mock("../services/news.js", () => ({
   getNewsForTicker: mocks.getNewsForTicker,
   getRecentNews: mocks.getRecentNews,
+  getNewsStats: mocks.getNewsStats,
 }))
 
 vi.mock("../db/index.js", () => ({
@@ -105,5 +107,45 @@ describe("GET /api/news/articles", () => {
     mocks.getNewsForTicker.mockRejectedValue(new Error("boom"))
     const res = await req("/api/news/articles?ticker=AAPL")
     expect(res.status).toBe(502)
+  })
+})
+
+describe("GET /api/news/stats", () => {
+  beforeEach(() => mocks.getNewsStats.mockReset())
+
+  it("returns legacy stats wire with stored-row counts", async () => {
+    mocks.getNewsStats.mockResolvedValue({
+      active: true,
+      id: "news:AAPL",
+      name: "AAPL",
+      type: "stock",
+      ticker: "AAPL",
+      inserted_at: "2026-08-01T00:00:00.000Z",
+      article_count: 5,
+      last_fetched_at: "2026-09-08T10:00:00.000Z",
+      total_article_count: 5,
+      total_analyzed_article_count: 3,
+    })
+    const res = await req("/api/news/stats?ticker=AAPL")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.error).toBeNull()
+    expect(body.data.ticker).toBe("AAPL")
+    expect(body.data.total_article_count).toBe(5)
+    expect(mocks.getNewsStats).toHaveBeenCalledWith({}, "AAPL")
+  })
+
+  it("defaults an empty ticker to AAPL (mock parity)", async () => {
+    mocks.getNewsStats.mockResolvedValue({ active: true, ticker: "AAPL" } as never)
+    const res = await req("/api/news/stats")
+    expect(res.status).toBe(200)
+    expect(mocks.getNewsStats).toHaveBeenCalledWith({}, "AAPL")
+  })
+
+  it("requires identity", async () => {
+    const app = new Hono()
+    app.route("/api/news", createNewsRoutes())
+    const res = await app.request("/api/news/stats?ticker=AAPL")
+    expect(res.status).toBe(401)
   })
 })
