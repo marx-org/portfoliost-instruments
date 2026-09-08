@@ -4,6 +4,7 @@ import { openApi } from "hono-zod-openapi"
 import { userIdentityMiddleware } from "../auth.js"
 import { getDb } from "../db/index.js"
 import { getPriceBarSeries, backgroundUpsertBars } from "../services/price-bars.js"
+import { getNewsForTicker, getRecentNews } from "../services/news.js"
 import { providerSymbol, symbolSuffix } from "../adapters/symbol.js"
 import { getExchangeBySuffix } from "../db/tickerref-queries.js"
 import { searchTickerReference } from "../db/tickerref-queries.js"
@@ -43,6 +44,7 @@ import {
   toInvestorRelations,
   toIrTranscript,
   toOwnershipData,
+  toNewsArticleList,
   str,
   type Row,
 } from "../adapters/translate.js"
@@ -60,6 +62,7 @@ import {
   ResearchCompareSchema,
   PeersResponseSchema,
   OwnershipDataSchema,
+  NewsArticleListSchema,
 } from "../schemas/instruments.js"
 
 const UNAUTHORIZED = {
@@ -493,6 +496,50 @@ export function createInstrumentsRoutes() {
     },
   )
   return instruments
+}
+
+// ── News routes (stock-news.md N5) ────────────────────────────────────────
+// Mounted at /api/news in index.ts via createNewsRoutes(); JWT-protected
+// like the rest of instruments, returning contract NewsArticleList.
+export function createNewsRoutes() {
+  const news = new Hono()
+  news.use("*", userIdentityMiddleware)
+
+  news.get(
+    "/articles",
+    openApi({
+      tags: ["News"],
+      summary: "News articles for a ticker (or recent stored articles)",
+      operationId: "getNewsArticles",
+      parameters: [
+        { name: "ticker", in: "query", schema: { type: "string" } },
+        { name: "limit", in: "query", schema: { type: "integer", default: 20 } },
+      ],
+      responses: {
+        200: {
+          description: "Articles",
+          content: { "application/json": { schema: NewsArticleListSchema } },
+        },
+        401: UNAUTHORIZED,
+        502: UPSTREAM_ERROR,
+      },
+    }),
+    async (c) => {
+      const limitParam = Number(c.req.query("limit"))
+      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(Math.floor(limitParam), 100) : 20
+      const ticker = (c.req.query("ticker") ?? "").trim()
+      try {
+        const rows = ticker
+          ? await getNewsForTicker(getDb(), ticker, limit)
+          : await getRecentNews(getDb(), limit)
+        return c.json(toNewsArticleList(rows, ticker || undefined))
+      } catch (e) {
+        return upstreamErrorResponse(c, e)
+      }
+    },
+  )
+
+  return news
 }
 
 // The route factories below are appended via createInstrumentsRoutes extension:

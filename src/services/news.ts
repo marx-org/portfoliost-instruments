@@ -150,3 +150,18 @@ export async function getNewsForTicker(
     .orderBy(desc(newsArticles.publishedAt))
     .limit(limit)
 }
+
+/** Most recent stored rows across all tickers (ticker-less /news/articles).
+ * On-read purge + no provider fan-out. */
+export async function getRecentNews(
+  db: DB,
+  limit = 50,
+  now = new Date(),
+): Promise<Array<typeof newsArticles.$inferSelect>> {
+  await db.delete(newsArticles).where(lt(newsArticles.expiresAt, now))
+  return db
+    .select()
+    .from(newsArticles)
+    .orderBy(desc(newsArticles.publishedAt))
+    .limit(limit)
+}
