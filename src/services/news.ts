@@ -165,3 +165,52 @@ export async function getRecentNews(
     .orderBy(desc(newsArticles.publishedAt))
     .limit(limit)
 }
+
+/**
+ * Per-ticker news stats over stored rows only (no provider fan-out). The
+ * legacy wire shape (mock `news_stats.json` / example-service) is preserved so the SPA
+ * needs no change; "analyzed" here means rows normalized into a summary.
+ */
+export interface NewsStatsData {
+  active: boolean
+  id: string
+  name: string
+  type: string
+  ticker: string
+  inserted_at: string
+  article_count: number
+  last_fetched_at: string | null
+  total_article_count: number
+  total_analyzed_article_count: number
+}
+
+export async function getNewsStats(
+  db: DB,
+  routeSymbol: string,
+  now = new Date(),
+): Promise<NewsStatsData> {
+  const ticker = newsTicker(routeSymbol)
+  await db.delete(newsArticles).where(lt(newsArticles.expiresAt, now))
+  const [row] = await db
+    .select({
+      count: sql<number>`count(*)::int`,
+      analyzed: sql<number>`count(*) filter (where ${newsArticles.summary} is not null)::int`,
+      first: sql<string | null>`min(${newsArticles.fetchedAt})`,
+      last: sql<string | null>`max(${newsArticles.fetchedAt})`,
+    })
+    .from(newsArticles)
+    .where(arrayContains(newsArticles.symbols, [ticker]))
+  const count = Number(row?.count ?? 0)
+  return {
+    active: true,
+    id: `news:${ticker}`,
+    name: ticker,
+    type: "stock",
+    ticker,
+    inserted_at: new Date(row?.first ?? now).toISOString(),
+    article_count: count,
+    last_fetched_at: row?.last ? new Date(row.last).toISOString() : null,
+    total_article_count: count,
+    total_analyzed_article_count: Number(row?.analyzed ?? 0),
+  }
+}

@@ -5,6 +5,7 @@ import { newsArticles } from "../db/schema.js"
 import {
   floorWatermark,
   getNewsForTicker,
+  getNewsStats,
   newsExpiryDays,
   newsFetchLimit,
   newsGranularityHours,
@@ -282,5 +283,64 @@ describe("getNewsForTicker (N4)", () => {
     expect(mockFetch.mock.calls[0]?.[0]).toBe("AAPL")
     expect(out).toHaveLength(1)
     expect(out[0].symbols).toEqual(["AAPL"])
+  })
+})
+
+describe("getNewsStats (N7 stats)", () => {
+  let db: DB
+  let client: Awaited<ReturnType<typeof createTestDb>>["client"]
+
+  beforeAll(async () => {
+    const t = await createTestDb()
+    db = t.db
+    client = t.client
+  })
+
+  afterAll(async () => {
+    await client.close()
+  })
+
+  afterEach(async () => {
+    await db.delete(newsArticles)
+  })
+
+  it("aggregates counts over stored rows for the ticker", async () => {
+    const mk = (url: string, symbols: string[], summary: string | null) =>
+      db.insert(newsArticles).values({
+        url, title: "t", summary, source: "polygon",
+        publishedAt: new Date("2026-09-08T09:00:00Z"),
+        symbols,
+        expiresAt: new Date(NOW.getTime() + 86_400_000),
+      })
+    await mk("https://a.com/1", ["AAPL"], "s1")
+    await mk("https://a.com/2", ["AAPL"], "s2")
+    await mk("https://a.com/3", ["AAPL"], null)
+    await mk("https://a.com/4", ["MSFT"], "other")
+
+    const stats = await getNewsStats(db, "AAPL.US", NOW)
+
+    expect(stats.ticker).toBe("AAPL")
+    expect(stats.total_article_count).toBe(3)
+    expect(stats.article_count).toBe(3)
+    expect(stats.total_analyzed_article_count).toBe(2)
+    expect(stats.last_fetched_at).not.toBeNull()
+  })
+
+  it("returns zeroes for a ticker with no stored rows", async () => {
+    const stats = await getNewsStats(db, "NVDA", NOW)
+    expect(stats.total_article_count).toBe(0)
+    expect(stats.total_analyzed_article_count).toBe(0)
+    expect(stats.last_fetched_at).toBeNull()
+  })
+
+  it("purges expired rows before aggregating", async () => {
+    await db.insert(newsArticles).values({
+      url: "https://a.com/expired", title: "t", summary: null, source: "polygon",
+      publishedAt: new Date("2026-09-07T00:00:00Z"),
+      symbols: ["AAPL"],
+      expiresAt: new Date(NOW.getTime() - 1000),
+    })
+    const stats = await getNewsStats(db, "AAPL", NOW)
+    expect(stats.total_article_count).toBe(0)
   })
 })
