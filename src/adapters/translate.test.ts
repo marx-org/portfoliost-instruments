@@ -11,6 +11,8 @@ import {
   toProjections,
   toCompare,
   toOwnershipData,
+  toNewsArticleItem,
+  toNewsArticleList,
 } from "./translate.js"
 import type { OpenstOhlcvRow } from "./openst-types.js"
 
@@ -236,6 +238,51 @@ describe("toCompare", () => {
     const out = toCompare({ symbol: "ZZZ", name: "Z", currency: "USD" } as never, undefined, {} as never)
     expect(out.fcfMargin).toBeUndefined()
     expect(out.peRatio).toBeUndefined()
+  })
+})
+
+describe("toNewsArticleItem / toNewsArticleList", () => {
+  const row = {
+    url: "https://example.com/1",
+    title: "Apple unveils new chip",
+    summary: "AAPL details",
+    source: "polygon",
+    publishedAt: new Date("2026-09-08T08:30:00Z"),
+    symbols: ["AAPL", "MSFT"],
+  }
+
+  it("maps a DB row to the SPA/mock NewsArticle shape", () => {
+    const item = toNewsArticleItem(row, "AAPL")
+    expect(item.id).toBe("https://example.com/1")
+    expect(item.type).toBe("article")
+    expect(item.ticker).toBe("AAPL")
+    expect(item.metadata).toEqual({ source: "polygon" })
+    expect(item.article).toMatchObject({
+      title: "Apple unveils new chip",
+      url: "https://example.com/1",
+      source: "polygon",
+      description: "AAPL details",
+      published_at: "2026-09-08T08:30:00.000Z",
+    })
+    expect(item.published_at).toBe("2026-09-08T08:30:00.000Z")
+  })
+
+  it("falls back to fetch fallbackTicker when symbols are empty", () => {
+    const item = toNewsArticleItem({ ...row, symbols: [] }, "AAPL")
+    expect(item.ticker).toBe("AAPL")
+  })
+
+  it("builds a single-page NewsArticleList with null cursors", () => {
+    const out = toNewsArticleList([row, { ...row, url: "https://example.com/2" }], "AAPL")
+    expect(out.data).toHaveLength(2)
+    expect(out.pagination).toEqual({
+      count: 2,
+      total_count: 2,
+      has_next_page: false,
+      has_previous_page: false,
+      next_cursor: null,
+      previous_cursor: null,
+    })
   })
 })
 

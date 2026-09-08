@@ -43,6 +43,7 @@ describe("GET /api/doc", () => {
     expect(doc.paths["/instruments/{symbol}/overview-metrics"]).toBeDefined()
     expect(doc.paths["/instruments/{symbol}/quote"]).toBeDefined()
     expect(doc.paths["/instruments/{symbol}/history"]).toBeDefined()
+    expect(doc.paths["/news/articles"]).toBeDefined()
   })
 })
 

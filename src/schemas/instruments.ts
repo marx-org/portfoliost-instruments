@@ -178,3 +178,15 @@ export const OwnershipDataSchema = z.looseObject({
   insider: z.array(HoldingGroupSchema).optional(),
   insiderTransactions: z.array(z.record(z.string(), z.unknown())).optional(),
 })
+
+export const NewsArticleListSchema = z.looseObject({
+  data: z.array(z.looseObject({})).optional(),
+  pagination: z.looseObject({
+    count: z.number().optional(),
+    total_count: z.number().optional(),
+    has_next_page: z.boolean().optional(),
+    has_previous_page: z.boolean().optional(),
+    next_cursor: z.string().nullable().optional(),
+    previous_cursor: z.string().nullable().optional(),
+  }).optional(),
+})

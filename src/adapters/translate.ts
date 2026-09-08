@@ -795,6 +795,53 @@ export function toIrTranscript(
   }
 }
 
+/** DB news row → SPA/Mock-compatible NewsArticle list item.
+ * Rows come straight off `news_articles` (stock-news.md N4/N5); the contract
+ * keeps items opaque, but the SPA consumes the mock's shape, so we reproduce
+ * it: `id`, `type`, `ticker`, `article.{title,url,source,description,published_at}`
+ * and a top-level `published_at`. */
+export function toNewsArticleItem(
+  row: { url: string; title: string; summary: string | null; source: string | null; publishedAt: Date; symbols: string[] },
+  fallbackTicker?: string,
+): Record<string, unknown> {
+  const publishedAt = row.publishedAt.toISOString()
+  const ticker = row.symbols[0] ?? fallbackTicker
+  return {
+    id: row.url,
+    type: "article",
+    ...(ticker ? { ticker } : {}),
+    metadata: row.source ? { source: row.source } : undefined,
+    article: {
+      title: row.title,
+      url: row.url,
+      source: row.source ?? undefined,
+      description: row.summary ?? undefined,
+      published_at: publishedAt,
+    },
+    published_at: publishedAt,
+  }
+}
+
+/** `news_articles` rows → contract `NewsArticleList` ({data, pagination}).
+ * Single page for now (no keyset cursor): count == data length, cursors null. */
+export function toNewsArticleList(
+  rows: Array<{ url: string; title: string; summary: string | null; source: string | null; publishedAt: Date; symbols: string[] }>,
+  fallbackTicker?: string,
+): S["NewsArticleList"] {
+  const data = rows.map((r) => toNewsArticleItem(r, fallbackTicker))
+  return {
+    data,
+    pagination: {
+      count: data.length,
+      total_count: data.length,
+      has_next_page: false,
+      has_previous_page: false,
+      next_cursor: null,
+      previous_cursor: null,
+    },
+  }
+}
+
 /** Normalise SEC Form 4 insider rows into the contract's ownership payload.
  * OpenBB `insider_trading` records carry per-transaction fields (owner, dates,
  * code, shares, price); aggregated holder groups (institutional / mutual-fund /
