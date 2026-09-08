@@ -126,3 +126,28 @@ export const splitAdjustments = instrumentsSchema.table(
   },
   (t) => [primaryKey({ columns: [t.symbol, t.detectedAt] })],
 )
+
+/**
+ * Company news articles (stock-news.md N3) backed by the provider tier
+ * (cachest → openst → OpenBB). `url` is the dedup key; `symbols` is the GIN
+ * index for per-ticker lookups. `expires_at` = `fetched_at` + NEWS_EXPIRY_DAYS
+ * drives the on-read purge in the news service.
+ */
+export const newsArticles = instrumentsSchema.table(
+  "news_articles",
+  {
+    url: text("url").primaryKey(),
+    title: text("title").notNull(),
+    summary: text("summary"),
+    source: text("source"),
+    publishedAt: timestamp("published_at", { withTimezone: true }).notNull(),
+    symbols: text("symbols").array().notNull(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index("idx_news_symbols").using("gin", t.symbols),
+    index("idx_news_published").on(t.publishedAt.desc()),
+    index("idx_news_expires").on(t.expiresAt),
+  ],
+)
