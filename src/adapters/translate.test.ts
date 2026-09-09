@@ -38,7 +38,7 @@ const fmpProfile = {
 describe("toInstrumentDetail", () => {
   it("maps profile to stoxly detail shape", () => {
     expect(toInstrumentDetail("aapl", fmpProfile)).toEqual({
-      id: "AAPL.US",
+      id: "AAPL",
       symbol: "AAPL",
       name: "Apple Inc.",
       exchange: "NASDAQ",
