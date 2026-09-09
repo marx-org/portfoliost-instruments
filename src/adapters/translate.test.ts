@@ -187,7 +187,7 @@ describe("toSearchResponse", () => {
       { name: "Only Name" },
     ]) as Record<string, any>
     expect(r.count).toBe(2)
-    expect(r.results[0]).toEqual({ symbol: "AAPL", name: "Apple Inc.", type: "STOCK", exchange: "US", source: "SEC" })
+    expect(r.results[0]).toEqual({ symbol: "AAPL", name: "Apple Inc.", type: "STOCK", exchange: "US", countryCode: "US", source: "SEC" })
     expect(r.results[1].symbol).toBeUndefined()
   })
 })

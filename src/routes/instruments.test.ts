@@ -699,11 +699,16 @@ v2,NASDAQ,XNAS,,Nasdaq,US,active`,
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.count).toBe(1)
-      expect(body.results[0]).toMatchObject({ symbol: "PKN.WA", exchange: "WSE", type: "STOCK" })
+      expect(body.results[0]).toMatchObject({ symbol: "PKN.WA", exchange: "WSE", type: "STOCK", countryCode: "PL" })
 
       // alias search hits ORLEN too
       const alias = await req("/api/instruments/search?q=orlen")
       expect(((await alias.json()).results ?? [])).toHaveLength(1)
+
+      // US listing stays bare, carries country code
+      const us = await req("/api/instruments/search?q=aapl")
+      const usBody = await us.json()
+      expect(usBody.results[0]).toMatchObject({ symbol: "AAPL", exchange: "NASDAQ", countryCode: "US" })
     } finally {
       await t.client.close()
       dbState.db = null
