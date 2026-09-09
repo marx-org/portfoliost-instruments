@@ -272,6 +272,7 @@ export interface TickerReferenceRow {
   name: string
   assetType: string
   yahooSuffix?: string | null
+  countryCode?: string | null
 }
 
 export function toReferenceSearchResponse(rows: TickerReferenceRow[]): S["InstrumentSearchResponse"] {
@@ -279,12 +280,13 @@ export function toReferenceSearchResponse(rows: TickerReferenceRow[]): S["Instru
     count: rows.length,
     results: rows.map((r) => ({
       // Non-US listings carry their Yahoo venue suffix (SNT.WA) so ticker
-      // collisions stay apart; US listings keep the bare ticker — the SPA
-      // appends the legacy ".US" route suffix itself.
+      // collisions stay apart; US listings keep the bare ticker. The SPA does
+      // not append any raw-format suffix.
       symbol: r.yahooSuffix ? `${r.ticker}.${r.yahooSuffix}` : r.ticker,
       name: r.name,
       type: r.assetType === "ETF" ? "ETF" : "STOCK",
       exchange: r.exchange,
+      countryCode: r.countryCode ?? null,
       source: "TICKERDB",
     })),
   }
@@ -297,6 +299,7 @@ export function toSearchResponse(rows: Array<Record<string, unknown>>): S["Instr
       name: str(r.name),
       type: "STOCK",
       exchange: "US",
+      countryCode: "US",
       source: "SEC",
     }))
     .filter((r) => r.symbol !== undefined || r.name !== undefined)
