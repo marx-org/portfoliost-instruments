@@ -73,7 +73,7 @@ export function marketPhase(now = new Date()): { session: string; phase: string 
 
 export function toInstrumentDetail(symbol: string, profile: OpenstProfile): S["InstrumentDetail"] {
   return {
-    id: `${symbol.toUpperCase()}.US`,
+    id: symbol.toUpperCase(),
     symbol: symbol.toUpperCase(),
     name: str(profile.name) ?? symbol.toUpperCase(),
     exchange: str(pick(profile as Row, "stock_exchange", "exchange")) ?? "US",
