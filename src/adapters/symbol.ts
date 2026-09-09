@@ -1,7 +1,7 @@
-/** Route symbols are venue-qualified: AAPL.US, SNT.WA, SNT.TO…
- * Provider calls use the full symbol for non-US venues (Yahoo-style suffixes,
- * e.g. SNT.WA) so provider chains fall through to yfinance for markets FMP
- * doesn't cover; ".US" is stripped because US providers want bare tickers. */
+/** Route symbols are venue-qualified for non-US listings (SNT.WA, SAP.DE)
+ * and bare tickers for US listings (AAPL, SAP).
+ * Provider calls use the full symbol for non-US venues (Yahoo-style suffixes);
+ * US providers receive bare tickers — providerSymbol() is a no-op for those. */
 export function providerSymbol(routeSymbol: string): string {
   const s = routeSymbol.toUpperCase()
   return s.endsWith(".US") ? s.slice(0, -3) : s
