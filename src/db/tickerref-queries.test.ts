@@ -41,6 +41,11 @@ describe("searchTickerReference", () => {
   it("returns empty for no match", async () => {
     expect(await searchTickerReference(db, "zzzzz")).toHaveLength(0)
   })
+
+  it("finds AAPL by ISIN exact match", async () => {
+    const rows = await searchTickerReference(db, "US0378331005")
+    expect(rows[0]).toMatchObject({ ticker: "AAPL", exchange: "NASDAQ" })
+  })
 })
 
 describe("searchTickerReference — venue-qualified lookup", () => {

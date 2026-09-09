@@ -70,6 +70,8 @@ export async function searchTickerReference(
   const baseCondition =
     base !== upper ? sql` OR ${tickerReference.ticker} ILIKE ${base + "%"}` : sql``
   const baseMatches = base !== upper ? sql`${tickerReference.ticker} ILIKE ${base + "%"}` : sql`FALSE`
+  const isIsin = upper.length === 12
+  const isinCondition = isIsin ? sql` OR upper(${tickerReference.isin}) = ${upper}` : sql``
   return db
     .select(select)
     .from(tickerReference)
@@ -78,7 +80,8 @@ export async function searchTickerReference(
       sql`${tickerReference.ticker} ILIKE ${upper + "%"}
         OR ${tickerReference.name} ILIKE ${"%" + q + "%"}
         OR ${tickerReference.aliases} ILIKE ${"%" + q + "%"}
-        ${baseCondition}`,
+        ${baseCondition}
+        ${isinCondition}`,
     )
     .orderBy(
       sql`CASE
