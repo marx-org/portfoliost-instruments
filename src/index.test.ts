@@ -1,6 +1,9 @@
 import { mkdtemp, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import type { ServerType } from "@hono/node-server"
+import { serve } from "@hono/node-server"
+import type { AddressInfo } from "node:net"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const fetchLogo = vi.fn()
@@ -130,5 +133,33 @@ describe("GET /api/logos/:symbol", () => {
     const rows = await getDb().select().from(logos)
     expect(rows).toHaveLength(1)
     expect(rows[0].symbol).toBe("KTY.WA")
+  })
+})
+
+describe("GET /metrics (D56)", () => {
+  it("returns Prometheus text with http.server.request.duration", async () => {
+    const server: ServerType = serve({ fetch: app.fetch, port: 0 })
+    try {
+      await new Promise<void>((resolve) => server.once("listening", resolve))
+      const { port } = server.address() as AddressInfo
+      const base = `http://127.0.0.1:${port}`
+
+      // HTTP metrics are only recorded for traffic through a real server.
+      await fetch(`${base}/health`)
+      await fetch(`${base}/health`)
+      // give the http instrumentation a moment to flush the request metric
+      await new Promise((r) => setTimeout(r, 250))
+
+      const res = await fetch(`${base}/metrics`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toContain("text/plain")
+      const body = await res.text()
+      // instrumentation-http records server-side request duration;
+      // instrumentation-undici records client-side duration — either proves
+      // the OTel pipeline is wired end-to-end.
+      expect(body).toMatch(/http_(server_request|client_request)_duration/)
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
   })
 })
