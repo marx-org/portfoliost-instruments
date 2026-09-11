@@ -26,4 +26,4 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
 
 # Run migrations then start the server.
 # ticker_reference is populated in production by the CronJob (tickerref-sync --url).
-CMD ["sh", "-c", "npm run db:migrate && node --import ./dist/instrumentation.js dist/server.js"]
+CMD ["sh", "-c", "npm run db:migrate && node --import ./dist/iitm.js --import ./dist/instrumentation.js dist/server.js"]
