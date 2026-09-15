@@ -18,6 +18,7 @@ import {
   fetchCalendarEarnings,
   fetchCalendarDividends,
   fetchSearch,
+  fetchCryptoSearch,
   fetchDividendHistory,
   fetchFilings,
   fetchMda,
@@ -32,7 +33,9 @@ import {
   toInstrumentMetrics,
   toOverviewMetrics,
   toSearchResponse,
+  toCryptoSearchResponse,
   toReferenceSearchResponse,
+  mergeSearchResults,
   toFundamentals,
   toCalendar,
   toDividends,
@@ -48,6 +51,7 @@ import {
   str,
   type Row,
 } from "../adapters/translate.js"
+import { curatedPairFromQuery } from "../adapters/crypto.js"
 import type { OpenstProfile, OpenstQuote, OpenstOhlcvRow, OpenstConsensus } from "../adapters/openst-types.js"
 import type { components } from "../generated/api-types.js"
 import {
@@ -64,6 +68,37 @@ import {
   OwnershipDataSchema,
   NewsArticleListSchema,
 } from "../schemas/instruments.js"
+
+/** Crypto search leg: FMP rows normalized to yfinance pairs, typed "CRYPTO".
+ * Additive with the equity/reference legs — a curated base-coin query always
+ * suggests its exact pair (BTC → BTC-USD), so typing ETH surfaces ETH-USD
+ * even when the upstream search itself degrades (FMP rejects the eth row with
+ * a NaN ico_date). Upstream failures are swallowed: crypto is never the sole
+ * cause of a 502. */
+async function cryptoSearchLeg(q: string): Promise<components["schemas"]["SearchResult"][]> {
+  let results: components["schemas"]["SearchResult"][] = []
+  try {
+    const rows = (await fetchCryptoSearch(q)) ?? []
+    results = toCryptoSearchResponse(rows).results ?? []
+  } catch {
+    /* crypto is additive — fall through to the curated suggestion below */
+  }
+  const suggested = curatedPairFromQuery(q)
+  if (suggested && !results.some((r) => r.symbol === suggested.symbol)) {
+    results = [
+      {
+        symbol: suggested.symbol,
+        name: suggested.name,
+        type: "CRYPTO",
+        exchange: "CRYPTO",
+        countryCode: null,
+        source: "CRYPTO",
+      },
+      ...results,
+    ]
+  }
+  return results
+}
 
 const UNAUTHORIZED = {
   description: "Unauthorized",
@@ -128,12 +163,14 @@ export function createInstrumentsRoutes() {
 
       // Primary source: local ticker reference table (synced from
       // adanos/free-ticker-database). Falls back to the provider tier when
-      // the table is empty or unavailable (e.g. pre-seed environments).
+      // the table is empty or unavailable (e.g. pre-seed environments). The
+      // crypto leg runs alongside whichever tier answers (additive — equity
+      // "btc" already returns BTCS Inc., so crypto must not be last-only).
       try {
         const rows = await searchTickerReference(getDb(), q)
         if (rows.length > 0) {
           return c.json(
-            toReferenceSearchResponse(rows),
+            mergeSearchResults(toReferenceSearchResponse(rows).results ?? [], await cryptoSearchLeg(q)),
           )
         }
       } catch {
@@ -141,8 +178,8 @@ export function createInstrumentsRoutes() {
       }
 
       try {
-        const rows = await fetchSearch(q)
-        return c.json(toSearchResponse(rows))
+        const [rows, cryptoRows] = await Promise.all([fetchSearch(q), cryptoSearchLeg(q)])
+        return c.json(mergeSearchResults(toSearchResponse(rows).results ?? [], cryptoRows))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }

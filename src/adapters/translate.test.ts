@@ -8,6 +8,9 @@ import {
   toInstrumentMetrics,
   toOverviewMetrics,
   toSearchResponse,
+  toCryptoSearchResponse,
+  toReferenceSearchResponse,
+  mergeSearchResults,
   toProjections,
   toCompare,
   toOwnershipData,
@@ -189,6 +192,62 @@ describe("toSearchResponse", () => {
     expect(r.count).toBe(2)
     expect(r.results[0]).toEqual({ symbol: "AAPL", name: "Apple Inc.", type: "STOCK", exchange: "US", countryCode: "US", source: "SEC" })
     expect(r.results[1].symbol).toBeUndefined()
+  })
+})
+
+describe("toCryptoSearchResponse", () => {
+  it("emits type CRYPTO for normalized yfinance pairs and drops wrapped rows", () => {
+    const r = toCryptoSearchResponse([
+      { symbol: "BTCUSD", name: "Bitcoin USD" },
+      { symbol: "TBTCUSD", name: "tBTC USD" },
+      { symbol: "ETHUSD", name: "Ethereum USD" },
+    ]) as Record<string, any>
+    expect(r.count).toBe(2)
+    expect(r.results[0]).toEqual({
+      symbol: "BTC-USD",
+      name: "Bitcoin USD",
+      type: "CRYPTO",
+      exchange: "CRYPTO",
+      countryCode: null,
+      source: "CRYPTO",
+    })
+    expect(r.results[1].symbol).toBe("ETH-USD")
+  })
+
+  it("returns an empty response for no tradeable rows", () => {
+    const r = toCryptoSearchResponse([{ symbol: "TBTCUSD", name: "tBTC USD" }])
+    expect(r).toEqual({ count: 0, results: [] })
+  })
+})
+
+describe("toReferenceSearchResponse", () => {
+  it("widens assetType mapping to ETF / CRYPTO / BOND", () => {
+    const r = toReferenceSearchResponse([
+      { ticker: "SPY", exchange: "NYSE", name: "SPDR S&P 500 ETF", assetType: "ETF", yahooSuffix: null, countryCode: "US" },
+      { ticker: "BTC", exchange: "CRYPTO", name: "Bitcoin", assetType: "CRYPTO", yahooSuffix: null, countryCode: null },
+      { ticker: "TLT", exchange: "NASDAQ", name: "iShares 20+ Year Treasury Bond ETF", assetType: "BOND", yahooSuffix: null, countryCode: "US" },
+    ]) as Record<string, any>
+    expect(r.results.map((x: any) => x.type)).toEqual(["ETF", "CRYPTO", "BOND"])
+    expect(r.results[1].source).toBe("TICKERDB")
+  })
+})
+
+describe("mergeSearchResults", () => {
+  it("de-duplicates by symbol keeping the first leg and caps at the limit", () => {
+    const r = mergeSearchResults(
+      [{ symbol: "BTCS", name: "BTCS Inc", type: "STOCK", source: "SEC" }],
+      [
+        { symbol: "BTC-USD", name: "Bitcoin USD", type: "CRYPTO", source: "CRYPTO" },
+        { symbol: "BTCS", name: "BTCS Inc", type: "STOCK", source: "SEC" },
+      ],
+    )
+    expect(r.count).toBe(2)
+    expect(r.results!.map((x) => x.symbol)).toEqual(["BTCS", "BTC-USD"])
+  })
+
+  it("skips rows without a symbol", () => {
+    const r = mergeSearchResults([{ name: "Nameless" } as any])
+    expect(r).toEqual({ count: 0, results: [] })
   })
 })
 
