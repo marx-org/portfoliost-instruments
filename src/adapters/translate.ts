@@ -4,6 +4,7 @@ import type {
   OpenstOhlcvRow,
   OpenstConsensus,
 } from "./openst-types.js"
+import { normalizeCryptoRows } from "./crypto.js"
 import type { components } from "../generated/api-types.js"
 
 type S = components["schemas"]
@@ -284,7 +285,7 @@ export function toReferenceSearchResponse(rows: TickerReferenceRow[]): S["Instru
       // not append any raw-format suffix.
       symbol: r.yahooSuffix ? `${r.ticker}.${r.yahooSuffix}` : r.ticker,
       name: r.name,
-      type: r.assetType === "ETF" ? "ETF" : "STOCK",
+      type: r.assetType === "ETF" ? "ETF" : r.assetType === "CRYPTO" ? "CRYPTO" : r.assetType === "BOND" ? "BOND" : "STOCK",
       exchange: r.exchange,
       countryCode: r.countryCode ?? null,
       source: "TICKERDB",
@@ -305,6 +306,35 @@ export function toSearchResponse(rows: Array<Record<string, unknown>>): S["Instr
     .filter((r) => r.symbol !== undefined || r.name !== undefined)
   // Broad queries (single letters) match thousands of instruments in the SEC
   // universe — cap the payload so clients never render unbounded lists.
+  return { count: Math.min(results.length, SEARCH_RESULT_LIMIT), results: results.slice(0, SEARCH_RESULT_LIMIT) }
+}
+
+export function toCryptoSearchResponse(rows: Array<Record<string, unknown>>): S["InstrumentSearchResponse"] {
+  const results = normalizeCryptoRows(rows).map((r) => ({
+    symbol: r.symbol,
+    name: r.name,
+    type: "CRYPTO",
+    exchange: "CRYPTO",
+    countryCode: null,
+    source: "CRYPTO",
+  }))
+  return { count: Math.min(results.length, SEARCH_RESULT_LIMIT), results: results.slice(0, SEARCH_RESULT_LIMIT) }
+}
+
+/** Merge per-tier search legs into one response, de-duplicating by symbol.
+ * Equity/listed instruments win over crypto rows when a symbol collides. */
+export function mergeSearchResults(
+  ...groups: Array<S["SearchResult"][] | undefined>
+): S["InstrumentSearchResponse"] {
+  const seen = new Set<string>()
+  const results: S["SearchResult"][] = []
+  for (const group of groups) {
+    for (const r of group ?? []) {
+      if (!r.symbol || seen.has(r.symbol)) continue
+      seen.add(r.symbol)
+      results.push(r)
+    }
+  }
   return { count: Math.min(results.length, SEARCH_RESULT_LIMIT), results: results.slice(0, SEARCH_RESULT_LIMIT) }
 }
 

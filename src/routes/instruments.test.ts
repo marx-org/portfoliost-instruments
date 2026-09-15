@@ -28,6 +28,7 @@ vi.mock("../adapters/cachest.js", () => ({
   fetchCalendarEarnings: vi.fn(),
   fetchCalendarDividends: vi.fn(),
   fetchSearch: vi.fn(),
+  fetchCryptoSearch: vi.fn(),
   fetchDividendHistory: vi.fn(),
   fetchFilings: vi.fn(),
   fetchMda: vi.fn(),
@@ -55,6 +56,7 @@ beforeEach(() => {
   mocked.fetchProjections.mockReset()
   mocked.fetchOhlcv.mockReset()
   mocked.fetchSearch.mockReset()
+  mocked.fetchCryptoSearch.mockReset()
   mocked.fetchDividendHistory.mockReset()
   mocked.fetchFilings.mockReset()
   mocked.fetchMda.mockReset()
@@ -77,6 +79,34 @@ describe("GET /api/instruments/search", () => {
     expect(body.count).toBe(1)
     expect(body.results[0].source).toBe("SEC")
     expect(mocked.fetchSearch).toHaveBeenCalledWith("apple")
+  })
+
+  it("merges crypto rows as CRYPTO type and deduplicates by symbol", async () => {
+    mocked.fetchSearch.mockResolvedValue([{ symbol: "BTCS", name: "BTCS Inc" }])
+    mocked.fetchCryptoSearch.mockResolvedValue([{ symbol: "BTCUSD", name: "Bitcoin USD" }])
+    const res = await req("/api/instruments/search?q=btc")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ symbol: "BTC-USD", type: "CRYPTO", source: "CRYPTO" }),
+        expect.objectContaining({ symbol: "BTCS", type: "STOCK" }),
+      ]),
+    )
+  })
+
+  it("surfaces curated BTC-USD suggestion when crypto search degrades upstream", async () => {
+    mocked.fetchSearch.mockResolvedValue([{ symbol: "BTCS", name: "BTCS Inc" }])
+    mocked.fetchCryptoSearch.mockRejectedValue(new cachest.UpstreamError("crypto", 404))
+    const res = await req("/api/instruments/search?q=btc")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ symbol: "BTC-USD", type: "CRYPTO", source: "CRYPTO" }),
+        expect.objectContaining({ symbol: "BTCS", type: "STOCK" }),
+      ]),
+    )
   })
 })
 

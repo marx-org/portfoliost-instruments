@@ -64,6 +64,10 @@ export function fetchSearch(query: string): Promise<Array<Record<string, unknown
   return fetchJson(`${BASE_URL}/equity/search/${encodeURIComponent(query.trim().toLowerCase())}`)
 }
 
+export function fetchCryptoSearch(query: string): Promise<Array<Record<string, unknown>>> {
+  return fetchJson(`${BASE_URL}/crypto/search/${encodeURIComponent(query.trim().toLowerCase())}`)
+}
+
 export function fetchDividendHistory(symbol: string): Promise<Array<Record<string, unknown>>> {
   return fetchJson(`${BASE_URL}/dividends/${encodeURIComponent(symbol)}`)
 }
