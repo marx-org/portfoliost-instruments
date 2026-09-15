@@ -83,18 +83,19 @@ async function cryptoSearchLeg(q: string): Promise<components["schemas"]["Search
   } catch {
     /* crypto is additive — fall through to the curated suggestion below */
   }
-  const suggested = curatedPairFromQuery(q)
-  if (suggested && !results.some((r) => r.symbol === suggested.symbol)) {
+  const curated = curatedPairFromQuery(q)
+  if (curated) {
+    const existing = results.find((r) => r.symbol === curated.symbol)
     results = [
       {
-        symbol: suggested.symbol,
-        name: suggested.name,
+        symbol: curated.symbol,
+        name: existing?.name ?? curated.name,
         type: "CRYPTO",
         exchange: "CRYPTO",
         countryCode: null,
         source: "CRYPTO",
       },
-      ...results,
+      ...results.filter((r) => r.symbol !== curated.symbol),
     ]
   }
   return results
@@ -170,7 +171,10 @@ export function createInstrumentsRoutes() {
         const rows = await searchTickerReference(getDb(), q)
         if (rows.length > 0) {
           return c.json(
-            mergeSearchResults(toReferenceSearchResponse(rows).results ?? [], await cryptoSearchLeg(q)),
+            // Crypto leg first so the curated exact-pair suggestion
+            // (BTC-USD when typing "btc") is never occluded by the reference
+            // tier's name-match flood under the 50-result cap.
+            mergeSearchResults(await cryptoSearchLeg(q), toReferenceSearchResponse(rows).results ?? []),
           )
         }
       } catch {
@@ -179,7 +183,7 @@ export function createInstrumentsRoutes() {
 
       try {
         const [rows, cryptoRows] = await Promise.all([fetchSearch(q), cryptoSearchLeg(q)])
-        return c.json(mergeSearchResults(toSearchResponse(rows).results ?? [], cryptoRows))
+        return c.json(mergeSearchResults(cryptoRows, toSearchResponse(rows).results ?? []))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
