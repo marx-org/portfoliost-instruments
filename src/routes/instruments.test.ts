@@ -31,6 +31,7 @@ vi.mock("../adapters/cachest.js", () => ({
   fetchCryptoSearch: vi.fn(),
   fetchBondSearch: vi.fn(),
   fetchBondProfile: vi.fn(),
+  fetchBondOhlcv: vi.fn(),
   fetchDividendHistory: vi.fn(),
   fetchFilings: vi.fn(),
   fetchMda: vi.fn(),
@@ -61,6 +62,7 @@ beforeEach(() => {
   mocked.fetchCryptoSearch.mockReset()
   mocked.fetchBondSearch.mockReset()
   mocked.fetchBondProfile.mockReset()
+  mocked.fetchBondOhlcv.mockReset()
   mocked.fetchDividendHistory.mockReset()
   mocked.fetchFilings.mockReset()
   mocked.fetchMda.mockReset()
@@ -278,6 +280,28 @@ describe("GET /api/instruments/:symbol/history", () => {
     const body = await res.json()
     expect(body.closePrices).toEqual([2.2, 3.5])
     expect(body.volumes).toEqual([22, 30])
+  })
+
+  it("falls back to bond OHLCV when the equity history leg fails (404/502/504)", async () => {
+    mocked.fetchOhlcv.mockRejectedValue(new cachest.UpstreamError("x", 404))
+    mocked.fetchBondOhlcv.mockResolvedValue([
+      { date: "2026-08-18", open: 180.26, high: 180.3, low: 180.26, close: 180.3, volume: 0 },
+      { date: "2026-08-19", open: 180.3, high: 180.33, low: 180.3, close: 180.33, volume: 0 },
+    ])
+    const res = await req("/api/instruments/ROD0129/history?resolution=daily")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.symbol).toBe("ROD0129")
+    expect(body.closePrices).toEqual([180.3, 180.33])
+    expect(mocked.fetchBondOhlcv).toHaveBeenCalledWith("ROD0129", expect.any(String), expect.any(String))
+  })
+
+  it("surfaces upstream 404 when neither equity nor bond OHLCV leg has the symbol", async () => {
+    mocked.fetchOhlcv.mockRejectedValue(new cachest.UpstreamError("x", 404))
+    mocked.fetchBondOhlcv.mockRejectedValue(new cachest.UpstreamError("y", 404))
+    const res = await req("/api/instruments/NOPE/history?resolution=daily")
+    expect(res.status).toBe(404)
+    expect((await res.json()).error).toBe("NotFound")
   })
 })
 

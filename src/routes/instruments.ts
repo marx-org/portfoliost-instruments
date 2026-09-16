@@ -21,6 +21,7 @@ import {
   fetchCryptoSearch,
   fetchBondSearch,
   fetchBondProfile,
+  fetchBondOhlcv,
   fetchDividendHistory,
   fetchFilings,
   fetchMda,
@@ -166,6 +167,31 @@ function upstreamErrorResponse(c: any, e: unknown) {
     return c.json({ error: status === 404 ? "NotFound" : "BadGateway", message: e.message }, status as any)
   }
   return c.json({ error: "BadGateway", message: String(e) }, 502 as any)
+}
+
+/**
+ * OHLCV with D79 bond fallback: a savings-bond symbol 404s (or times out —
+ * the equity tier spins through three OpenBB providers) the equity history
+ * leg, so fall back to the bond-pricing leg (`fixedincome/ohlcv`) for any
+ * upstream failure before surfacing the original error.
+ */
+async function fetchOhlcvWithBondFallback(
+  symbol: string,
+  start: string,
+  end: string,
+): Promise<OpenstOhlcvRow[]> {
+  try {
+    return (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
+  } catch (e) {
+    if (e instanceof UpstreamError) {
+      try {
+        return (await fetchBondOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
+      } catch {
+        /* not a bond either — fall through to the original error */
+      }
+    }
+    throw e
+  }
 }
 
 export function createInstrumentsRoutes() {
@@ -433,7 +459,7 @@ export function createInstrumentsRoutes() {
         // Serve deep history so client-side timeframe slicing (3Y/5Y/10Y/MAX)
         // has data: 11 years of daily bars, 20 years of monthly bars.
         const { start, end } = resolutionParam === "monthly" ? todayRange(7300) : todayRange(4018)
-        const rows = (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
+        const rows = await fetchOhlcvWithBondFallback(symbol, start, end)
         // H4: background write-through — accumulates price_bars organically
         backgroundUpsertBars(getDb(), c.req.param("symbol").toUpperCase(), rows)
         const history = toPriceHistory(rows, resolutionParam)
@@ -498,7 +524,7 @@ export function createInstrumentsRoutes() {
         }
         if (date) {
           const { start, end } = dateRange(date)
-          const rows = (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
+          const rows = await fetchOhlcvWithBondFallback(symbol, start, end)
           // H4: background write-through
           backgroundUpsertBars(getDb(), c.req.param("symbol").toUpperCase(), rows)
           const last = rows[rows.length - 1]
@@ -863,7 +889,7 @@ export function registerPt2Routes(instruments: Hono) {
       const startD = new Date(Date.parse(date + "T00:00:00Z") - 10 * 86400_000)
       const { start, end } = { start: startD.toISOString().slice(0, 10), end: date }
       try {
-        const rows = (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
+        const rows = await fetchOhlcvWithBondFallback(symbol, start, end)
         return c.json(toHistoricalPrice(symbol, date, rows))
       } catch (e) {
         return upstreamErrorResponse(c, e)
@@ -893,7 +919,7 @@ export function registerPt2Routes(instruments: Hono) {
       const start = new Date(Date.now() - (years + 1) * 365 * 86400_000).toISOString().slice(0, 10)
       const end = new Date().toISOString().slice(0, 10)
       try {
-        const rows = (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
+        const rows = await fetchOhlcvWithBondFallback(symbol, start, end)
         return c.json(toSeasonality(symbol, years, metric, rows))
       } catch (e) {
         return upstreamErrorResponse(c, e)

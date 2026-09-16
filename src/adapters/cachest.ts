@@ -76,6 +76,15 @@ export function fetchBondProfile(symbol: string): Promise<Record<string, unknown
   return fetchJson(`${BASE_URL}/fixedincome/profile/${encodeURIComponent(symbol)}`)
 }
 
+export function fetchBondOhlcv(
+  symbol: string,
+  start: string,
+  end: string,
+): Promise<Array<Record<string, unknown>>> {
+  const q = new URLSearchParams({ start, end })
+  return fetchJson(`${BASE_URL}/fixedincome/ohlcv/${encodeURIComponent(symbol)}?${q}`)
+}
+
 export function fetchDividendHistory(symbol: string): Promise<Array<Record<string, unknown>>> {
   return fetchJson(`${BASE_URL}/dividends/${encodeURIComponent(symbol)}`)
 }
