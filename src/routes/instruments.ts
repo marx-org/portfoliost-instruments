@@ -244,9 +244,11 @@ export function createInstrumentsRoutes() {
         return c.json(toInstrumentDetail(symbol, profile))
       } catch (e) {
         // D79 — savings-bond emissions (ROD0938, EDO0936, …) have no equity
-        // profile: a bond symbol 404s the equity tier, so fall back to the
-        // bond catalogue before surfacing the upstream error.
-        if (e instanceof UpstreamError && e.status === 404) {
+        // profile: a bond symbol either 404s the equity tier (no match, fast)
+        // or — because the equity fallback spins through three OpenBB
+        // providers — times out cachest's fetch window (502/504). Try the
+        // bond catalogue before surfacing the upstream error either way.
+        if (e instanceof UpstreamError) {
           try {
             const bondProfile = (await fetchBondProfile(symbol)) as OpenstProfile
             return c.json(toInstrumentDetail(symbol, bondProfile))
