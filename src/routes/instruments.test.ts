@@ -132,6 +132,29 @@ describe("GET /api/instruments/search", () => {
     const body = await res.json()
     expect(body.results[0]).toMatchObject({ symbol: "EDO0936", type: "BOND", source: "OBLIGACJE" })
   })
+
+  it("normalizes a venue suffix off bond queries (ROD1033.WA ≡ ROD1033)", async () => {
+    mocked.fetchSearch.mockRejectedValue(new cachest.UpstreamError("equity", 404))
+    mocked.fetchBondSearch.mockResolvedValue([{ symbol: "ROD1033", name: "Obligacje 12-letnie ROD" }])
+    const res = await req("/api/instruments/search?q=rod1033.wa")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ symbol: "ROD1033", type: "BOND", source: "OBLIGACJE" }),
+      ]),
+    )
+    expect(mocked.fetchBondSearch).toHaveBeenCalledWith("rod1033")
+  })
+
+  it("passes bare bond queries through untouched", async () => {
+    mocked.fetchBondSearch.mockResolvedValue([{ symbol: "ROD1033", name: "Obligacje 12-letnie ROD" }])
+    const res = await req("/api/instruments/search?q=rod1033")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.results[0]).toMatchObject({ symbol: "ROD1033", type: "BOND", source: "OBLIGACJE" })
+    expect(mocked.fetchBondSearch).toHaveBeenCalledWith("rod1033")
+  })
 })
 
 describe("GET /api/instruments/:symbol (detail)", () => {
