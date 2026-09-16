@@ -5,7 +5,7 @@ import { userIdentityMiddleware } from "../auth.js"
 import { getDb } from "../db/index.js"
 import { getPriceBarSeries, backgroundUpsertBars } from "../services/price-bars.js"
 import { getNewsForTicker, getRecentNews, getNewsStats } from "../services/news.js"
-import { providerSymbol, symbolSuffix } from "../adapters/symbol.js"
+import { providerSymbol, symbolSuffix, venueFreeSymbol } from "../adapters/symbol.js"
 import { getExchangeBySuffix } from "../db/tickerref-queries.js"
 import { searchTickerReference } from "../db/tickerref-queries.js"
 import {
@@ -106,10 +106,12 @@ async function cryptoSearchLeg(q: string): Promise<components["schemas"]["Search
 
 /** Bond search leg (D79): savings-bond emissions from the openbb_obligacje
  * catalogue (symbol prefix or name substring), additive with the equity and
- * crypto legs. A 404 means simply "no bond matches" — never a 502. */
+ * crypto legs. A venue suffix on the query (ROD1033.WA) is stripped first —
+ * the catalogue keys on the bare symbol only (venue-free). A 404 means simply
+ * "no bond matches" — never a 502. */
 async function bondSearchLeg(q: string): Promise<components["schemas"]["SearchResult"][]> {
   try {
-    const rows = (await fetchBondSearch(q)) ?? []
+    const rows = (await fetchBondSearch(venueFreeSymbol(q))) ?? []
     return toBondSearchResponse(rows).results ?? []
   } catch {
     return []

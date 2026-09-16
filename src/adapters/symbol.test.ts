@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { providerSymbol, symbolSuffix } from "./symbol.js"
+import { providerSymbol, symbolSuffix, venueFreeSymbol } from "./symbol.js"
 
 describe("providerSymbol", () => {
   it("strips the .US suffix (US providers want bare tickers)", () => {
@@ -41,6 +41,21 @@ describe("symbolSuffix", () => {
 
   it("returns only the first suffix segment", () => {
     expect(symbolSuffix("A.B.C")).toBe("B")
+  })
+})
+
+describe("venueFreeSymbol", () => {
+  it("cuts any trailing venue suffix (catalogue tiers key on the bare symbol)", () => {
+    expect(venueFreeSymbol("ROD1033.WA")).toBe("ROD1033")
+    expect(venueFreeSymbol("ROD1033.US")).toBe("ROD1033")
+    expect(venueFreeSymbol("rod1033.wa")).toBe("rod1033")
+    expect(venueFreeSymbol("BTC-USD")).toBe("BTC-USD")
+  })
+
+  it("passes bare symbols through unchanged", () => {
+    expect(venueFreeSymbol("ROD1033")).toBe("ROD1033")
+    expect(venueFreeSymbol("rod")).toBe("rod")
+    expect(venueFreeSymbol("Obligacje 12-letnie ROD")).toBe("Obligacje 12-letnie ROD")
   })
 })
 
