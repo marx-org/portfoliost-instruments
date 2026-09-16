@@ -306,6 +306,15 @@ export function createInstrumentsRoutes() {
         }
         return c.json(out)
       } catch (e) {
+        if (e instanceof UpstreamError) {
+          try {
+            const bondProfile = (await fetchBondProfile(symbol)) as OpenstProfile
+            const out = toInstrumentProfile(symbol, bondProfile)
+            return c.json(out)
+          } catch {
+            /* not a bond either — fall through to the original error */
+          }
+        }
         return upstreamErrorResponse(c, e)
       }
     },

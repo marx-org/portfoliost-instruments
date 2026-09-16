@@ -213,6 +213,21 @@ describe("GET /api/instruments/:symbol/profile", () => {
     expect((await res.json()).error).toBe("NotFound")
   })
 
+  it("falls back to the bond profile when the equity profile fails (404/502/504)", async () => {
+    mocked.fetchProfile.mockRejectedValue(new cachest.UpstreamError("x", 404))
+    mocked.fetchBondProfile.mockResolvedValue({
+      symbol: "ROD0129",
+      name: "Obligacje 12-letnie ROD",
+      maturity_date: "2029-01-01",
+    })
+    const res = await req("/api/instruments/ROD0129/profile")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.ticker).toBe("ROD0129")
+    expect(body.name).toBe("Obligacje 12-letnie ROD")
+    expect(mocked.fetchBondProfile).toHaveBeenCalledWith("ROD0129")
+  })
+
   it("maps other upstream failures to 502", async () => {
     mocked.fetchProfile.mockRejectedValue(new cachest.UpstreamError("x", 503))
     const res = await req("/api/instruments/AAPL/profile")
