@@ -29,6 +29,8 @@ vi.mock("../adapters/cachest.js", () => ({
   fetchCalendarDividends: vi.fn(),
   fetchSearch: vi.fn(),
   fetchCryptoSearch: vi.fn(),
+  fetchBondSearch: vi.fn(),
+  fetchBondProfile: vi.fn(),
   fetchDividendHistory: vi.fn(),
   fetchFilings: vi.fn(),
   fetchMda: vi.fn(),
@@ -57,6 +59,8 @@ beforeEach(() => {
   mocked.fetchOhlcv.mockReset()
   mocked.fetchSearch.mockReset()
   mocked.fetchCryptoSearch.mockReset()
+  mocked.fetchBondSearch.mockReset()
+  mocked.fetchBondProfile.mockReset()
   mocked.fetchDividendHistory.mockReset()
   mocked.fetchFilings.mockReset()
   mocked.fetchMda.mockReset()
@@ -103,6 +107,52 @@ describe("GET /api/instruments/search", () => {
         expect.objectContaining({ symbol: "BTCS", type: "STOCK" }),
       ]),
     )
+  })
+
+  it("surfaces bond rows as BOND type, additive with equity", async () => {
+    mocked.fetchSearch.mockResolvedValue([{ symbol: "ROD", name: "Rodny Company" }])
+    mocked.fetchBondSearch.mockResolvedValue([
+      { symbol: "ROD0938", name: "Obligacje Rodzinne 4-letnie ROD", maturity_date: "2030-09-01" },
+    ])
+    const res = await req("/api/instruments/search?q=rod")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ symbol: "ROD0938", type: "BOND", source: "OBLIGACJE", exchange: "PL" }),
+      ]),
+    )
+  })
+
+  it("serves bond results instead of 404 when the equity tier has no match", async () => {
+    mocked.fetchSearch.mockRejectedValue(new cachest.UpstreamError("equity", 404))
+    mocked.fetchBondSearch.mockResolvedValue([{ symbol: "EDO0936", name: "Obligacje 10-letnie EDO" }])
+    const res = await req("/api/instruments/search?q=edo")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.results[0]).toMatchObject({ symbol: "EDO0936", type: "BOND", source: "OBLIGACJE" })
+  })
+})
+
+describe("GET /api/instruments/:symbol (detail)", () => {
+  it("falls back to the bond profile when the equity profile 404s", async () => {
+    mocked.fetchProfile.mockRejectedValue(new cachest.UpstreamError("equity", 404))
+    mocked.fetchBondProfile.mockResolvedValue({
+      symbol: "ROD0938",
+      name: "Obligacje 12-letnie ROD",
+      maturity_date: "2038-09-01",
+    })
+    const res = await req("/api/instruments/ROD0938")
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ symbol: "ROD0938", name: "Obligacje 12-letnie ROD" })
+  })
+
+  it("returns 404 when neither equity nor bond profile resolves", async () => {
+    mocked.fetchProfile.mockRejectedValue(new cachest.UpstreamError("equity", 404))
+    mocked.fetchBondProfile.mockRejectedValue(new cachest.UpstreamError("bond", 404))
+    const res = await req("/api/instruments/NOPE")
+    expect(res.status).toBe(404)
+    expect((await res.json()).error).toBe("NotFound")
   })
 })
 

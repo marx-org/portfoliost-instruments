@@ -73,13 +73,14 @@ export function marketPhase(now = new Date()): { session: string; phase: string 
 }
 
 export function toInstrumentDetail(symbol: string, profile: OpenstProfile): S["InstrumentDetail"] {
+  const isBond = (profile as Row).rate_rule !== undefined || (profile as Row).series_code !== undefined
   return {
     id: symbol.toUpperCase(),
     symbol: symbol.toUpperCase(),
     name: str(profile.name) ?? symbol.toUpperCase(),
-    exchange: str(pick(profile as Row, "stock_exchange", "exchange")) ?? "US",
-    type: "STOCK",
-    currency: str(profile.currency) ?? "USD",
+    exchange: str(pick(profile as Row, "stock_exchange", "exchange")) ?? (isBond ? "PL" : "US"),
+    type: isBond ? "BOND" : "STOCK",
+    currency: str(profile.currency) ?? (isBond ? "PLN" : "USD"),
   }
 }
 
@@ -317,6 +318,18 @@ export function toCryptoSearchResponse(rows: Array<Record<string, unknown>>): S[
     exchange: "CRYPTO",
     countryCode: null,
     source: "CRYPTO",
+  }))
+  return { count: Math.min(results.length, SEARCH_RESULT_LIMIT), results: results.slice(0, SEARCH_RESULT_LIMIT) }
+}
+
+export function toBondSearchResponse(rows: Array<Record<string, unknown>>): S["InstrumentSearchResponse"] {
+  const results = rows.map((r) => ({
+    symbol: str(r.symbol),
+    name: str(r.name),
+    type: "BOND",
+    exchange: "PL",
+    countryCode: "PL",
+    source: "OBLIGACJE",
   }))
   return { count: Math.min(results.length, SEARCH_RESULT_LIMIT), results: results.slice(0, SEARCH_RESULT_LIMIT) }
 }

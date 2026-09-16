@@ -9,6 +9,7 @@ import {
   toOverviewMetrics,
   toSearchResponse,
   toCryptoSearchResponse,
+  toBondSearchResponse,
   toReferenceSearchResponse,
   mergeSearchResults,
   toProjections,
@@ -47,6 +48,23 @@ describe("toInstrumentDetail", () => {
       exchange: "NASDAQ",
       type: "STOCK",
       currency: "USD",
+    })
+  })
+
+  it("maps a savings-bond profile to a PL/BOND detail", () => {
+    const bondProfile = {
+      symbol: "EDO0936",
+      name: "Obligacje 10-letnie EDO",
+      series_code: "EDO",
+      rate_rule: "cpi_12m+margin",
+    }
+    expect(toInstrumentDetail("EDO0936", bondProfile)).toEqual({
+      id: "EDO0936",
+      symbol: "EDO0936",
+      name: "Obligacje 10-letnie EDO",
+      exchange: "PL",
+      type: "BOND",
+      currency: "PLN",
     })
   })
 })
@@ -216,6 +234,29 @@ describe("toCryptoSearchResponse", () => {
 
   it("returns an empty response for no tradeable rows", () => {
     const r = toCryptoSearchResponse([{ symbol: "TBTCUSD", name: "tBTC USD" }])
+    expect(r).toEqual({ count: 0, results: [] })
+  })
+})
+
+describe("toBondSearchResponse", () => {
+  it("maps savings-bond rows to type BOND with PL exchange", () => {
+    const r = toBondSearchResponse([
+      { symbol: "ROD0938", name: "Obligacje Rodzinne 4-letnie ROD", maturity_date: "2030-09-01" },
+      { symbol: "EDO0936", name: "Obligacje 10-letnie EDO" },
+    ]) as Record<string, any>
+    expect(r.count).toBe(2)
+    expect(r.results[0]).toEqual({
+      symbol: "ROD0938",
+      name: "Obligacje Rodzinne 4-letnie ROD",
+      type: "BOND",
+      exchange: "PL",
+      countryCode: "PL",
+      source: "OBLIGACJE",
+    })
+  })
+
+  it("returns empty when no bond rows match", () => {
+    const r = toBondSearchResponse([])
     expect(r).toEqual({ count: 0, results: [] })
   })
 })

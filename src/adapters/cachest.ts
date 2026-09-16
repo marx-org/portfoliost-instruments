@@ -68,6 +68,14 @@ export function fetchCryptoSearch(query: string): Promise<Array<Record<string, u
   return fetchJson(`${BASE_URL}/crypto/search/${encodeURIComponent(query.trim().toLowerCase())}`)
 }
 
+export function fetchBondSearch(query: string): Promise<Array<Record<string, unknown>>> {
+  return fetchJson(`${BASE_URL}/fixedincome/search/${encodeURIComponent(query.trim().toLowerCase())}`)
+}
+
+export function fetchBondProfile(symbol: string): Promise<Record<string, unknown>> {
+  return fetchJson(`${BASE_URL}/fixedincome/profile/${encodeURIComponent(symbol)}`)
+}
+
 export function fetchDividendHistory(symbol: string): Promise<Array<Record<string, unknown>>> {
   return fetchJson(`${BASE_URL}/dividends/${encodeURIComponent(symbol)}`)
 }

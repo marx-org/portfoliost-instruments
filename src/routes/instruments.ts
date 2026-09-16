@@ -19,6 +19,8 @@ import {
   fetchCalendarDividends,
   fetchSearch,
   fetchCryptoSearch,
+  fetchBondSearch,
+  fetchBondProfile,
   fetchDividendHistory,
   fetchFilings,
   fetchMda,
@@ -34,6 +36,7 @@ import {
   toOverviewMetrics,
   toSearchResponse,
   toCryptoSearchResponse,
+  toBondSearchResponse,
   toReferenceSearchResponse,
   mergeSearchResults,
   toFundamentals,
@@ -99,6 +102,31 @@ async function cryptoSearchLeg(q: string): Promise<components["schemas"]["Search
     ]
   }
   return results
+}
+
+/** Bond search leg (D79): savings-bond emissions from the openbb_obligacje
+ * catalogue (symbol prefix or name substring), additive with the equity and
+ * crypto legs. A 404 means simply "no bond matches" — never a 502. */
+async function bondSearchLeg(q: string): Promise<components["schemas"]["SearchResult"][]> {
+  try {
+    const rows = (await fetchBondSearch(q)) ?? []
+    return toBondSearchResponse(rows).results ?? []
+  } catch {
+    return []
+  }
+}
+
+/** Equity search leg: SEC/equity rows typed "STOCK". A 404 means "not an
+ * equity" (e.g. a bond or crypto symbol) — empty, not fatal, so the additive
+ * bond/crypto legs still get served. Real upstream failures still surface. */
+async function equitySearchLeg(q: string): Promise<components["schemas"]["SearchResult"][]> {
+  try {
+    const rows = (await fetchSearch(q)) ?? []
+    return toSearchResponse(rows).results ?? []
+  } catch (e) {
+    if (e instanceof UpstreamError && e.status === 404) return []
+    throw e
+  }
 }
 
 const UNAUTHORIZED = {
@@ -173,8 +201,10 @@ export function createInstrumentsRoutes() {
           return c.json(
             // Crypto leg first so the curated exact-pair suggestion
             // (BTC-USD when typing "btc") is never occluded by the reference
-            // tier's name-match flood under the 50-result cap.
-            mergeSearchResults(await cryptoSearchLeg(q), toReferenceSearchResponse(rows).results ?? []),
+            // tier's name-match flood under the 50-result cap. Bonds are
+            // additive too (D79) — ROD/EDO emissions from the obligacje
+            // catalogue always surface alongside the reference rows.
+            mergeSearchResults(await cryptoSearchLeg(q), await bondSearchLeg(q), toReferenceSearchResponse(rows).results ?? []),
           )
         }
       } catch {
@@ -182,8 +212,8 @@ export function createInstrumentsRoutes() {
       }
 
       try {
-        const [rows, cryptoRows] = await Promise.all([fetchSearch(q), cryptoSearchLeg(q)])
-        return c.json(mergeSearchResults(cryptoRows, toSearchResponse(rows).results ?? []))
+        const [eqRows, cryptoRows, bondRows] = await Promise.all([equitySearchLeg(q), cryptoSearchLeg(q), bondSearchLeg(q)])
+        return c.json(mergeSearchResults(cryptoRows, bondRows, eqRows))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
@@ -211,6 +241,17 @@ export function createInstrumentsRoutes() {
         const profile = (await fetchProfile(symbol)) as OpenstProfile
         return c.json(toInstrumentDetail(symbol, profile))
       } catch (e) {
+        // D79 — savings-bond emissions (ROD0938, EDO0936, …) have no equity
+        // profile: a bond symbol 404s the equity tier, so fall back to the
+        // bond catalogue before surfacing the upstream error.
+        if (e instanceof UpstreamError && e.status === 404) {
+          try {
+            const bondProfile = (await fetchBondProfile(symbol)) as OpenstProfile
+            return c.json(toInstrumentDetail(symbol, bondProfile))
+          } catch {
+            /* not a bond either — fall through to the original error */
+          }
+        }
         return upstreamErrorResponse(c, e)
       }
     },
