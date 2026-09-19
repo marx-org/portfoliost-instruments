@@ -3,12 +3,13 @@ import { like, or, sql } from "drizzle-orm"
 import { createTestDb, migrationsFolder } from "../db/test-db.js"
 import type { DB } from "../db/index.js"
 import { tickerReference } from "../db/schema.js"
-import { parseCsv, parseCsvLine, syncExchangeReference, syncTickerReference } from "../scripts/tickerref-sync.js"
+import { parseCsv, parseCsvLine, syncExchangeReference, syncTickerReference, applyAliasOverrides, ALIAS_OVERRIDES } from "../scripts/tickerref-sync.js"
 
 const FIXTURE = `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
 NASDAQ::AAPL,AAPL,NASDAQ,Apple Inc,Stock,Information Technology,,United States,US,US0378331005,apple
 WSE::PKN,PKN,WSE,"Polski Koncern Naftowy ORLEN SA",Stock,Energy,,Poland,PL,PLPKN0000018,polski koncern naftowy orlen|orlen
-NASDAQ::QQQ,QQQ,NASDAQ,Invesco QQQ Trust,ETF,,Large Blend,United States,US,US4642854031,qqq trust`
+NASDAQ::QQQ,QQQ,NASDAQ,Invesco QQQ Trust,ETF,,Large Blend,United States,US,US4642854031,qqq trust
+LSE::DTLA,DTLA,LSE,iShares $ Treasury Bond 20+yr UCITS ETF USD (Acc),ETF,,Fixed Income,Ireland,IE,IE00BFM6TC58,`
 
 describe("tickerref csv parsing", () => {
   it("parses quoted fields containing commas", () => {
@@ -19,8 +20,8 @@ describe("tickerref csv parsing", () => {
     expect(row).toHaveLength(11)
   })
 
-  it("parses the fixture into 3 rows", () => {
-    expect(parseCsv(FIXTURE)).toHaveLength(3)
+  it("parses the fixture into 4 rows", () => {
+    expect(parseCsv(FIXTURE)).toHaveLength(4)
   })
 })
 
@@ -39,13 +40,13 @@ describe("tickerref sync + search against PGlite", () => {
 
   it("syncs all rows", async () => {
     const rows = await db.select().from(tickerReference)
-    expect(rows).toHaveLength(3)
+    expect(rows).toHaveLength(4)
   })
 
   it("upserts on re-sync without duplicating", async () => {
     await syncTickerReference(FIXTURE, db)
     const rows = await db.select().from(tickerReference)
-    expect(rows).toHaveLength(3)
+    expect(rows).toHaveLength(4)
   })
 
   it("finds PKN by ticker, name fragment and alias", async () => {
@@ -70,6 +71,38 @@ describe("tickerref sync + search against PGlite", () => {
       .where(sql`${tickerReference.aliases} ILIKE ${"%apple%"}`)
     expect(rows).toHaveLength(1)
     expect(rows[0].ticker).toBe("AAPL")
+  })
+})
+
+describe("tickerref alias overrides (plan §24.9)", () => {
+  let db: DB
+  let close: () => void
+
+  beforeAll(async () => {
+    const t = await createTestDb()
+    db = t.db
+    close = () => t.client.close()
+    await syncTickerReference(FIXTURE, db)
+  })
+
+  afterAll(() => close())
+
+  it("updates only rows the upstream data provides", async () => {
+    const applied = await applyAliasOverrides(db)
+    expect(applied).toBe(1)
+    const rows = await db.select().from(tickerReference)
+    expect(rows).toHaveLength(4)
+    const dtla = rows.find((r) => r.listingKey === "LSE::DTLA")!
+    expect(dtla.aliases).toBe(ALIAS_OVERRIDES["LSE::DTLA"])
+  })
+
+  it("re-applies after an upstream re-sync resets aliases", async () => {
+    await syncTickerReference(FIXTURE, db)
+    let dtla = (await db.select().from(tickerReference)).find((r) => r.listingKey === "LSE::DTLA")!
+    expect(dtla.aliases).toBeNull()
+    await applyAliasOverrides(db)
+    dtla = (await db.select().from(tickerReference)).find((r) => r.listingKey === "LSE::DTLA")!
+    expect(dtla.aliases).toBe(ALIAS_OVERRIDES["LSE::DTLA"])
   })
 })
 

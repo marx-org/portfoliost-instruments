@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises"
-import { sql } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { closeDb, getDb, type DB } from "../db/index.js"
 import { exchangeReference, tickerReference } from "../db/schema.js"
 
@@ -15,6 +15,37 @@ const DEFAULT_MIC_URL =
   "https://raw.githubusercontent.com/wnjoon/go-yfinance/main/pkg/utils/mic.go"
 
 const BATCH_SIZE = 500
+
+/**
+ * Manual alias overrides applied AFTER the upstream sync (plan §24.9). The
+ * Transakcje sheet writes LSE-listed rows with venue "LON", so the venue-strict
+ * ticker match misses and resolution falls back to the name fold — these
+ * full-name aliases are what make that fallback land on the right ticker.
+ * adanos core_listings.csv carries none of them and its upsert resets the
+ * column, so the overrides are re-applied on every sync run.
+ */
+export const ALIAS_OVERRIDES: Record<string, string> = {
+  "LSE::DTLA": "ishares treasury bond 20 yr ucits etf usd a",
+  "LSE::IUFS": "s&p 500 financials sector|ishares s p 500 financials sector ucits etf usd a",
+  "NASDAQ::RGEN": "repligen|repligen corp",
+}
+
+/**
+ * Applies ALIAS_OVERRIDES by listing_key. UPDATE-only: a key absent from the
+ * upstream data is skipped, never created. Returns the number of rows updated.
+ */
+export async function applyAliasOverrides(db: DB = getDb()): Promise<number> {
+  let updated = 0
+  for (const [listingKey, aliases] of Object.entries(ALIAS_OVERRIDES)) {
+    const rows = await db
+      .update(tickerReference)
+      .set({ aliases, updatedAt: new Date() })
+      .where(eq(tickerReference.listingKey, listingKey))
+      .returning({ key: tickerReference.listingKey })
+    updated += rows.length
+  }
+  return updated
+}
 
 /** Minimal RFC4180 CSV row parser (quoted fields, escaped quotes, CRLF). */
 export function parseCsvLine(line: string): string[] {
@@ -196,6 +227,8 @@ async function main() {
     console.log(`[tickerref] ${(tickersCsv.length / 1e6).toFixed(1)} MB loaded, syncing`)
     const { total } = await syncTickerReference(tickersCsv, db)
     console.log(`[tickerref] synced ${total} tickers`)
+    const applied = await applyAliasOverrides(db)
+    console.log(`[tickerref] alias overrides applied: ${applied}`)
   }
 
   // Venues + MIC→Yahoo-suffix map: failure is non-fatal — identity search
