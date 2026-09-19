@@ -9,9 +9,9 @@
  */
 import { eq, sql } from "drizzle-orm"
 import type { DB } from "../db/index.js"
-import { priceBarMetadata, priceBars, splitCandidates } from "../db/schema.js"
-import { fetchOhlcv } from "../adapters/cachest.js"
-import { providerSymbol } from "../adapters/symbol.js"
+import { priceBarMetadata, priceBars, splitCandidates, tickerReference } from "../db/schema.js"
+import { fetchOhlcv, fetchBondOhlcv, fetchCryptoOhlcv } from "../adapters/cachest.js"
+import { providerSymbol, venueFreeSymbol } from "../adapters/symbol.js"
 
 const STALE_AFTER_DAYS = 3
 const COOLDOWN_MS = 60 * 60 * 1000 // retry upstream at most hourly after a failure
@@ -78,6 +78,38 @@ export async function lastDateForSymbol(db: DB, symbol: string): Promise<string 
     where symbol = ${symbol}
   `)
   return (rowsOf<{ last_date: string }>(result)[0]?.last_date as string | null) ?? null
+}
+
+/** D81 asset class for price-bars routing (canonical lowercase). */
+export type PriceBarAssetType = "stock" | "etf" | "fund" | "crypto" | "bond" | "corp_bond"
+
+/** Map a stored `ticker_reference.asset_type` (mixed case: "Stock", "ETF", "CRYPTO",
+ * "corp_bond", …) onto the canonical routing set. Unknown values fall back to `stock`,
+ * preserving the existing equity/stooq path. */
+export function normalizeAssetType(raw: string | null | undefined): PriceBarAssetType {
+  const v = (raw ?? "").trim().toLowerCase()
+  if (v === "etf") return "etf"
+  if (v === "fund" || v === "tfi" || v === "funds") return "fund"
+  if (v === "crypto" || v === "cryptocurrency") return "crypto"
+  if (v === "bond") return "bond"
+  if (v === "corp_bond" || v === "corporate_bond" || v === "corporate bond") return "corp_bond"
+  return "stock"
+}
+
+/**
+ * Resolve a symbol's asset class from `ticker_reference` (D81). Matches the bare
+ * venue-free ticker against the reference table (venue-qualified `SNT.WA` / US
+ * `AAPL.US` resolve to their bare ticker). Returns `null` when the reference
+ * table is absent or the symbol is not listed — callers treat that as `stock`.
+ */
+export async function lookupAssetType(db: DB, symbol: string): Promise<string | null> {
+  const baseTicker = venueFreeSymbol(symbol).toUpperCase()
+  const rows = await db
+    .select({ assetType: tickerReference.assetType })
+    .from(tickerReference)
+    .where(eq(tickerReference.ticker, baseTicker))
+    .limit(1)
+  return rows[0]?.assetType ?? null
 }
 
 /** Whether the series has a gap near today (off by more than the tolerance). */
@@ -211,6 +243,39 @@ export function stooqTickerFor(symbol: string): string {
 }
 
 /**
+ * D81 — resolve the cachest OHLCV upstream for an asset class.
+ *
+ *   crypto    → /crypto/ohlcv/{pair}        (pair kept as-is, e.g. BTC-USD)
+ *   bond      → /fixedincome/ohlcv/{symbol} (savings-bond engine, e.g. ROD1033)
+ *   corp_bond → /ohlcv/{symbol}             (biznesradar Catalyst, e.g. BST0327.WA)
+ *   fund      → /ohlcv/{symbol}             (biznesradar TFI, e.g. NNEP25.TFI)
+ *   stock/etf → /ohlcv/{symbol}             (equity tier, .US stripped for OpenBB)
+ *
+ * Only `stock`/`etf` ride the stooq-overflow split path (see getPriceBarSeries);
+ * the other classes never touch stooq and write their series straight to overflow.
+ */
+export function upstreamFor(
+  assetType: PriceBarAssetType,
+  symbol: string,
+  start: string,
+  end: string,
+): Promise<Array<Record<string, unknown>>> {
+  switch (assetType) {
+    case "crypto":
+      return fetchCryptoOhlcv(symbol, start, end)
+    case "bond":
+      return fetchBondOhlcv(venueFreeSymbol(symbol), start, end)
+    case "corp_bond":
+    case "fund":
+      return fetchOhlcv(symbol, start, end)
+    case "stock":
+    case "etf":
+    default:
+      return fetchOhlcv(providerSymbol(symbol), start, end)
+  }
+}
+
+/**
  * Read-through daily close series. Returns the current DB state with a
  * `stale` flag. When stale and upstream is not cooling down, fills the gap.
  */
@@ -235,11 +300,15 @@ export async function getPriceBarSeries(
     if (recentlyFailed(meta, now)) {
       stale = true
     } else {
-      const cachestSymbol = providerSymbol(symbol) // strip .US for cachest/openst/OpenBB
-      const stooqTicker = stooqTickerFor(symbol)    // keep .US for stooq boundary check
+      // D81 — route the gap fill by asset class (ticker_reference.asset_type,
+      // falling back to `stock` when the symbol is unlisted so the equity path
+      // is unchanged). stooqTicker is only meaningful for the stock/etf
+      // split-boundary check; the other classes write straight to overflow.
+      const assetType = normalizeAssetType(await lookupAssetType(db, symbol))
+      const stooqTicker = stooqTickerFor(symbol) // keep .US for stooq boundary check
       const hadRowsBefore = (await minOverflowDate(db, symbol)) !== null
       try {
-        const raw = (await fetchOhlcv(cachestSymbol, lastDate ?? "1900-01-01", to)) ?? []
+        const raw = (await upstreamFor(assetType, symbol, lastDate ?? "1900-01-01", to)) ?? []
         const have = new Set(rows.map((r) => r.date))
         const bars = raw
           .map(ohlcvToClose)
@@ -253,7 +322,7 @@ export async function getPriceBarSeries(
             target: priceBarMetadata.symbol,
             set: { lastFetchedAt: sql`now()`, fetchStatus: "ok" },
           })
-        if (!hadRowsBefore && hadNewBars) {
+        if (!hadRowsBefore && hadNewBars && (assetType === "stock" || assetType === "etf")) {
           await checkSplitBoundary(db, symbol, stooqTicker).catch(() => undefined)
         }
         rows = await queryView(db, symbol, from, to)
