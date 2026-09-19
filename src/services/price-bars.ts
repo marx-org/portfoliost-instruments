@@ -9,9 +9,21 @@
  */
 import { eq, sql } from "drizzle-orm"
 import type { DB } from "../db/index.js"
-import { priceBarMetadata, priceBars, splitCandidates, tickerReference } from "../db/schema.js"
+import { priceBarMetadata, priceBars, splitCandidates } from "../db/schema.js"
+import {
+  assetTypeForSymbol,
+  normalizeAssetType,
+  type AssetType,
+} from "../db/tickerref-queries.js"
 import { fetchOhlcv, fetchBondOhlcv, fetchCryptoOhlcv } from "../adapters/cachest.js"
 import { providerSymbol, venueFreeSymbol } from "../adapters/symbol.js"
+
+// D81/34 — the asset-class helpers live in db/tickerref-queries.ts (shared
+// with the quote dispatch); re-exported here for existing importers.
+export { normalizeAssetType, assetTypeForSymbol }
+export const lookupAssetType = assetTypeForSymbol
+/** D81 asset class for price-bars routing (canonical lowercase). */
+export type PriceBarAssetType = AssetType
 
 const STALE_AFTER_DAYS = 3
 const COOLDOWN_MS = 60 * 60 * 1000 // retry upstream at most hourly after a failure
@@ -78,38 +90,6 @@ export async function lastDateForSymbol(db: DB, symbol: string): Promise<string 
     where symbol = ${symbol}
   `)
   return (rowsOf<{ last_date: string }>(result)[0]?.last_date as string | null) ?? null
-}
-
-/** D81 asset class for price-bars routing (canonical lowercase). */
-export type PriceBarAssetType = "stock" | "etf" | "fund" | "crypto" | "bond" | "corp_bond"
-
-/** Map a stored `ticker_reference.asset_type` (mixed case: "Stock", "ETF", "CRYPTO",
- * "corp_bond", …) onto the canonical routing set. Unknown values fall back to `stock`,
- * preserving the existing equity/stooq path. */
-export function normalizeAssetType(raw: string | null | undefined): PriceBarAssetType {
-  const v = (raw ?? "").trim().toLowerCase()
-  if (v === "etf") return "etf"
-  if (v === "fund" || v === "tfi" || v === "funds") return "fund"
-  if (v === "crypto" || v === "cryptocurrency") return "crypto"
-  if (v === "bond") return "bond"
-  if (v === "corp_bond" || v === "corporate_bond" || v === "corporate bond") return "corp_bond"
-  return "stock"
-}
-
-/**
- * Resolve a symbol's asset class from `ticker_reference` (D81). Matches the bare
- * venue-free ticker against the reference table (venue-qualified `SNT.WA` / US
- * `AAPL.US` resolve to their bare ticker). Returns `null` when the reference
- * table is absent or the symbol is not listed — callers treat that as `stock`.
- */
-export async function lookupAssetType(db: DB, symbol: string): Promise<string | null> {
-  const baseTicker = venueFreeSymbol(symbol).toUpperCase()
-  const rows = await db
-    .select({ assetType: tickerReference.assetType })
-    .from(tickerReference)
-    .where(eq(tickerReference.ticker, baseTicker))
-    .limit(1)
-  return rows[0]?.assetType ?? null
 }
 
 /** Whether the series has a gap near today (off by more than the tolerance). */

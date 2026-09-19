@@ -143,3 +143,56 @@ describe("syncExchangeReference", () => {
     }
   })
 })
+
+describe("tickerref curated listings (plan 34.5)", () => {
+  it("upserts crypto pairs + TFI funds idempotently", async () => {
+    const { syncCuratedListings, curatedListingRows } = await import("../scripts/tickerref-sync.js")
+    const t = await createTestDb()
+    try {
+      const rows = curatedListingRows()
+      expect(rows.find((r) => r.listing_key === "CRYPTO::BTC")).toMatchObject({
+        ticker: "BTC",
+        asset_type: "crypto",
+        exchange: "CRYPTO",
+      })
+      // matic + pol both price via POL-USD but stay separate rows
+      expect(rows.filter((r) => r.name === "POL-USD")).toHaveLength(2)
+      expect(new Set(rows.map((r) => r.listing_key)).size).toBe(rows.length)
+      expect(rows.find((r) => r.listing_key === "TFI::NNEP25")).toMatchObject({
+        ticker: "NNEP25",
+        asset_type: "fund",
+        exchange: "GPW",
+      })
+
+      const first = await syncCuratedListings(t.db)
+      expect(first).toBe(rows.length)
+      const second = await syncCuratedListings(t.db)
+      expect(second).toBe(rows.length)
+
+      const { tickerReference } = await import("../db/schema.js")
+      const all = await t.db.select().from(tickerReference)
+      expect(all).toHaveLength(rows.length)
+      const btc = all.find((r) => r.ticker === "BTC")
+      expect(btc?.assetType).toBe("crypto")
+      const fund = all.find((r) => r.ticker === "NNEP25")
+      expect(fund?.assetType).toBe("fund")
+    } finally {
+      await t.client.close()
+    }
+  })
+
+  it("does not clobber upstream rows sharing a ticker (upsert keyed on listing_key)", async () => {
+    const { syncCuratedListings } = await import("../scripts/tickerref-sync.js")
+    const t = await createTestDb()
+    try {
+      await syncTickerReference(FIXTURE, t.db)
+      await syncCuratedListings(t.db)
+      const all = await t.db.select().from(tickerReference)
+      const aapl = all.filter((r) => r.ticker === "AAPL")
+      expect(aapl).toHaveLength(1)
+      expect(aapl[0].listingKey).toBe("NASDAQ::AAPL")
+    } finally {
+      await t.client.close()
+    }
+  })
+})

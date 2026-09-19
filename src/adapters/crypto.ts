@@ -16,7 +16,7 @@ export interface CryptoSearchResult {
 /** Curated base-coin → yfinance pair. Typing a major's mnemonic (BTC, ETH, …)
  * must suggest the exact tradeable pair, even when the FMP row catalogue is
  * noisy (or, as with `eth`, the upstream search itself degrades). */
-const CRYPTO_PRIMARY_PAIRS: Readonly<Record<string, string>> = {
+export const CRYPTO_PRIMARY_PAIRS: Readonly<Record<string, string>> = {
   btc: "BTC-USD",
   eth: "ETH-USD",
   sol: "SOL-USD",
