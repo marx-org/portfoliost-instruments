@@ -61,6 +61,16 @@ describe("price_bars schema (H2)", () => {
     expect(Number(rows.close)).toBe(212)
   })
 
+  it("carries the US stripped-ticker functional index (mirrors daily_us_stripped_ticker_date)", async () => {
+    const rows = await db.execute(sql`
+      select indexname from pg_indexes
+      where schemaname = 'instruments'
+        and tablename = 'stooq_daily_us'
+        and indexname = 'stooq_daily_us_stripped_ticker_date'
+    `)
+    expect(rows.rows).toHaveLength(1)
+  })
+
   it("unifies stooq (US, PL, world) and overflow rows in price_bars_all", async () => {
     // seed local stooq tables
     await db.execute(sql.raw(`
