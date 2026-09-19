@@ -51,6 +51,18 @@ export const LOCAL_STOOQ_TABLES_SQL: string[] = STOOQ_DAILY_TABLES.map(
 )
 
 /**
+ * Functional index mirroring the cluster's `daily_us_stripped_ticker_date`
+ * on the remote stooq DB's `public.daily_us` (2026-09-19 pfire-postgres CPU
+ * saturation): the view computes `replace(ticker, '.US', '')` per row, which
+ * a plain (ticker, date) index cannot serve — per-symbol price lookups
+ * degenerate to full scans. Index name stays unqualified (PGlite's parser
+ * rejects schema-qualified index names); it lands in the table's schema.
+ */
+export const LOCAL_STOOQ_INDEX_SQL: string[] = [
+  `CREATE INDEX IF NOT EXISTS stooq_daily_us_stripped_ticker_date ON "instruments"."stooq_daily_us" (replace("ticker", '.US', ''), "date");`,
+]
+
+/**
  * The `price_bars_all` view. Stooq US tickers carry a '.US' suffix that is
  * stripped to the system symbol; all other datasets pass tickers through
  * as-is. Admin-approved split factors (split_adjustments) are applied via
@@ -135,9 +147,10 @@ SELECT "symbol", "date", "close", "source"
 FROM "instruments"."price_bars";
 `
 
-/** Create local stooq tables + the unified view. Idempotent. */
+/** Create local stooq tables + indexes + the unified view. Idempotent. */
 export const LOCAL_PRICE_BARS_SETUP_SQL: string[] = [
   ...LOCAL_STOOQ_TABLES_SQL,
+  ...LOCAL_STOOQ_INDEX_SQL,
   PRICE_BARS_ALL_VIEW_SQL,
 ]
 
