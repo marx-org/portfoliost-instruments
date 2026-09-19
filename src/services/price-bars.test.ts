@@ -54,6 +54,19 @@ describe("price-bars (H3) service", () => {
     vi.clearAllMocks()
   })
 
+  it("queryView orders stooq ahead of openst for an overlapping date (deterministic)", async () => {
+    await seedStooq(db, "AAPL", [["2026-07-29", "230.50000000000000"]])
+    await db.execute(sql.raw(`
+      INSERT INTO instruments.price_bars (symbol, date, close, source)
+      VALUES ('AAPL', '2026-07-29', 338.19000000, 'openst');
+    `))
+    const rows = await queryView(db, "AAPL", "2026-07-29", "2026-07-29")
+    expect(rows.map((r) => [r.date, Number(r.close), r.source])).toEqual([
+      ["2026-07-29", 230.5, "stooq"],
+      ["2026-07-29", 338.19, "openst"],
+    ])
+  })
+
   it("queryView unifies stooq and overflow rows into an ordered series", async () => {
     await seedStooq(db, "AAPL", [["2026-01-02", "200.00000000"], ["2026-01-05", "205.00000000"]])
     await db.execute(sql.raw(`
