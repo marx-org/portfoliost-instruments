@@ -1072,6 +1072,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/portfolios/{id}/recompute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Force-rebuild portfolio history (delete + rebuild value snapshots) */
+        post: operations["portfolioRecompute"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/portfolios/{id}/positions": {
         parameters: {
             query?: never;
@@ -1604,6 +1623,108 @@ export interface paths {
         patch: operations["updateCashTransaction"];
         trace?: never;
     };
+    "/import/wallets/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Idempotently ensure wallets exist, tagged with external_source */
+        post: operations["importWalletBootstrap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/import/portfolios/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Idempotently ensure a portfolio exists, tagged with external_source */
+        post: operations["importPortfolioBootstrap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/import/transactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit an idempotent batch of max 500 imported transaction events */
+        post: operations["importTransactions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/import/sync-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List import runs for the authenticated user */
+        get: operations["listSyncRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/import/sync-runs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete a sync run record (does not delete imported transactions) */
+        delete: operations["deleteSyncRun"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/import/source/{externalSource}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Wipe all data tagged with this source for the authenticated user */
+        delete: operations["wipeImportSource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/watchlists": {
         parameters: {
             query?: never;
@@ -1958,6 +2079,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/apply-split": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retroactively adjust portfolio transactions for a stock split
+         * @description No auth — reachable only inside the cluster. Recomputes quantity/price for all transactions of a symbol before the effective date from the frozen original_quantity/original_price; idempotent.
+         */
+        post: operations["applySplit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2222,12 +2363,14 @@ export interface components {
                 [key: string]: unknown;
             }[];
         };
+        /** @enum {string} */
+        InstrumentType: "STOCK" | "ETF" | "BOND" | "CRYPTO" | "FUND" | "CORP_BOND";
         InstrumentDetail: {
             id?: string;
             symbol?: string;
             name?: string;
             exchange?: string;
-            type?: string;
+            type?: components["schemas"]["InstrumentType"];
             currency?: string;
         };
         InstrumentProfile: {
@@ -2374,7 +2517,7 @@ export interface components {
         SearchResult: {
             symbol?: string;
             name?: string;
-            type?: string;
+            type?: components["schemas"]["InstrumentType"];
             exchange?: string;
             countryCode?: string | null;
             source?: string;
@@ -2807,6 +2950,10 @@ export interface components {
         SetLabelsRequest: {
             labelIds: string[];
         };
+        BackfillRecomputeResponse: {
+            /** @enum {string} */
+            backfillStatus: "pending" | "complete" | "failed";
+        };
         PortfolioAnalytics: {
             /** @enum {string|null} */
             backfillStatus?: "pending" | "complete" | "failed" | null;
@@ -3032,6 +3179,14 @@ export interface components {
             convertedRealizedGainLoss?: number | null;
             sector?: string;
             country?: string;
+            /** @description Import provenance tag; NULL for manually-created rows */
+            externalSource?: string | null;
+            /** @description Importer-supplied dedup key; unique per externalSource */
+            externalId?: string | null;
+            /** @description Pre-split/pre-restatement quantity; frozen at creation */
+            originalQuantity?: number | null;
+            /** @description Pre-split/pre-restatement price; frozen at creation */
+            originalPrice?: number | null;
             labels?: components["schemas"]["Label"][];
         };
         FeeFxFields: {
@@ -3177,6 +3332,10 @@ export interface components {
             new_balance?: number | null;
             remaining_balance?: number | null;
             walletName?: string | null;
+            /** @description Import provenance tag; NULL for manually-created rows */
+            externalSource?: string | null;
+            /** @description Importer-supplied dedup key; unique per externalSource */
+            externalId?: string | null;
             labels?: components["schemas"]["Label"][];
         };
         RecentCashTransaction: {
@@ -3216,6 +3375,176 @@ export interface components {
                 limit?: number;
                 totalPages?: number;
             };
+        };
+        ImportWalletBootstrapRequest: {
+            /** @description Source tag; created wallets get external_source = this value */
+            externalSource: string;
+            wallets: {
+                name: string;
+                currency: string;
+                baseCurrency?: string;
+            }[];
+        };
+        ImportWalletBootstrapResponse: {
+            wallets?: {
+                /** Format: uuid */
+                id: string;
+                name: string;
+                currency: string;
+                baseCurrency?: string;
+                /** @description true = just inserted (external_source tagged); false = already existed (not re-tagged) */
+                created: boolean;
+            }[];
+        };
+        ImportPortfolioBootstrapRequest: {
+            externalSource: string;
+            name: string;
+            currency: string;
+            baseCurrency?: string;
+        };
+        ImportPortfolioBootstrapResponse: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            currency: string;
+            baseCurrency?: string;
+            /** @description true = just inserted (external_source tagged); false = already existed (not re-tagged) */
+            created: boolean;
+        };
+        ImportTransactionsRequest: {
+            source: {
+                externalSource: string;
+                spreadsheetId: string;
+                sheet: string;
+            };
+            /** @description Idempotent; re-submitting the same externalId array is a no-op */
+            transactions: components["schemas"]["ImportTransaction"][];
+        };
+        ImportTransaction: {
+            /** @description Stable dedup key derived by the importer (e.g. SHA256 of source row fields) */
+            externalId: string;
+            /** @description Must exist for this user; use wallets/bootstrap to create missing ones */
+            walletName: string;
+            /** Format: date-time */
+            executedAt: string;
+            walletTx: components["schemas"]["ImportWalletTx"];
+            /** @description Omit for pure-cash events (DEPOSIT/WITHDRAWAL) */
+            portfolioTx?: components["schemas"]["ImportPortfolioTx"];
+        };
+        ImportWalletTx: components["schemas"]["FeeFxFields"] & {
+            /** @enum {string} */
+            type: "DEPOSIT" | "WITHDRAWAL" | "TRANSFER" | "INVEST" | "SELL" | "DIVIDEND" | "FEE" | "INTEREST" | "ADJUSTMENT";
+            /** @description Signed; negative = cash out. ADJUSTMENT allows 0 (split markers) */
+            amount: number;
+            currency: string;
+            description?: string | null;
+            /** Format: date */
+            transactionDate?: string | null;
+            status?: string;
+            paymentMethod?: string | null;
+            fees?: number | null;
+            /** @enum {string|null} */
+            feesType?: "fixed" | "pct" | null;
+            taxes?: number | null;
+            reference?: string | null;
+            /** Format: uuid */
+            portfolioId?: string | null;
+        };
+        ImportPortfolioTx: components["schemas"]["FeeFxFields"] & {
+            /** Format: uuid */
+            portfolioId: string;
+            /** @enum {string} */
+            type: "BUY" | "SELL" | "DIVIDEND";
+            instrumentSymbol: string;
+            instrumentName?: string | null;
+            /** @default STOCK */
+            assetType: string;
+            sector?: string | null;
+            industry?: string | null;
+            /** @description ISO-2 country code (e.g. PL) sourced from the import catalog */
+            country?: string | null;
+            /** @description Legacy 2/3-letter country code when it differs from the ISO-2 country */
+            countryCode?: string | null;
+            /** @description Post-restatement quantity used in calculations */
+            quantity: number;
+            /** @description Post-restatement unit price used in calculations */
+            price: number;
+            /** @description Pre-restatement quantity; frozen at creation */
+            originalQuantity?: number | null;
+            /** @description Pre-restatement unit price; frozen at creation */
+            originalPrice?: number | null;
+            currency: string;
+            fees?: number | null;
+            /** @enum {string|null} */
+            feesType?: "fixed" | "pct" | null;
+            taxes?: number | null;
+            realizedGainLoss?: number | null;
+            /** Format: date-time */
+            executedAt?: string | null;
+            /**
+             * @description SHORT marks a short-option open (position-creating, regardless of type)
+             * @enum {string|null}
+             */
+            direction?: "LONG" | "SHORT" | null;
+            /** @enum {string|null} */
+            optionType?: "CALL" | "PUT" | null;
+            contractSize?: number | null;
+        };
+        ImportTransactionsResponse: {
+            inserted: number;
+            skipped: number;
+            /** @description Row-level failures; the rest of the batch still succeeds */
+            errors: {
+                externalId: string;
+                error: string;
+                message?: string;
+            }[];
+            syncRun?: components["schemas"]["SyncRun"];
+        };
+        SyncRun: {
+            id: number;
+            externalSource: string;
+            spreadsheetId: string;
+            sheet: string;
+            lastRow?: number | null;
+            /** @enum {string} */
+            status: "pending" | "running" | "done" | "failed";
+            /** Format: date-time */
+            startedAt?: string | null;
+            /** Format: date-time */
+            completedAt?: string | null;
+            error?: string | null;
+            insertedWtx: number;
+            insertedPtx: number;
+            skipped: number;
+        };
+        SyncRunsResponse: {
+            items?: components["schemas"]["SyncRun"][];
+            total?: number;
+        };
+        SourceWipeResponse: {
+            deleted?: {
+                walletTransactions?: number;
+                portfolios?: number;
+                wallets?: number;
+                syncRuns?: number;
+                positions?: number;
+                portfolioTransactions?: number;
+                valueSnapshots?: number;
+                shares?: number;
+                portfolioBackfillMetadata?: number;
+                nulledWalletRefs?: number;
+            };
+        };
+        ApplySplitRequest: {
+            symbol: string;
+            factor: number;
+            /** Format: date */
+            effectiveDate: string;
+        };
+        ApplySplitResponse: {
+            updatedTransactions: number;
+            affectedPortfolios: number;
         };
         Watchlist: {
             /** Format: uuid */
@@ -3378,6 +3707,62 @@ export interface components {
         AdminFxRatesResponse: {
             items: components["schemas"]["AdminFxRate"][];
             pagination: components["schemas"]["AdminPagination"];
+        };
+        TopologyStatusResponse: {
+            services: components["schemas"]["TopologyServiceStatus"][];
+            /**
+             * Format: date-time
+             * @description ISO-8601 timestamp of the status fetch
+             */
+            fetchedAt: string;
+        };
+        TopologyServiceStatus: {
+            /** @description Deployment name (matches the topology graph node id) */
+            name: string;
+            /** @description Whether /__meta responded within 3 s (HTTP workloads), or ready replicas >= desired replicas for k8s-only workloads (postgres/redis) */
+            reachable: boolean;
+            /** @enum {string} */
+            impl: "real" | "mock" | "unknown" | "job";
+            version?: string;
+            replicas?: {
+                desired: number;
+                ready: number;
+            } | null;
+            restarts?: number | null;
+        };
+        TopologyTrafficResponse: {
+            services: components["schemas"]["TopologyServiceTraffic"][];
+            cachestProviders: {
+                /** @description cachest outbound server_address label, e.g. openst or alphavantage.co */
+                provider: string;
+                p99LatencyMs: number;
+            }[];
+            /**
+             * Format: date-time
+             * @description ISO-8601 timestamp of the traffic fetch
+             */
+            fetchedAt: string;
+        };
+        TopologyServiceTraffic: {
+            /** @description Service name (matches the topology graph node id) */
+            name: string;
+            /** @description Requests/min (HTTP) or transactions/min (databases) */
+            requestsPerMin?: number | null;
+            /** @description Fraction of requests returning 4xx/5xx (0–1) */
+            errorRate?: number | null;
+            /** @description p99 request latency in ms (HTTP workloads only) */
+            p99LatencyMs?: number | null;
+            /** @description Current CPU usage in cores (workload resource metrics) */
+            cpuCores?: number | null;
+            /** @description Current working-set memory in bytes (workload resource metrics) */
+            memoryBytes?: number | null;
+            /** @description Open database connections (postgres only, via Crunchy exporter) */
+            connections?: number | null;
+            /**
+             * @description Metric source used (otel when D56 metrics present, ingress fallback, prometheus for k8s workload resource metrics, none when Prometheus unavailable)
+             * @enum {string}
+             */
+            source: "otel" | "ingress" | "none" | "prometheus";
         };
     };
     responses: never;
@@ -4880,6 +5265,37 @@ export interface operations {
             };
         };
     };
+    portfolioRecompute: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recompute enqueued */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackfillRecomputeResponse"];
+                };
+            };
+            /** @description Portfolio not owned by the caller or missing */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     getPositions: {
         parameters: {
             query?: {
@@ -5731,6 +6147,235 @@ export interface operations {
             };
         };
     };
+    importWalletBootstrap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportWalletBootstrapRequest"];
+            };
+        };
+        responses: {
+            /** @description Wallets ensured */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportWalletBootstrapResponse"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Malformed payload */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    importPortfolioBootstrap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportPortfolioBootstrapRequest"];
+            };
+        };
+        responses: {
+            /** @description Portfolio ensured */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportPortfolioBootstrapResponse"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Malformed payload */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    importTransactions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportTransactionsRequest"];
+            };
+        };
+        responses: {
+            /** @description Batch processed; row-level failures collected in errors[] */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportTransactionsResponse"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Malformed payload — entire batch rejected */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listSyncRuns: {
+        parameters: {
+            query?: {
+                /** @description Filter runs by source */
+                externalSource?: string;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sync runs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncRunsResponse"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteSyncRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Run not owned by the caller or missing */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    wipeImportSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                externalSource: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Wiped */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceWipeResponse"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     listWatchlists: {
         parameters: {
             query?: never;
@@ -6311,6 +6956,39 @@ export interface operations {
             };
             /** @description Not a portfoliost_admin */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    applySplit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplySplitRequest"];
+            };
+        };
+        responses: {
+            /** @description Adjusted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplySplitResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
