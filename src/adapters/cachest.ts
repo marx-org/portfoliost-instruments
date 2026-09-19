@@ -41,6 +41,15 @@ export function fetchOhlcv(
   return fetchJson(`${BASE_URL}/ohlcv/${encodeURIComponent(symbol)}?${q}`)
 }
 
+export function fetchCryptoOhlcv(
+  pair: string,
+  start: string,
+  end: string,
+): Promise<Array<Record<string, unknown>>> {
+  const q = new URLSearchParams({ start, end })
+  return fetchJson(`${BASE_URL}/crypto/ohlcv/${encodeURIComponent(pair)}?${q}`)
+}
+
 export function fetchFundamentals(
   symbol: string,
   statement: "income" | "balance" | "cash",

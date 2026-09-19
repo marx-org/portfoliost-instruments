@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { sql } from "drizzle-orm"
 import { createTestDb } from "../db/test-db.js"
 import type { DB } from "../db/index.js"
-import { priceBarMetadata } from "../db/schema.js"
+import { priceBarMetadata, tickerReference } from "../db/schema.js"
 import { LOCAL_PRICE_BARS_SETUP_SQL } from "../db/price-bars.js"
 import {
   backgroundUpsertBars,
@@ -10,19 +10,26 @@ import {
   getPriceBarSeries,
   hasGap,
   matchSplitFactor,
+  normalizeAssetType,
   ohlcvToClose,
+  lookupAssetType,
   queryView,
   recentlyFailed,
   stooqTickerFor,
+  upstreamFor,
 } from "./price-bars.js"
 
 vi.mock("../adapters/cachest.js", () => ({
   fetchOhlcv: vi.fn(),
+  fetchBondOhlcv: vi.fn(),
+  fetchCryptoOhlcv: vi.fn(),
 }))
 
-import { fetchOhlcv } from "../adapters/cachest.js"
+import { fetchOhlcv, fetchBondOhlcv, fetchCryptoOhlcv } from "../adapters/cachest.js"
 
 const mockFetchOhlcv = vi.mocked(fetchOhlcv)
+const mockFetchBondOhlcv = vi.mocked(fetchBondOhlcv)
+const mockFetchCryptoOhlcv = vi.mocked(fetchCryptoOhlcv)
 
 async function seedStooq(db: DB, symbol: string, rows: Array<[string, string]>) {
   for (const [date, close] of rows) {
@@ -368,5 +375,156 @@ describe("getPriceBarSeries — carry-forward (H9)", () => {
     expect(rows.map((r) => r.date)).toEqual(["2026-07-06", "2026-07-09"])
     // No invented rows for Jul 7/8
     expect(rows).toHaveLength(2)
+  })
+})
+
+describe("D81 — asset-class routing in price-bars", () => {
+  let db: DB
+  let client: Awaited<ReturnType<typeof createTestDb>>["client"]
+
+  const ref = (ticker: string, assetType: string, exchange = "WSE") =>
+    db.insert(tickerReference).values({
+      listingKey: `${exchange}::${ticker}`,
+      ticker,
+      exchange,
+      name: ticker,
+      assetType,
+    })
+
+  beforeAll(async () => {
+    const t = await createTestDb()
+    db = t.db
+    client = t.client
+    for (const stmt of LOCAL_PRICE_BARS_SETUP_SQL) {
+      await db.execute(sql.raw(stmt))
+    }
+  })
+  afterAll(async () => {
+    await client.close()
+  })
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("normalizeAssetType maps stored asset types to the routing set", () => {
+    expect(normalizeAssetType("Stock")).toBe("stock")
+    expect(normalizeAssetType("ETF")).toBe("etf")
+    expect(normalizeAssetType("CRYPTO")).toBe("crypto")
+    expect(normalizeAssetType("BOND")).toBe("bond")
+    expect(normalizeAssetType("corp_bond")).toBe("corp_bond")
+    expect(normalizeAssetType("corporate bond")).toBe("corp_bond")
+    expect(normalizeAssetType(null)).toBe("stock")
+    expect(normalizeAssetType("")).toBe("stock")
+    expect(normalizeAssetType("something-else")).toBe("stock")
+  })
+
+  it("upstreamFor routes crypto to the crypto OHLCV pair", async () => {
+    mockFetchCryptoOhlcv.mockResolvedValue([])
+    await upstreamFor("crypto", "BTC-USD", "2026-01-01", "2026-01-31")
+    expect(mockFetchCryptoOhlcv).toHaveBeenCalledWith("BTC-USD", "2026-01-01", "2026-01-31")
+    expect(mockFetchOhlcv).not.toHaveBeenCalled()
+    expect(mockFetchBondOhlcv).not.toHaveBeenCalled()
+  })
+
+  it("upstreamFor routes bond to the fixedincome OHLCV (venue-free symbol)", async () => {
+    mockFetchBondOhlcv.mockResolvedValue([])
+    await upstreamFor("bond", "ROD1033.WA", "2026-01-01", "2026-01-31")
+    expect(mockFetchBondOhlcv).toHaveBeenCalledWith("ROD1033", "2026-01-01", "2026-01-31")
+    expect(mockFetchOhlcv).not.toHaveBeenCalled()
+  })
+
+  it("upstreamFor routes corp_bond and fund through the equity OHLCV path", async () => {
+    mockFetchOhlcv.mockResolvedValue([])
+    await upstreamFor("corp_bond", "BST0327.WA", "2026-01-01", "2026-01-31")
+    expect(mockFetchOhlcv).toHaveBeenCalledWith("BST0327.WA", "2026-01-01", "2026-01-31")
+    vi.clearAllMocks()
+    await upstreamFor("fund", "NNEP25.TFI", "2026-01-01", "2026-01-31")
+    expect(mockFetchOhlcv).toHaveBeenCalledWith("NNEP25.TFI", "2026-01-01", "2026-01-31")
+  })
+
+  it("upstreamFor routes stock/etf through the equity OHLCV path (.US stripped)", async () => {
+    mockFetchOhlcv.mockResolvedValue([])
+    await upstreamFor("stock", "AAPL", "2026-01-01", "2026-01-31")
+    expect(mockFetchOhlcv).toHaveBeenCalledWith("AAPL", "2026-01-01", "2026-01-31")
+    vi.clearAllMocks()
+    await upstreamFor("etf", "AAPL.US", "2026-01-01", "2026-01-31")
+    expect(mockFetchOhlcv).toHaveBeenCalledWith("AAPL", "2026-01-01", "2026-01-31")
+  })
+
+  it("lookupAssetType resolves the bare ticker (venue-qualified input) from the reference table", async () => {
+    await ref("LBST001", "corp_bond")
+    expect(await lookupAssetType(db, "LBST001")).toBe("corp_bond")
+    expect(await lookupAssetType(db, "lbst001.wa")).toBe("corp_bond")
+    expect(await lookupAssetType(db, "ZZZ9999")).toBeNull()
+  })
+
+  it("getPriceBarSeries fetches a crypto series via crypto/ohlcv (stooq skipped, no split check)", async () => {
+    await ref("BTC-USD", "CRYPTO", "CCC")
+    mockFetchCryptoOhlcv.mockResolvedValue([
+      { date: "2026-07-08", close: 60000 },
+      { date: "2026-07-09", close: 61500 },
+    ])
+    const now = new Date("2026-07-10T00:00:00Z")
+    const res = await getPriceBarSeries(db, "BTC-USD", "2026-07-01", "2026-07-10", now)
+    expect(res.stale).toBe(false)
+    expect(res.closes).toEqual([60000, 61500])
+    expect(mockFetchCryptoOhlcv).toHaveBeenCalledTimes(1)
+    expect(mockFetchOhlcv).not.toHaveBeenCalled()
+    // crypto bars persisted to overflow under the system symbol
+    const persisted = await db.execute(sql`
+      select date, close from instruments.price_bars where symbol = 'BTC-USD' order by date
+    `)
+    expect((persisted.rows as Array<{ date: string }>).map((r) => r.date)).toEqual([
+      "2026-07-08",
+      "2026-07-09",
+    ])
+  })
+
+  it("getPriceBarSeries fetches a bond series via fixedincome/ohlcv (venue-free)", async () => {
+    await ref("ROD1033", "BOND")
+    mockFetchBondOhlcv.mockResolvedValue([{ date: "2026-07-09", close: 104.2 }])
+    const now = new Date("2026-07-10T00:00:00Z")
+    const res = await getPriceBarSeries(db, "ROD1033", "2026-07-01", "2026-07-10", now)
+    expect(res.stale).toBe(false)
+    expect(res.closes).toEqual([104.2])
+    expect(mockFetchBondOhlcv).toHaveBeenCalledWith("ROD1033", expect.any(String), expect.any(String))
+    expect(mockFetchOhlcv).not.toHaveBeenCalled()
+  })
+
+  it("getPriceBarSeries fetches a corp_bond series via the equity ohlcv path (no stooq split check)", async () => {
+    await ref("LBST201", "corp_bond")
+    mockFetchOhlcv.mockResolvedValue([{ date: "2026-07-09", close: 101.5 }])
+    const now = new Date("2026-07-10T00:00:00Z")
+    const res = await getPriceBarSeries(db, "LBST201", "2026-07-01", "2026-07-10", now)
+    expect(res.stale).toBe(false)
+    expect(res.closes).toEqual([101.5])
+    // corp_bond must NOT consult stooq or record a split candidate
+    const candidates = await db.execute(sql`
+      select count(*)::int as n from instruments.split_candidates where symbol = 'LBST201'
+    `)
+    expect(candidates.rows[0].n).toBe(0)
+    expect(mockFetchOhlcv).toHaveBeenCalledWith("LBST201", expect.any(String), expect.any(String))
+  })
+
+  it("getPriceBarSeries keeps the stooq split-boundary path for a listed stock", async () => {
+    await ref("MSFT", "Stock", "NASDAQ")
+    mockFetchOhlcv.mockResolvedValue([{ date: "2026-07-09", close: 412 }])
+    const now = new Date("2026-07-10T00:00:00Z")
+    const res = await getPriceBarSeries(db, "MSFT", "2026-07-01", "2026-07-10", now)
+    expect(res.stale).toBe(false)
+    expect(res.closes).toEqual([412])
+    expect(mockFetchOhlcv).toHaveBeenCalledWith("MSFT", expect.any(String), expect.any(String))
+  })
+
+  it("getPriceBarSeries falls back to stock when the symbol is unlisted (regression)", async () => {
+    // no ticker_reference row for PLXQ → equity path unchanged
+    mockFetchOhlcv.mockResolvedValue([{ date: "2026-07-09", close: 999 }])
+    const now = new Date("2026-07-10T00:00:00Z")
+    const res = await getPriceBarSeries(db, "PLXQ", "2026-07-01", "2026-07-10", now)
+    expect(res.stale).toBe(false)
+    expect(res.closes).toEqual([999])
+    expect(mockFetchOhlcv).toHaveBeenCalledWith("PLXQ", expect.any(String), expect.any(String))
+    expect(mockFetchCryptoOhlcv).not.toHaveBeenCalled()
+    expect(mockFetchBondOhlcv).not.toHaveBeenCalled()
   })
 })
