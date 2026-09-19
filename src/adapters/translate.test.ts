@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest"
 import {
   marketPhase,
   toInstrumentDetail,
+  toInstrumentType,
   toInstrumentProfile,
   toQuote,
   toPriceHistory,
@@ -66,6 +67,45 @@ describe("toInstrumentDetail", () => {
       type: "BOND",
       currency: "PLN",
     })
+  })
+
+  it("maps a Catalyst corporate-bond profile to CORP_BOND (D82)", () => {
+    const corpProfile = {
+      symbol: "BST0327",
+      name: "Best S.A.",
+      asset_type: "corp_bond",
+      stock_exchange: "GPW RR",
+      currency: "PLN",
+    }
+    const d = toInstrumentDetail("BST0327", corpProfile)
+    expect(d.type).toBe("CORP_BOND")
+    expect(d.exchange).toBe("GPW RR")
+    expect(d.currency).toBe("PLN")
+  })
+
+  it("maps a TFI fund profile to FUND (D82)", () => {
+    const fundProfile = {
+      symbol: "NNEP25.TFI",
+      name: "ING Emerytura 2025",
+      asset_type: "fund",
+      stock_exchange: "GPW",
+    }
+    expect(toInstrumentDetail("NNEP25.TFI", fundProfile).type).toBe("FUND")
+  })
+})
+
+describe("toInstrumentType (D82)", () => {
+  it("maps stored asset types onto the contract InstrumentType", () => {
+    expect(toInstrumentType("Stock")).toBe("STOCK")
+    expect(toInstrumentType("ETF")).toBe("ETF")
+    expect(toInstrumentType("CRYPTO")).toBe("CRYPTO")
+    expect(toInstrumentType("BOND")).toBe("BOND")
+    expect(toInstrumentType("corp_bond")).toBe("CORP_BOND")
+    expect(toInstrumentType("corporate bond")).toBe("CORP_BOND")
+    expect(toInstrumentType("fund")).toBe("FUND")
+    expect(toInstrumentType(null)).toBe("STOCK")
+    expect(toInstrumentType("")).toBe("STOCK")
+    expect(toInstrumentType("unknown-thing")).toBe("STOCK")
   })
 })
 

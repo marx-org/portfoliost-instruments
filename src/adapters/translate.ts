@@ -46,6 +46,34 @@ function pick(row: Row, ...keys: string[]): unknown {
   return undefined
 }
 
+/** D82 — map a stored/provider asset type onto the contract InstrumentType.
+ * Accepts the mixed-case forms the tiers emit ("Stock", "ETF", "CRYPTO",
+ * "corp_bond", …); unknown values default to STOCK so a new class never
+ * degrades a search row. */
+export function toInstrumentType(
+  raw: string | null | undefined,
+): S["InstrumentDetail"]["type"] {
+  const v = (raw ?? "").trim().toLowerCase()
+  switch (v) {
+    case "etf":
+      return "ETF"
+    case "bond":
+      return "BOND"
+    case "crypto":
+    case "cryptocurrency":
+      return "CRYPTO"
+    case "fund":
+    case "tfi":
+      return "FUND"
+    case "corp_bond":
+    case "corporate_bond":
+    case "corporate bond":
+      return "CORP_BOND"
+    default:
+      return "STOCK"
+  }
+}
+
 function epochSeconds(value: string | undefined, fallback = Date.now()): number {
   if (!value) return Math.floor(fallback / 1000)
   const ms = Date.parse(value.includes("T") ? value : value.replace(" ", "T") + "Z")
@@ -73,13 +101,22 @@ export function marketPhase(now = new Date()): { session: string; phase: string 
 }
 
 export function toInstrumentDetail(symbol: string, profile: OpenstProfile): S["InstrumentDetail"] {
-  const isBond = (profile as Row).rate_rule !== undefined || (profile as Row).series_code !== undefined
+  const row = profile as Row
+  const isBond = row.rate_rule !== undefined || row.series_code !== undefined
+  // D82 — honour the provider's asset_type when it carries one (corp_bond/fund
+  // profiles from openst); otherwise keep the bond/stock heuristic so savings
+  // bonds still surface as BOND and plain equities as STOCK.
+  const type = str(row.asset_type)
+    ? toInstrumentType(str(row.asset_type))
+    : isBond
+      ? "BOND"
+      : "STOCK"
   return {
     id: symbol.toUpperCase(),
     symbol: symbol.toUpperCase(),
     name: str(profile.name) ?? symbol.toUpperCase(),
-    exchange: str(pick(profile as Row, "stock_exchange", "exchange")) ?? (isBond ? "PL" : "US"),
-    type: isBond ? "BOND" : "STOCK",
+    exchange: str(pick(row, "stock_exchange", "exchange")) ?? (isBond ? "PL" : "US"),
+    type,
     currency: str(profile.currency) ?? (isBond ? "PLN" : "USD"),
   }
 }
@@ -286,7 +323,7 @@ export function toReferenceSearchResponse(rows: TickerReferenceRow[]): S["Instru
       // not append any raw-format suffix.
       symbol: r.yahooSuffix ? `${r.ticker}.${r.yahooSuffix}` : r.ticker,
       name: r.name,
-      type: r.assetType === "ETF" ? "ETF" : r.assetType === "CRYPTO" ? "CRYPTO" : r.assetType === "BOND" ? "BOND" : "STOCK",
+      type: toInstrumentType(r.assetType),
       exchange: r.exchange,
       countryCode: r.countryCode ?? null,
       source: "TICKERDB",
@@ -296,7 +333,7 @@ export function toReferenceSearchResponse(rows: TickerReferenceRow[]): S["Instru
 
 export function toSearchResponse(rows: Array<Record<string, unknown>>): S["InstrumentSearchResponse"] {
   const results = rows
-    .map((r) => ({
+    .map((r): S["SearchResult"] => ({
       symbol: str(r.symbol),
       name: str(r.name),
       type: "STOCK",
@@ -311,26 +348,30 @@ export function toSearchResponse(rows: Array<Record<string, unknown>>): S["Instr
 }
 
 export function toCryptoSearchResponse(rows: Array<Record<string, unknown>>): S["InstrumentSearchResponse"] {
-  const results = normalizeCryptoRows(rows).map((r) => ({
-    symbol: r.symbol,
-    name: r.name,
-    type: "CRYPTO",
-    exchange: "CRYPTO",
-    countryCode: null,
-    source: "CRYPTO",
-  }))
+  const results: S["SearchResult"][] = normalizeCryptoRows(rows).map(
+    (r): S["SearchResult"] => ({
+      symbol: r.symbol,
+      name: r.name,
+      type: "CRYPTO",
+      exchange: "CRYPTO",
+      countryCode: null,
+      source: "CRYPTO",
+    }),
+  )
   return { count: Math.min(results.length, SEARCH_RESULT_LIMIT), results: results.slice(0, SEARCH_RESULT_LIMIT) }
 }
 
 export function toBondSearchResponse(rows: Array<Record<string, unknown>>): S["InstrumentSearchResponse"] {
-  const results = rows.map((r) => ({
-    symbol: str(r.symbol),
-    name: str(r.name),
-    type: "BOND",
-    exchange: "PL",
-    countryCode: "PL",
-    source: "OBLIGACJE",
-  }))
+  const results = rows.map(
+    (r): S["SearchResult"] => ({
+      symbol: str(r.symbol),
+      name: str(r.name),
+      type: "BOND",
+      exchange: "PL",
+      countryCode: "PL",
+      source: "OBLIGACJE",
+    }),
+  )
   return { count: Math.min(results.length, SEARCH_RESULT_LIMIT), results: results.slice(0, SEARCH_RESULT_LIMIT) }
 }
 
