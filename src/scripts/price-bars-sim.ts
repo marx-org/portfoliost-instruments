@@ -97,7 +97,7 @@ async function main() {
     SELECT symbol, date, close
     FROM instruments.price_bars_all
     WHERE date IN ('2026-07-29', '2026-08-03')
-    ORDER BY symbol, date
+    ORDER BY symbol, date, case when source = 'stooq' then 1 else 0 end
   `
   const fmtDate = (d: unknown): string => {
     if (d instanceof Date) {

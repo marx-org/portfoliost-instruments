@@ -44,7 +44,16 @@ export interface PriceBarSeriesResult {
   closes: number[]
 }
 
-/** Query `price_bars_all` — a single SQL call covering stooq + overflow. */
+/**
+ * Query `price_bars_all` — a single SQL call covering stooq + overflow.
+ *
+ * The view can hold duplicate (symbol, date) rows when an overflow write from
+ * the passive write-through (openst) lands on a date stooq already covers. The
+ * read path keeps both (the importer needs them), but their relative order for
+ * an equal date is otherwise planner-dependent — make it deterministic by
+ * sorting split-adjusted `stooq` rows ahead of `openst` overflow rows, so
+ * callers that index-of a date see the stooq value first.
+ */
 export async function queryView(
   db: DB,
   symbol: string,
@@ -56,7 +65,7 @@ export async function queryView(
     from instruments.price_bars_all
     where symbol = ${symbol}
       and date between ${from} and ${to}
-    order by date asc
+    order by date asc, case when source = 'stooq' then 0 else 1 end
   `)
   return rowsOf<PriceBarRow>(result)
 }
