@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { createTestDb } from "../db/test-db.js"
 import type { DB } from "../db/index.js"
-import { searchTickerReference } from "./tickerref-queries.js"
+import { searchTickerReference, referenceTickerKeys, assetTypeForSymbol } from "./tickerref-queries.js"
 import { syncTickerReference } from "../scripts/tickerref-sync.js"
 
 const FIXTURE = `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
@@ -101,6 +101,43 @@ describe("venue-qualified identity lookup", () => {
       const rows = await searchTickerReference(t.db, "PKN.WA", 1, "WSE")
       expect(rows).toHaveLength(1)
       expect(rows[0]).toMatchObject({ ticker: "PKN", exchange: "WSE", isin: "PLPKN0000018" })
+    } finally {
+      await t.client.close()
+    }
+  })
+})
+
+describe("referenceTickerKeys (plan 34 pair-aware lookup)", () => {
+  it("strips venue suffixes only", () => {
+    expect(referenceTickerKeys("SNT.WA")).toEqual(["SNT"])
+    expect(referenceTickerKeys("AAPL.US")).toEqual(["AAPL"])
+    expect(referenceTickerKeys("ROD1033")).toEqual(["ROD1033"])
+  })
+
+  it("adds the base coin for currency pairs", () => {
+    expect(referenceTickerKeys("BTC-USD")).toEqual(["BTC-USD", "BTC"])
+    expect(referenceTickerKeys("ETH-EUR")).toEqual(["ETH-EUR", "ETH"])
+  })
+
+  it("never strips non-currency hyphen suffixes (catalyst class codes)", () => {
+    expect(referenceTickerKeys("BOS0735-K")).toEqual(["BOS0735-K"])
+  })
+})
+
+describe("assetTypeForSymbol — class-collision priority (plan 34)", () => {
+  it("lets the specific class beat colliding stock/etf listings", async () => {
+    const t = await createTestDb()
+    try {
+      await syncTickerReference(
+        `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ ASX::BTC,BTC,ASX,Bitcoin Futures,Stock,,Financials,,AU,,
+ Euronext::BTC,BTC,Euronext,Bitcoin ETF,ETF,,Cryptocurrency,,FR,,
+ CRYPTO::BTC,BTC,CRYPTO,BTC-USD,crypto,,,,US,btc`,
+        t.db,
+      )
+      expect(await assetTypeForSymbol(t.db, "BTC")).toBe("crypto")
+      expect(await assetTypeForSymbol(t.db, "BTC-USD")).toBe("crypto")
+      expect(await assetTypeForSymbol(t.db, "AAPL")).toBeNull()
     } finally {
       await t.client.close()
     }

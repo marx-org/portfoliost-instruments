@@ -4,6 +4,7 @@ import { openApi } from "hono-zod-openapi"
 import { userIdentityMiddleware } from "../auth.js"
 import { getDb } from "../db/index.js"
 import { getPriceBarSeries, backgroundUpsertBars } from "../services/price-bars.js"
+import { fetchQuoteByAssetClass } from "../services/quote-dispatch.js"
 import { getNewsForTicker, getRecentNews, getNewsStats } from "../services/news.js"
 import { providerSymbol, symbolSuffix, venueFreeSymbol } from "../adapters/symbol.js"
 import { getExchangeBySuffix } from "../db/tickerref-queries.js"
@@ -426,9 +427,13 @@ export function createInstrumentsRoutes() {
       },
     }),
     async (c) => {
-      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
+      const routeSymbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(routeSymbol)
       try {
-        const q = (await fetchQuote(symbol)) as OpenstQuote
+        // 34 — dispatch by ticker_reference.asset_type: bond → fixedincome
+        // quote, crypto → crypto quote (pair-normalized), everything else
+        // (incl. corp_bond/fund, verified in 34.1) stays on the equity quote.
+        const q = (await fetchQuoteByAssetClass(getDb(), routeSymbol)) as OpenstQuote
         return c.json(toQuote({ symbol, ...q }))
       } catch (e) {
         return upstreamErrorResponse(c, e)
@@ -533,7 +538,8 @@ export function createInstrumentsRoutes() {
           }
           return c.json({ symbol, price: Number(last.close), currency: null, date: last.date })
         }
-        const q = (await fetchQuote(symbol)) as OpenstQuote
+        // 34 — asset-class-aware dispatch (bond/crypto/equity), same as /quote.
+        const q = (await fetchQuoteByAssetClass(getDb(), c.req.param("symbol").toUpperCase())) as OpenstQuote
         return c.json({ symbol, price: Number(q.last_price ?? 0), currency: q.currency ?? "USD" })
       } catch (e) {
         return upstreamErrorResponse(c, e)

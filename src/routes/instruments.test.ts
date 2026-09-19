@@ -21,6 +21,8 @@ vi.mock("../adapters/cachest.js", () => ({
   },
   fetchProfile: vi.fn(),
   fetchQuote: vi.fn(),
+  fetchFixedincomeQuote: vi.fn(),
+  fetchCryptoQuote: vi.fn(),
   fetchMetrics: vi.fn(),
   fetchProjections: vi.fn(),
   fetchOhlcv: vi.fn(),
@@ -55,6 +57,8 @@ const mocked = vi.mocked(cachest, true)
 beforeEach(() => {
   mocked.fetchProfile.mockReset()
   mocked.fetchQuote.mockReset()
+  mocked.fetchFixedincomeQuote.mockReset()
+  mocked.fetchCryptoQuote.mockReset()
   mocked.fetchMetrics.mockReset()
   mocked.fetchProjections.mockReset()
   mocked.fetchOhlcv.mockReset()
@@ -256,6 +260,253 @@ describe("GET /api/instruments/:symbol/quote", () => {
   })
 })
 
+describe("GET /api/instruments/:symbol/quote — asset-class dispatch (34)", () => {
+  async function dbWithTickers(csv: string) {
+    const { createTestDb } = await import("../db/test-db.js")
+    const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const t = await createTestDb()
+    dbState.db = t.db
+    await syncTickerReference(csv, t.db)
+    return t
+  }
+
+  it("routes bond symbols to the fixedincome quote", async () => {
+    const t = await dbWithTickers(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::ROD1033,ROD1033,WSE,ROD 1033,BOND,,,,PL,,`,
+    )
+    mocked.fetchFixedincomeQuote.mockResolvedValue({
+      symbol: "ROD1033",
+      last_price: 151.99,
+      prev_close: 151.97,
+      change: 0.02,
+      change_percent: 0.0001,
+      currency: "PLN",
+    })
+    try {
+      const res = await req("/api/instruments/ROD1033/quote")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.currentPrice).toBe(151.99)
+      expect(body.currency).toBe("PLN")
+      expect(mocked.fetchFixedincomeQuote).toHaveBeenCalledWith("ROD1033")
+      expect(mocked.fetchQuote).not.toHaveBeenCalled()
+      expect(mocked.fetchCryptoQuote).not.toHaveBeenCalled()
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("routes crypto to the crypto quote, normalizing a bare ticker to the -USD pair", async () => {
+    const t = await dbWithTickers(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ BINANCE::BTC,BTC,BINANCE,Bitcoin,CRYPTO,,,,US,,`,
+    )
+    mocked.fetchCryptoQuote.mockResolvedValue({
+      symbol: "BTC-USD",
+      price: 80986.82,
+      open: 80877.27,
+      high: 81886.15,
+      low: 80837.04,
+      volume: 20948,
+      date: "2026-09-19",
+      change: 85.36,
+      change_percent: 0.0011,
+    })
+    try {
+      const res = await req("/api/instruments/BTC/quote")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(mocked.fetchCryptoQuote).toHaveBeenCalledWith("BTC-USD")
+      expect(mocked.fetchQuote).not.toHaveBeenCalled()
+      expect(mocked.fetchFixedincomeQuote).not.toHaveBeenCalled()
+      expect(body.symbol).toBe("BTC-USD")
+      expect(body.currentPrice).toBe(80986.82)
+      expect(body.percentChange).toBeCloseTo(0.11, 4)
+      expect(body.currency).toBe("USD")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("keeps pair-form crypto symbols as-is", async () => {
+    const t = await dbWithTickers(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ BINANCE::BTC,BTC,BINANCE,Bitcoin,CRYPTO,,,,US,,`,
+    )
+    mocked.fetchCryptoQuote.mockResolvedValue({ symbol: "BTC-USD", price: 80000, date: "2026-09-19" })
+    try {
+      const res = await req("/api/instruments/BTC-USD/quote")
+      expect(res.status).toBe(200)
+      expect(mocked.fetchCryptoQuote).toHaveBeenCalledWith("BTC-USD")
+      expect((await res.json()).currentPrice).toBe(80000)
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("keeps corp_bond on the equity quote (34.1: biznesradar serves it)", async () => {
+    const t = await dbWithTickers(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::BST0327,BST0327,WSE,Best S.A.,corp_bond,,,,PL,,`,
+    )
+    mocked.fetchQuote.mockResolvedValue({
+      symbol: "BST0327",
+      last_price: 100.52,
+      open: 100.52,
+      high: 100.52,
+      low: 100.52,
+      currency: "PLN",
+    })
+    try {
+      const res = await req("/api/instruments/BST0327/quote")
+      expect(res.status).toBe(200)
+      expect(mocked.fetchQuote).toHaveBeenCalledWith("BST0327")
+      expect(mocked.fetchFixedincomeQuote).not.toHaveBeenCalled()
+      expect(mocked.fetchCryptoQuote).not.toHaveBeenCalled()
+      expect((await res.json()).currentPrice).toBe(100.52)
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("keeps funds on the equity quote with the venue-qualified symbol", async () => {
+    const t = await dbWithTickers(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ GPW::NNEP25,NNEP25,GPW,ING Emerytura 2025,fund,,,,PL,,`,
+    )
+    mocked.fetchQuote.mockResolvedValue({
+      symbol: "NNEP25.TFI",
+      last_price: 14.7,
+      prev_close: 14.61,
+      change: 0.09,
+      change_percent: 0.0062,
+      currency: "PLN",
+    })
+    try {
+      const res = await req("/api/instruments/NNEP25.TFI/quote")
+      expect(res.status).toBe(200)
+      expect(mocked.fetchQuote).toHaveBeenCalledWith("NNEP25.TFI")
+      expect((await res.json()).currentPrice).toBe(14.7)
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("falls back to the equity quote for unlisted symbols (regression)", async () => {
+    const t = await dbWithTickers(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::ROD1033,ROD1033,WSE,ROD 1033,BOND,,,,PL,,`,
+    )
+    mocked.fetchQuote.mockResolvedValue({ symbol: "AAPL", last_price: 300, currency: "USD" })
+    try {
+      const res = await req("/api/instruments/AAPL/quote")
+      expect(res.status).toBe(200)
+      expect(mocked.fetchQuote).toHaveBeenCalledWith("AAPL")
+      expect(mocked.fetchFixedincomeQuote).not.toHaveBeenCalled()
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("serves the bond computed close on the /price route", async () => {
+    const t = await dbWithTickers(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::ROD1033,ROD1033,WSE,ROD 1033,BOND,,,,PL,,`,
+    )
+    mocked.fetchFixedincomeQuote.mockResolvedValue({
+      symbol: "ROD1033",
+      last_price: 151.99,
+      currency: "PLN",
+    })
+    try {
+      const res = await req("/api/instruments/ROD1033/price")
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ symbol: "ROD1033", price: 151.99, currency: "PLN" })
+      expect(mocked.fetchFixedincomeQuote).toHaveBeenCalledWith("ROD1033")
+      expect(mocked.fetchQuote).not.toHaveBeenCalled()
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("falls back to the fixedincome quote for unlisted savings bonds (prod has no bond rows)", async () => {
+    const t = await dbWithTickers(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ NASDAQ::AAPL,AAPL,NASDAQ,Apple Inc,Stock,Information Technology,,United States,US,US0378331005,apple`,
+    )
+    mocked.fetchQuote.mockRejectedValue(
+      new (await import("../adapters/cachest.js")).UpstreamError("http://cachest:8080/equity/quote/ROD1033", 404),
+    )
+    mocked.fetchFixedincomeQuote.mockResolvedValue({ symbol: "ROD1033", last_price: 151.99, currency: "PLN" })
+    try {
+      const res = await req("/api/instruments/ROD1033/quote")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.currentPrice).toBe(151.99)
+      expect(body.currency).toBe("PLN")
+      expect(mocked.fetchFixedincomeQuote).toHaveBeenCalledWith("ROD1033")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("does not apply the savings-bond fallback to other 404 symbols", async () => {
+    mocked.fetchQuote.mockRejectedValue(
+      new (await import("../adapters/cachest.js")).UpstreamError("http://cachest:8080/equity/quote/NOPE", 404),
+    )
+    const res = await req("/api/instruments/NOPE/quote")
+    expect(res.status).toBe(404)
+    expect(mocked.fetchFixedincomeQuote).not.toHaveBeenCalled()
+  })
+
+  it("lets the curated crypto row win over colliding stock/ETF listings", async () => {
+    const t = await dbWithTickers(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ ASX::BTC,BTC,ASX,Bitcoin Futures,Stock,,Financials,,AU,,
+ Euronext::BTC,BTC,Euronext,Bitcoin ETF,ETF,,Cryptocurrency,,FR,,
+ CRYPTO::BTC,BTC,CRYPTO,BTC-USD,crypto,,,,US,btc|btc-usd`,
+    )
+    mocked.fetchCryptoQuote.mockResolvedValue({ symbol: "BTC-USD", price: 80000, date: "2026-09-19" })
+    try {
+      const res = await req("/api/instruments/BTC/quote")
+      expect(res.status).toBe(200)
+      expect(mocked.fetchCryptoQuote).toHaveBeenCalledWith("BTC-USD")
+      expect(mocked.fetchQuote).not.toHaveBeenCalled()
+      expect((await res.json()).currentPrice).toBe(80000)
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("keeps hyphenated corp-bond tickers on the equity quote (no pair mangling)", async () => {
+    const t = await dbWithTickers(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::BOS0735-K,BOS0735-K,WSE,BOS0735-K,corp_bond,,,,PL,,`,
+    )
+    mocked.fetchQuote.mockResolvedValue({ symbol: "BOS0735-K", last_price: 99.1, currency: "PLN" })
+    try {
+      const res = await req("/api/instruments/BOS0735-K/quote")
+      expect(res.status).toBe(200)
+      expect(mocked.fetchQuote).toHaveBeenCalledWith("BOS0735-K")
+      expect(mocked.fetchCryptoQuote).not.toHaveBeenCalled()
+      expect(mocked.fetchFixedincomeQuote).not.toHaveBeenCalled()
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+})
+
 describe("GET /api/instruments/:symbol/history", () => {
   it("returns parallel-array history from ohlcv rows", async () => {
     mocked.fetchOhlcv.mockResolvedValue([
@@ -340,6 +591,8 @@ describe("GET /api/instruments/:symbol/overview-metrics", () => {
 beforeEach(() => {
   mocked.fetchProfile.mockReset()
   mocked.fetchQuote.mockReset()
+  mocked.fetchFixedincomeQuote.mockReset()
+  mocked.fetchCryptoQuote.mockReset()
   mocked.fetchMetrics.mockReset()
   mocked.fetchProjections.mockReset()
   mocked.fetchOhlcv.mockReset()

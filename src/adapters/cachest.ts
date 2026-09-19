@@ -24,6 +24,14 @@ export function fetchQuote(symbol: string): Promise<Record<string, unknown>> {
   return fetchJson(`${BASE_URL}/equity/quote/${encodeURIComponent(symbol)}`)
 }
 
+export function fetchFixedincomeQuote(symbol: string): Promise<Record<string, unknown>> {
+  return fetchJson(`${BASE_URL}/fixedincome/quote/${encodeURIComponent(symbol)}`)
+}
+
+export function fetchCryptoQuote(pair: string): Promise<Record<string, unknown>> {
+  return fetchJson(`${BASE_URL}/crypto/quote/${encodeURIComponent(pair)}`)
+}
+
 export function fetchMetrics(symbol: string): Promise<Record<string, unknown>> {
   return fetchJson(`${BASE_URL}/equity/metrics/${encodeURIComponent(symbol)}`)
 }

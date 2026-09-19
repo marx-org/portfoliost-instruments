@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises"
 import { eq, sql } from "drizzle-orm"
 import { closeDb, getDb, type DB } from "../db/index.js"
 import { exchangeReference, tickerReference } from "../db/schema.js"
+import { CRYPTO_PRIMARY_PAIRS } from "../adapters/crypto.js"
 
 // Syncs ticker reference data from adanos/free-ticker-database into the
 // ticker_reference table. Designed to run as a one-shot job (k8s CronJob,
@@ -48,6 +49,96 @@ export async function applyAliasOverrides(db: DB = getDb()): Promise<number> {
     updated += rows.length
   }
   return updated
+}
+
+/**
+ * Curated listings the upstream adanos core_listings never carries but the
+ * asset-class dispatch (plan 34.5) needs in `ticker_reference`:
+ *  - yfinance crypto pairs (bare-coin ticker, asset_type=crypto)
+ *  - Polish TFI fund symbols (plan §24.1, asset_type=fund)
+ *
+ * The §24.1 additions were applied to compose only and never landed in prod
+ * (verified 2026-09-20: prod ticker_reference has zero crypto/fund/bond rows),
+ * and nothing else writes these keys, so they are re-applied idempotently
+ * after every ticker sync run — the sync itself is upsert-only and would
+ * otherwise leave them absent forever.
+ */
+export function curatedListingRows(): Array<Record<string, string>> {
+  const rows: Array<Record<string, string>> = []
+  // Keyed by base coin (not pair): matic and pol both map to POL-USD and must
+  // stay separate rows — the reference lookup matches on the bare ticker.
+  for (const [base, pair] of Object.entries(CRYPTO_PRIMARY_PAIRS)) {
+    rows.push({
+      listing_key: `CRYPTO::${base.toUpperCase()}`,
+      ticker: base.toUpperCase(),
+      exchange: "CRYPTO",
+      name: pair,
+      asset_type: "crypto",
+      country_code: "US",
+      aliases: `${base}|${pair.toLowerCase()}`,
+    })
+  }
+  const tfiFunds: Array<[string, string]> = [
+    ["NNEP25", "NN Emerytura 2025"],
+    ["NNEP30", "NN Emerytura 2030"],
+    ["GSEM65", "Goldman Sachs Emerytura 2065"],
+    ["GSEM60", "Goldman Sachs Emerytura 2060"],
+    ["GSAK", "Goldman Sachs Akcji"],
+    ["NNOB", "NN Obligacji"],
+  ]
+  for (const [ticker, name] of tfiFunds) {
+    rows.push({
+      listing_key: `TFI::${ticker}`,
+      ticker,
+      exchange: "GPW",
+      name,
+      asset_type: "fund",
+      country: "Poland",
+      country_code: "PL",
+    })
+  }
+  return rows
+}
+
+export async function syncCuratedListings(db: DB = getDb()): Promise<number> {
+  const rows = curatedListingRows()
+  let total = 0
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE)
+    if (batch.length === 0) continue
+    await db
+      .insert(tickerReference)
+      .values(
+        batch.map((r) => ({
+          listingKey: r.listing_key,
+          ticker: r.ticker.toUpperCase(),
+          exchange: r.exchange,
+          name: r.name,
+          assetType: r.asset_type,
+          stockSector: null,
+          etfCategory: null,
+          country: r.country || null,
+          countryCode: r.country_code || null,
+          isin: null,
+          aliases: r.aliases || null,
+        })),
+      )
+      .onConflictDoUpdate({
+        target: tickerReference.listingKey,
+        set: {
+          ticker: sqlExcluded("ticker"),
+          exchange: sqlExcluded("exchange"),
+          name: sqlExcluded("name"),
+          assetType: sqlExcluded("asset_type"),
+          country: sqlExcluded("country"),
+          countryCode: sqlExcluded("country_code"),
+          aliases: sqlExcluded("aliases"),
+          updatedAt: new Date(),
+        },
+      })
+    total += batch.length
+  }
+  return total
 }
 
 /** Minimal RFC4180 CSV row parser (quoted fields, escaped quotes, CRLF). */
@@ -209,6 +300,9 @@ async function main() {
   const fileBase = fileArgIdx > -1 ? process.argv[fileArgIdx + 1] : undefined
   const urlBase = urlArgIdx > -1 ? process.argv[urlArgIdx + 1] : undefined
   const ifEmpty = process.argv.includes("--if-empty")
+  // One-shot curated-only mode (plan 34.5): upsert the crypto/fund listings
+  // without re-syncing the upstream 60k-row snapshot.
+  const curatedOnly = process.argv.includes("--curated-only")
   const sourceUrl = urlBase || process.env.TICKERREF_SOURCE_URL || DEFAULT_SOURCE_URL
 
   const db = getDb()
@@ -216,7 +310,9 @@ async function main() {
   // Tickers: seed mode reads the bundled snapshot; live mode fetches from
   // adanos GitHub. fileBase/urlBase act as path-prefix / URL-override.
   let skipTickers = false
-  if (ifEmpty) {
+  if (curatedOnly) {
+    skipTickers = true
+  } else if (ifEmpty) {
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(tickerReference)
@@ -233,6 +329,11 @@ async function main() {
     const applied = await applyAliasOverrides(db)
     console.log(`[tickerref] alias overrides applied: ${applied}`)
   }
+
+  // Curated listings (crypto/fund) — nothing else writes these keys, so they
+  // are re-applied on every run (incl. --if-empty / --curated-only).
+  const curated = await syncCuratedListings(db)
+  console.log(`[tickerref] curated listings upserted: ${curated}`)
 
   // Venues + MIC→Yahoo-suffix map: failure is non-fatal — identity search
   // still works, only suffix→exchange resolution degrades. --if-empty gates
