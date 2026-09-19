@@ -28,6 +28,9 @@ export const ALIAS_OVERRIDES: Record<string, string> = {
   "LSE::DTLA": "ishares treasury bond 20 yr ucits etf usd a",
   "LSE::IUFS": "s&p 500 financials sector|ishares s p 500 financials sector ucits etf usd a",
   "NASDAQ::RGEN": "repligen|repligen corp",
+  // name-fold of ref name "ASML Holding N.V." is "asml holding n v"; the sheet
+  // writes "ASML Holding NV" ("asml holding nv") — alias bridges the N.V./NV gap
+  "NASDAQ::ASML": "asml|asml holding nv",
 }
 
 /**
