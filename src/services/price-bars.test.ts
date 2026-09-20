@@ -142,8 +142,35 @@ describe("price-bars (H3) service", () => {
     expect(mockFetchOhlcv).toHaveBeenCalledWith("GOOG", expect.any(String), expect.any(String))
   })
 
-  it("serves stale data without fetching when a fetch failed within the hour", async () => {
-    await seedStooq(db, "NFLX", [["2026-06-01", "600.00000000"]])
+  it("cold savings bonds gap-fill through the bond tier, never the equity walk (plan §37.1)", async () => {
+    // ROD1035 is not in ticker_reference and has no price_bars row (fresh
+    // after the openst bond import) — the gap fill must go straight to
+    // fetchBondOhlcv, not degrade to stock and probe the equity providers.
+    mockFetchBondOhlcv.mockResolvedValue([
+      { date: "2026-07-08", close: 102.4 },
+      { date: "2026-07-09", close: 102.42 },
+    ])
+    const now = new Date("2026-07-10T00:00:00Z")
+    const res = await getPriceBarSeries(db, "ROD1035", "2026-07-01", "2026-07-10", now)
+    expect(res.stale).toBe(false)
+    expect(res.closes).toEqual([102.4, 102.42])
+    // persisted to overflow with fetchStatus ok
+    const persisted = await db.execute(sql`
+      select date from instruments.price_bars where symbol = 'ROD1035' order by date
+    `)
+    expect((persisted.rows as Array<{ date: string }>).map((r) => r.date)).toEqual([
+      "2026-07-08",
+      "2026-07-09",
+    ])
+    const meta = await db.select().from(priceBarMetadata).where(sql`symbol = 'ROD1035'`)
+    expect(meta[0].fetchStatus).toBe("ok")
+    // bond tier only — the equity tier must never be probed for an emission
+    expect(mockFetchBondOhlcv).toHaveBeenCalledWith("ROD1035", expect.any(String), expect.any(String))
+    expect(mockFetchOhlcv).not.toHaveBeenCalled()
+    expect(mockFetchCryptoOhlcv).not.toHaveBeenCalled()
+  })
+
+  it("serves stale data without fetching when a fetch failed within the hour", async () => {    await seedStooq(db, "NFLX", [["2026-06-01", "600.00000000"]])
     mockFetchOhlcv.mockRejectedValue(new Error("boom"))
     const t1 = new Date("2026-07-10T12:00:00Z")
     await getPriceBarSeries(db, "NFLX", "2026-06-01", "2026-07-10", t1) // triggers failing fetch

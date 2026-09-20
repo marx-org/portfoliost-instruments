@@ -124,6 +124,29 @@ describe("referenceTickerKeys (plan 34 pair-aware lookup)", () => {
   })
 })
 
+describe("assetTypeForSymbol — savings bonds route to the bond tier (plan §37.1)", () => {
+  it("classifies ROD/EDO emissions as bond even when absent from ticker_reference", async () => {
+    const t = await createTestDb()
+    try {
+      await syncTickerReference(
+        `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+NASDAQ::AAPL,AAPL,NASDAQ,Apple Inc,Stock,Information Technology,,United States,US,US0378331005,apple`,
+        t.db,
+      )
+      // Not in ticker_reference, but the emission code must classify as bond —
+      // never degrade to stock and pay the equity provider walk.
+      expect(await assetTypeForSymbol(t.db, "ROD1035")).toBe("bond")
+      expect(await assetTypeForSymbol(t.db, "EDO0232")).toBe("bond")
+      expect(await assetTypeForSymbol(t.db, "ROD1035.WA")).toBe("bond")
+      // Non-bond unknown symbols are unchanged (null → callers treat as stock).
+      expect(await assetTypeForSymbol(t.db, "AAPL")).toBe("Stock")
+      expect(await assetTypeForSymbol(t.db, "ZZZZZ")).toBeNull()
+    } finally {
+      await t.client.close()
+    }
+  })
+})
+
 describe("assetTypeForSymbol — class-collision priority (plan 34)", () => {
   it("lets the specific class beat colliding stock/etf listings", async () => {
     const t = await createTestDb()
