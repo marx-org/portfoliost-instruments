@@ -7,7 +7,7 @@ import { getPriceBarSeries, backgroundUpsertBars } from "../services/price-bars.
 import { resolveInstrumentCurrency } from "../services/instrument-currency.js"
 import { fetchQuoteByAssetClass } from "../services/quote-dispatch.js"
 import { getNewsForTicker, getRecentNews, getNewsStats } from "../services/news.js"
-import { providerSymbol, symbolSuffix, venueFreeSymbol } from "../adapters/symbol.js"
+import { isSavingsBond, providerSymbol, symbolSuffix, venueFreeSymbol } from "../adapters/symbol.js"
 import { getExchangeBySuffix } from "../db/tickerref-queries.js"
 import { searchTickerReference } from "../db/tickerref-queries.js"
 import {
@@ -182,6 +182,13 @@ async function fetchOhlcvWithBondFallback(
   start: string,
   end: string,
 ): Promise<OpenstOhlcvRow[]> {
+  // Plan §37.2 — an emission's only OHLCV source is the obligacje engine;
+  // go straight there instead of paying the equity provider walk first.
+  // A miss in the bond engine is surfaced as-is (no equity retry — for a
+  // real emission code the equity tier is guaranteed dead weight, §37).
+  if (isSavingsBond(symbol)) {
+    return (await fetchBondOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
+  }
   try {
     return (await fetchOhlcv(symbol, start, end)) as unknown as OpenstOhlcvRow[]
   } catch (e) {
@@ -267,6 +274,16 @@ export function createInstrumentsRoutes() {
     }),
     async (c) => {
       const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
+      if (isSavingsBond(symbol)) {
+        // Plan §37.2 — savings-bond emissions have no equity profile; go
+        // straight to the obligacje bond profile (no equity 404 round-trip).
+        try {
+          const bondProfile = (await fetchBondProfile(symbol)) as OpenstProfile
+          return c.json(toInstrumentDetail(symbol, bondProfile))
+        } catch (e) {
+          return upstreamErrorResponse(c, e)
+        }
+      }
       try {
         const profile = (await fetchProfile(symbol)) as OpenstProfile
         return c.json(toInstrumentDetail(symbol, profile))
@@ -307,6 +324,16 @@ export function createInstrumentsRoutes() {
     async (c) => {
       const routeSymbol = c.req.param("symbol").toUpperCase()
       const symbol = providerSymbol(routeSymbol)
+      if (isSavingsBond(symbol)) {
+        // Plan §37.2 — the obligacje bond profile is the only profile source
+        // for an emission; never probe the equity tier for it.
+        try {
+          const bondProfile = (await fetchBondProfile(symbol)) as OpenstProfile
+          return c.json(toInstrumentProfile(symbol, bondProfile))
+        } catch (e) {
+          return upstreamErrorResponse(c, e)
+        }
+      }
       try {
         const profile = (await fetchProfile(symbol)) as OpenstProfile
         const out: ReturnType<typeof toInstrumentProfile> = toInstrumentProfile(symbol, profile)
@@ -365,6 +392,12 @@ export function createInstrumentsRoutes() {
     }),
     async (c) => {
       const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
+      if (isSavingsBond(symbol)) {
+        // Plan §37.2 — fundamental metrics don't exist for a savings-bond
+        // emission; answer without probing the equity tier (the 7-provider
+        // walk behind every probe was the load that OOMed openst §37).
+        return c.json({ error: "NotFound", message: "Not applicable for savings bonds" }, 404)
+      }
       try {
         const metrics = await fetchMetrics(symbol)
         let consensus: OpenstConsensus | undefined
@@ -397,6 +430,10 @@ export function createInstrumentsRoutes() {
     }),
     async (c) => {
       const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
+      if (isSavingsBond(symbol)) {
+        // Plan §37.2 — same as /metrics: no equity probe for an emission.
+        return c.json({ error: "NotFound", message: "Not applicable for savings bonds" }, 404)
+      }
       try {
         const metrics = await fetchMetrics(symbol)
         let profile: OpenstProfile | undefined
@@ -718,6 +755,11 @@ export function registerPt2Routes(instruments: Hono) {
     }),
     async (c) => {
       const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
+      if (isSavingsBond(symbol)) {
+        // Plan §37.2 — no financial statements exist for a savings-bond
+        // emission; answer without probing the equity tier (§37).
+        return c.json({ error: "NotFound", message: "Not applicable for savings bonds" }, 404)
+      }
       try {
         const [income, balance, cash] = await Promise.all([
           fetchFundamentals(symbol, "income", "annual"),
@@ -749,6 +791,11 @@ export function registerPt2Routes(instruments: Hono) {
     async (c) => {
       const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       const { start, end } = todayRange(45)
+      if (isSavingsBond(symbol)) {
+        // Plan §37.2 — no earnings/dividend calendar for an emission; skip
+        // the equity calendar probes and the fetchProfile call.
+        return c.json(toCalendar(symbol, [], [], "PLN"))
+      }
       // A missing calendar window (upstream 404) degrades to empty lists.
       const orEmpty = async (p: Promise<unknown>) => {
         try {
