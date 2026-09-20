@@ -2702,7 +2702,8 @@ export interface components {
             symbol: string;
             timeframe: string;
             stale: boolean;
-            currency?: string | null;
+            /** @description ISO-4217 currency of the closes (resolved from the profile/ticker reference; "USD" when unknown) */
+            currency: string;
             dates: string[];
             closes: number[];
         };

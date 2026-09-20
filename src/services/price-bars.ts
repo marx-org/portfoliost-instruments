@@ -17,6 +17,7 @@ import {
 } from "../db/tickerref-queries.js"
 import { fetchOhlcv, fetchBondOhlcv, fetchCryptoOhlcv } from "../adapters/cachest.js"
 import { providerSymbol, venueFreeSymbol } from "../adapters/symbol.js"
+import { resolveInstrumentCurrency } from "./instrument-currency.js"
 
 // D81/34 — the asset-class helpers live in db/tickerref-queries.ts (shared
 // with the quote dispatch); re-exported here for existing importers.
@@ -51,7 +52,8 @@ export interface PriceBarRow {
 export interface PriceBarSeriesResult {
   symbol: string
   stale: boolean
-  currency: string | null
+  /** ISO-4217 currency of the closes (§36 — resolved, "USD" when unknown). */
+  currency: string
   dates: string[]
   closes: number[]
 }
@@ -323,7 +325,8 @@ export async function getPriceBarSeries(
   return {
     symbol,
     stale,
-    currency: null,
+    // §36 — closes are denominated in the instrument's trading currency.
+    currency: await resolveInstrumentCurrency(db, symbol),
     dates: rows.map((r) => r.date),
     closes: rows.map((r) => Number(r.close)),
   }

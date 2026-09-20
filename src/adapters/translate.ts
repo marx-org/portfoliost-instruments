@@ -194,6 +194,7 @@ function dayStartEpoch(date: string): number {
 export function toPriceHistory(
   rows: OpenstOhlcvRow[],
   resolution: "daily" | "monthly",
+  currency = "USD",
 ): S["PriceHistory"] {
   if (resolution === "monthly") {
     const buckets = new Map<string, OpenstOhlcvRow[]>()
@@ -221,7 +222,7 @@ export function toPriceHistory(
     volumes: rows.map((r) => r.volume),
     timestamps: rows.map((r) => dayStartEpoch(r.date)),
     status: "ok",
-    currency: "USD",
+    currency,
   }
 }
 

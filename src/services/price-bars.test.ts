@@ -468,6 +468,8 @@ describe("D81 — asset-class routing in price-bars", () => {
     const res = await getPriceBarSeries(db, "BTC-USD", "2026-07-01", "2026-07-10", now)
     expect(res.stale).toBe(false)
     expect(res.closes).toEqual([60000, 61500])
+    // §36 — crypto pair currency resolved from the pair form
+    expect(res.currency).toBe("USD")
     expect(mockFetchCryptoOhlcv).toHaveBeenCalledTimes(1)
     expect(mockFetchOhlcv).not.toHaveBeenCalled()
     // crypto bars persisted to overflow under the system symbol
@@ -487,6 +489,8 @@ describe("D81 — asset-class routing in price-bars", () => {
     const res = await getPriceBarSeries(db, "ROD1033", "2026-07-01", "2026-07-10", now)
     expect(res.stale).toBe(false)
     expect(res.closes).toEqual([104.2])
+    // §36 — savings bonds are priced in PLN
+    expect(res.currency).toBe("PLN")
     expect(mockFetchBondOhlcv).toHaveBeenCalledWith("ROD1033", expect.any(String), expect.any(String))
     expect(mockFetchOhlcv).not.toHaveBeenCalled()
   })
@@ -498,6 +502,8 @@ describe("D81 — asset-class routing in price-bars", () => {
     const res = await getPriceBarSeries(db, "LBST201", "2026-07-01", "2026-07-10", now)
     expect(res.stale).toBe(false)
     expect(res.closes).toEqual([101.5])
+    // §36 — Catalyst corp bonds are priced in PLN
+    expect(res.currency).toBe("PLN")
     // corp_bond must NOT consult stooq or record a split candidate
     const candidates = await db.execute(sql`
       select count(*)::int as n from instruments.split_candidates where symbol = 'LBST201'
