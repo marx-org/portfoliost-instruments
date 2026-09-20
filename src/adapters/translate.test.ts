@@ -206,6 +206,12 @@ describe("toPriceHistory", () => {
     expect(h.lowPrices).toEqual([305.74, 318])
     expect(h.volumes).toEqual([250, 200])
   })
+
+  it("carries the instrument currency (defaults to USD) — §36", () => {
+    expect((toPriceHistory(rows, "daily") as Record<string, any>).currency).toBe("USD")
+    expect((toPriceHistory(rows, "daily", "PLN") as Record<string, any>).currency).toBe("PLN")
+    expect((toPriceHistory(rows, "monthly", "EUR") as Record<string, any>).currency).toBe("EUR")
+  })
 })
 
 describe("toInstrumentMetrics", () => {

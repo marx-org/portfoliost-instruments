@@ -4,6 +4,7 @@ import { openApi } from "hono-zod-openapi"
 import { userIdentityMiddleware } from "../auth.js"
 import { getDb } from "../db/index.js"
 import { getPriceBarSeries, backgroundUpsertBars } from "../services/price-bars.js"
+import { resolveInstrumentCurrency } from "../services/instrument-currency.js"
 import { fetchQuoteByAssetClass } from "../services/quote-dispatch.js"
 import { getNewsForTicker, getRecentNews, getNewsStats } from "../services/news.js"
 import { providerSymbol, symbolSuffix, venueFreeSymbol } from "../adapters/symbol.js"
@@ -467,7 +468,9 @@ export function createInstrumentsRoutes() {
         const rows = await fetchOhlcvWithBondFallback(symbol, start, end)
         // H4: background write-through — accumulates price_bars organically
         backgroundUpsertBars(getDb(), c.req.param("symbol").toUpperCase(), rows)
-        const history = toPriceHistory(rows, resolutionParam)
+        // §36 — the series is denominated in the instrument's trading currency
+        const currency = await resolveInstrumentCurrency(getDb(), c.req.param("symbol"))
+        const history = toPriceHistory(rows, resolutionParam, currency)
 
         // Benchmarks are liquid ETF proxies fetched over the same window and
         // aligned to the symbol's trading days (carry-forward on gaps).
@@ -566,7 +569,7 @@ export function createInstrumentsRoutes() {
                 symbol: z.string(),
                 timeframe: z.string(),
                 stale: z.boolean(),
-                currency: z.string().nullable(),
+                currency: z.string(),
                 dates: z.array(z.string()),
                 closes: z.array(z.number()),
               }),
