@@ -3,7 +3,7 @@ import { like, or, sql } from "drizzle-orm"
 import { createTestDb, migrationsFolder } from "../db/test-db.js"
 import type { DB } from "../db/index.js"
 import { tickerReference } from "../db/schema.js"
-import { parseCsv, parseCsvLine, syncExchangeReference, syncTickerReference, applyAliasOverrides, ALIAS_OVERRIDES } from "../scripts/tickerref-sync.js"
+import { parseCsv, parseCsvLine, syncExchangeReference, syncTickerReference } from "../scripts/tickerref-sync.js"
 
 const FIXTURE = `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
 NASDAQ::AAPL,AAPL,NASDAQ,Apple Inc,Stock,Information Technology,,United States,US,US0378331005,apple
@@ -74,7 +74,7 @@ describe("tickerref sync + search against PGlite", () => {
   })
 })
 
-describe("tickerref alias overrides (plan §24.9)", () => {
+describe("tickerref sync purity (plan §40.2)", () => {
   let db: DB
   let close: () => void
 
@@ -87,22 +87,19 @@ describe("tickerref alias overrides (plan §24.9)", () => {
 
   afterAll(() => close())
 
-  it("updates only rows the upstream data provides", async () => {
-    const applied = await applyAliasOverrides(db)
-    expect(applied).toBe(1)
+  it("keeps the upstream adanos aliases untouched for every row (no sheet-compat patch)", async () => {
+    // parseCsv + the sync upsert are the only writers — the alias column must
+    // equal the fixture value for every listing_key (empty fixture → null).
+    const fixture = new Map(parseCsv(FIXTURE).map((r) => [r.listing_key, r.aliases || null]))
     const rows = await db.select().from(tickerReference)
-    expect(rows).toHaveLength(4)
+    expect(rows).toHaveLength(fixture.size)
+    for (const row of rows) {
+      expect(row.aliases).toBe(fixture.get(row.listingKey))
+    }
+    // the DTLA row ships with no upstream alias — it stays null (the old
+    // §24.9 override used to inject "ishares treasury bond 20 yr ucits etf usd a")
     const dtla = rows.find((r) => r.listingKey === "LSE::DTLA")!
-    expect(dtla.aliases).toBe(ALIAS_OVERRIDES["LSE::DTLA"])
-  })
-
-  it("re-applies after an upstream re-sync resets aliases", async () => {
-    await syncTickerReference(FIXTURE, db)
-    let dtla = (await db.select().from(tickerReference)).find((r) => r.listingKey === "LSE::DTLA")!
     expect(dtla.aliases).toBeNull()
-    await applyAliasOverrides(db)
-    dtla = (await db.select().from(tickerReference)).find((r) => r.listingKey === "LSE::DTLA")!
-    expect(dtla.aliases).toBe(ALIAS_OVERRIDES["LSE::DTLA"])
   })
 })
 
