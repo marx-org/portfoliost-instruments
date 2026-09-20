@@ -492,7 +492,7 @@ export function createInstrumentsRoutes() {
               if (v !== undefined && Number.isFinite(v) && v > 0) last = v
               return last ?? 0
             })
-            compare = { name: bench.name, closePrices, timestamps: history.timestamps }
+            compare = { name: bench.name, closePrices, timestamps: history.timestamps, currency: "USD" }
           } catch {
             compare = undefined
           }
