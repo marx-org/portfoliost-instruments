@@ -182,6 +182,75 @@ describe("toQuote", () => {
     expect(q.percentChange).toBeCloseTo(5, 6)
     expect(q.change).toBe(5)
   })
+
+  it("§39: normalizes LSE pence quotes (GBp) to GBP (÷100)", () => {
+    const q = toQuote({
+      symbol: "CSN.L",
+      last_price: 357.5,
+      open: 360.0,
+      high: 360.0,
+      low: 354.0,
+      prev_close: 357.0,
+      volume: 765471,
+      change: 0.5,
+      change_percent: 0.0014,
+      last_timestamp: "2026-09-20 16:30:00",
+      bid: 356.5,
+      ask: 357.5,
+      bid_size: 0,
+      ask_size: 0,
+      currency: "GBp",
+    }) as Record<string, any>
+
+    expect(q.currency).toBe("GBP")
+    expect(q.currentPrice).toBeCloseTo(3.575, 10)
+    expect(q.previousClose).toBeCloseTo(3.57, 10)
+    expect(q.openPrice).toBeCloseTo(3.6, 10)
+    expect(q.highPrice).toBeCloseTo(3.6, 10)
+    expect(q.lowPrice).toBeCloseTo(3.54, 10)
+    expect(q.change).toBeCloseTo(0.005, 10)
+    expect(q.bid).toBeCloseTo(3.565, 10)
+    expect(q.ask).toBeCloseTo(3.575, 10)
+    expect(q.regularMarketPrice).toBeCloseTo(3.575, 10)
+    // percentChange is unit-free — must be untouched by the division
+    expect(q.percentChange).toBeCloseTo(0.14, 6)
+  })
+
+  it("§39: does not divide ISO-coded quotes (GBP / USD regression)", () => {
+    const gbp = toQuote({
+      symbol: "CSN.L",
+      last_price: 3.575,
+      prev_close: 3.57,
+      change: 0.005,
+      bid: 3.565,
+      ask: 3.575,
+      currency: "GBP",
+    }) as Record<string, any>
+    expect(gbp.currency).toBe("GBP")
+    expect(gbp.currentPrice).toBe(3.575)
+    expect(gbp.change).toBe(0.005)
+    expect(gbp.bid).toBe(3.565)
+  })
+
+  it("§39: maps GBp profile currency to GBP (detail + profile)", () => {
+    const detail = toInstrumentDetail("CSN.L", {
+      symbol: "CSN.L",
+      name: "Chesnara plc",
+      stock_exchange: "LSE",
+      currency: "GBp",
+    })
+    expect(detail.currency).toBe("GBP")
+
+    const profile = toInstrumentProfile("CSN.L", {
+      symbol: "CSN.L",
+      name: "Chesnara plc",
+      currency: "GBp",
+      stock_exchange: "LSE",
+      market_cap: 1_000_000_000,
+    })
+    expect(profile.currency).toBe("GBP")
+    expect(profile.marketCapCurrency).toBe("GBP")
+  })
 })
 
 describe("toPriceHistory", () => {

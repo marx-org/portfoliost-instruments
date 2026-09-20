@@ -100,6 +100,30 @@ export function marketPhase(now = new Date()): { session: string; phase: string 
   return { session: "closed", phase: "closed" }
 }
 
+/**
+ * Provider pricing-unit normalization (plan §39).
+ *
+ * Biznesradar prices LSE equities in **pence** and labels the currency `GBp`
+ * (non-ISO-4217). The contract wire types require ISO codes, so the adapter
+ * boundary divides all price fields by 100 and re-issues the code as `GBP`.
+ */
+export const PENCE_UNIT = "GBp"
+
+function isPence(currency: string | undefined | null): boolean {
+  const c = (currency ?? "").trim()
+  // "GBp" and "GBP" collide once lowercased, so the ISO code must be excluded
+  // case-sensitively; any other casing of gb* (GBp, gbP, gbp) is pence.
+  return c !== "GBP" && c.toLowerCase() === "gbp"
+}
+
+function toIsoCurrency(currency: string | null | undefined): string | null | undefined {
+  return currency != null && isPence(currency) ? "GBP" : currency
+}
+
+function fromPence(value: number | undefined | null, pence: boolean): number | undefined | null {
+  return value != null && pence ? value / 100 : value
+}
+
 export function toInstrumentDetail(symbol: string, profile: OpenstProfile): S["InstrumentDetail"] {
   const row = profile as Row
   const isBond = row.rate_rule !== undefined || row.series_code !== undefined
@@ -117,13 +141,13 @@ export function toInstrumentDetail(symbol: string, profile: OpenstProfile): S["I
     name: str(profile.name) ?? symbol.toUpperCase(),
     exchange: str(pick(row, "stock_exchange", "exchange")) ?? (isBond ? "PL" : "US"),
     type,
-    currency: str(profile.currency) ?? (isBond ? "PLN" : "USD"),
+    currency: toIsoCurrency(str(profile.currency)) ?? (isBond ? "PLN" : "USD"),
   }
 }
 
 export function toInstrumentProfile(symbol: string, p: OpenstProfile): S["InstrumentProfile"] {
   const marketCap = num(pick(p as Row, "market_cap"))
-  const currency = str(p.currency) ?? "USD"
+  const currency = toIsoCurrency(str(p.currency)) ?? "USD"
   return {
     ticker: symbol.toUpperCase(),
     name: str(p.name),
@@ -153,31 +177,35 @@ export function toInstrumentProfile(symbol: string, p: OpenstProfile): S["Instru
 }
 
 export function toQuote(q: OpenstQuote): S["Quote"] {
-  const lastPrice = num(pick(q as Row, "last_price")) ?? 0
-  const prevClose = num(pick(q as Row, "prev_close")) ?? lastPrice
+  // §39 — LSE rows arrive in pence with currency "GBp": divide every price
+  // field by 100 and emit the ISO code so consumers (wallets quotes pass,
+  // SPA pre-fills) never see sub-unit prices.
+  const pence = isPence(str(q.currency))
+  const lastPrice = fromPence(num(pick(q as Row, "last_price")), pence) ?? 0
+  const prevClose = fromPence(num(pick(q as Row, "prev_close")), pence) ?? lastPrice
   let percentChange = num(q.change_percent)
   if (percentChange !== undefined && Math.abs(percentChange) < 1) percentChange *= 100
-  const change = num(q.change) ?? (lastPrice - prevClose)
+  const change = fromPence(num(q.change), pence) ?? (lastPrice - prevClose)
   const fallbackPercent = prevClose !== 0 ? (change / prevClose) * 100 : 0
   const timestamp = epochSeconds(str(q.last_timestamp))
   const { session, phase } = marketPhase()
   return {
     symbol: (str(q.symbol) ?? "").toUpperCase(),
     currentPrice: lastPrice,
-    highPrice: num(q.high) ?? lastPrice,
-    lowPrice: num(q.low) ?? lastPrice,
-    openPrice: num(q.open) ?? lastPrice,
+    highPrice: fromPence(num(q.high), pence) ?? lastPrice,
+    lowPrice: fromPence(num(q.low), pence) ?? lastPrice,
+    openPrice: fromPence(num(q.open), pence) ?? lastPrice,
     previousClose: prevClose,
     change,
     percentChange: percentChange ?? fallbackPercent,
     timestamp,
     marketSession: session,
     timezone: NY_TZ,
-    bid: num(q.bid) ?? 0,
-    ask: num(q.ask) ?? 0,
+    bid: fromPence(num(q.bid), pence) ?? 0,
+    ask: fromPence(num(q.ask), pence) ?? 0,
     bidSize: num(q.bid_size) ?? 0,
     askSize: num(q.ask_size) ?? 0,
-    currency: str(q.currency) ?? "USD",
+    currency: toIsoCurrency(str(q.currency)) ?? "USD",
     regularMarketPrice: lastPrice,
     extendedHoursChange: 0,
     extendedHoursChangePercent: 0,
