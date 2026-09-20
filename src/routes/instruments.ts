@@ -788,10 +788,14 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
+      const routeSymbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(routeSymbol)
       try {
         const rows = await fetchDividendHistory(symbol)
-        return c.json(toDividends(rows as any[]))
+        // §36 — dividend amounts are denominated in the instrument's trading
+        // currency; rows carrying their own currency still win.
+        const currency = await resolveInstrumentCurrency(getDb(), routeSymbol)
+        return c.json(toDividends(rows as any[], currency))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }

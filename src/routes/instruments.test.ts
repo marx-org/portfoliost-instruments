@@ -673,6 +673,36 @@ describe("pt2 routes", () => {
       const body = await res.json()
       expect(body.history[0]).toEqual({ date: "2026-05-12", year: 2026, amount: 0.26, currency: "USD", type: "regular" })
     })
+
+    it("resolves the instrument trading currency for rows without one (§36)", async () => {
+      const { createTestDb } = await import("../db/test-db.js")
+      const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+      const t = await createTestDb()
+      dbState.db = t.db
+      await syncTickerReference(
+        `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::SNT,SNT,WSE,Synektik Sa,Stock,,,,PL,,`,
+        t.db,
+      )
+      // Suffix→exchange mapping so SNT.WA scopes to WSE
+      await t.db.execute((await import("drizzle-orm")).sql`INSERT INTO instruments.exchange_reference (exchange_code, canonical_name, yahoo_suffix) VALUES ('WSE', 'Warsaw Stock Exchange', 'WA') ON CONFLICT DO NOTHING`)
+      try {
+        mocked.fetchDividendHistory.mockResolvedValue([
+          { date: "2026-04-15", amount: "1.20" },
+          { date: "2025-12-15", amount: "1.10", currency: "PLN" },
+        ])
+        const res = await req("/api/instruments/SNT.WA/dividends")
+        expect(res.status).toBe(200)
+        const body = await res.json()
+        // row without currency → instrument currency (PL via tickerref)
+        expect(body.history[0]).toMatchObject({ date: "2026-04-15", amount: 1.2, currency: "PLN" })
+        // row with its own currency keeps it
+        expect(body.history[1]).toMatchObject({ date: "2025-12-15", currency: "PLN" })
+      } finally {
+        await t.client.close()
+        dbState.db = null
+      }
+    })
   })
 
   describe("GET /:symbol/projections", () => {
