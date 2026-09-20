@@ -198,6 +198,90 @@ describe("GET /api/instruments/:symbol (detail)", () => {
   })
 })
 
+describe("GET /api/instruments/:symbol — savings-bond direct routes (plan §37.2)", () => {
+  const BOND_PROFILE = { symbol: "ROD1035", name: "Obligacje 12-letnie ROD", maturity_date: "2035-10-01" }
+
+  it("detail: straight to the bond profile, never the equity probe", async () => {
+    mocked.fetchBondProfile.mockResolvedValue(BOND_PROFILE)
+    const res = await req("/api/instruments/ROD1035")
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ symbol: "ROD1035", name: "Obligacje 12-letnie ROD" })
+    expect(mocked.fetchProfile).not.toHaveBeenCalled()
+    expect(mocked.fetchBondProfile).toHaveBeenCalledWith("ROD1035")
+  })
+
+  it("profile: straight to the bond profile, never the equity probe", async () => {
+    mocked.fetchBondProfile.mockResolvedValue(BOND_PROFILE)
+    const res = await req("/api/instruments/ROD1035/profile")
+    expect(res.status).toBe(200)
+    expect((await res.json()).name).toBe("Obligacje 12-letnie ROD")
+    expect(mocked.fetchProfile).not.toHaveBeenCalled()
+    expect(mocked.fetchBondProfile).toHaveBeenCalledWith("ROD1035")
+  })
+
+  it("profile: bond profile failure maps to the upstream error, no equity retry", async () => {
+    mocked.fetchBondProfile.mockRejectedValue(new cachest.UpstreamError("bond", 404))
+    const res = await req("/api/instruments/ROD1035/profile")
+    expect(res.status).toBe(404)
+    expect(mocked.fetchProfile).not.toHaveBeenCalled()
+  })
+
+  it("metrics: 404 without any upstream call", async () => {
+    const res = await req("/api/instruments/ROD1035/metrics")
+    expect(res.status).toBe(404)
+    expect((await res.json()).error).toBe("NotFound")
+    expect(mocked.fetchMetrics).not.toHaveBeenCalled()
+    expect(mocked.fetchProjections).not.toHaveBeenCalled()
+  })
+
+  it("overview-metrics: 404 without any upstream call", async () => {
+    const res = await req("/api/instruments/ROD1035/overview-metrics")
+    expect(res.status).toBe(404)
+    expect(mocked.fetchMetrics).not.toHaveBeenCalled()
+    expect(mocked.fetchProfile).not.toHaveBeenCalled()
+  })
+
+  it("fundamentals: 404 without any upstream call", async () => {
+    const res = await req("/api/instruments/ROD1035/fundamentals")
+    expect(res.status).toBe(404)
+    expect((await res.json()).error).toBe("NotFound")
+    expect(mocked.fetchFundamentals).not.toHaveBeenCalled()
+  })
+
+  it("calendar: empty entries without probing the equity tier", async () => {
+    const res = await req("/api/instruments/ROD1035/calendar")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.earnings).toEqual([])
+    expect(body.exDividend).toEqual([])
+    expect(mocked.fetchCalendarEarnings).not.toHaveBeenCalled()
+    expect(mocked.fetchCalendarDividends).not.toHaveBeenCalled()
+    expect(mocked.fetchProfile).not.toHaveBeenCalled()
+  })
+
+  it("history: straight to the bond OHLCV, never the equity OHLCV", async () => {
+    mocked.fetchBondOhlcv.mockResolvedValue([{
+      index: "2026-09-18",
+      close: 102.4,
+      open: 102.4,
+      high: 102.4,
+      low: 102.4,
+      volume: 0,
+    }])
+    const res = await req("/api/instruments/ROD1035/history")
+    expect(res.status).toBe(200)
+    expect(mocked.fetchOhlcv).not.toHaveBeenCalled()
+    expect(mocked.fetchBondOhlcv).toHaveBeenCalled()
+  })
+
+  it("history: bond OHLCV failure surfaces as the upstream error, no equity retry", async () => {
+    mocked.fetchBondOhlcv.mockRejectedValue(new cachest.UpstreamError("bond", 404))
+    const res = await req("/api/instruments/ROD1035/history")
+    expect(res.status).toBe(404)
+    expect(mocked.fetchOhlcv).not.toHaveBeenCalled()
+  })
+})
+
 describe("GET /api/instruments/:symbol/profile", () => {
   it("maps profile payload", async () => {
     mocked.fetchProfile.mockResolvedValue({
