@@ -55,13 +55,10 @@ export async function applyAliasOverrides(db: DB = getDb()): Promise<number> {
  * Curated listings the upstream adanos core_listings never carries but the
  * asset-class dispatch (plan 34.5) needs in `ticker_reference`:
  *  - yfinance crypto pairs (bare-coin ticker, asset_type=crypto)
- *  - Polish TFI fund symbols (plan §24.1, asset_type=fund)
  *
- * The §24.1 additions were applied to compose only and never landed in prod
- * (verified 2026-09-20: prod ticker_reference has zero crypto/fund/bond rows),
- * and nothing else writes these keys, so they are re-applied idempotently
- * after every ticker sync run — the sync itself is upsert-only and would
- * otherwise leave them absent forever.
+ * Nothing else writes these keys, so they are re-applied idempotently after
+ * every ticker sync run — the sync itself is upsert-only and would otherwise
+ * leave them absent forever.
  */
 export function curatedListingRows(): Array<Record<string, string>> {
   const rows: Array<Record<string, string>> = []
@@ -76,25 +73,6 @@ export function curatedListingRows(): Array<Record<string, string>> {
       asset_type: "crypto",
       country_code: "US",
       aliases: `${base}|${pair.toLowerCase()}`,
-    })
-  }
-  const tfiFunds: Array<[string, string]> = [
-    ["NNEP25", "NN Emerytura 2025"],
-    ["NNEP30", "NN Emerytura 2030"],
-    ["GSEM65", "Goldman Sachs Emerytura 2065"],
-    ["GSEM60", "Goldman Sachs Emerytura 2060"],
-    ["GSAK", "Goldman Sachs Akcji"],
-    ["NNOB", "NN Obligacji"],
-  ]
-  for (const [ticker, name] of tfiFunds) {
-    rows.push({
-      listing_key: `TFI::${ticker}`,
-      ticker,
-      exchange: "GPW",
-      name,
-      asset_type: "fund",
-      country: "Poland",
-      country_code: "PL",
     })
   }
   return rows
@@ -300,7 +278,7 @@ async function main() {
   const fileBase = fileArgIdx > -1 ? process.argv[fileArgIdx + 1] : undefined
   const urlBase = urlArgIdx > -1 ? process.argv[urlArgIdx + 1] : undefined
   const ifEmpty = process.argv.includes("--if-empty")
-  // One-shot curated-only mode (plan 34.5): upsert the crypto/fund listings
+  // One-shot curated-only mode (plan 34.5): upsert the crypto listings
   // without re-syncing the upstream 60k-row snapshot.
   const curatedOnly = process.argv.includes("--curated-only")
   const sourceUrl = urlBase || process.env.TICKERREF_SOURCE_URL || DEFAULT_SOURCE_URL
@@ -330,7 +308,7 @@ async function main() {
     console.log(`[tickerref] alias overrides applied: ${applied}`)
   }
 
-  // Curated listings (crypto/fund) — nothing else writes these keys, so they
+  // Curated listings (crypto) — nothing else writes these keys, so they
   // are re-applied on every run (incl. --if-empty / --curated-only).
   const curated = await syncCuratedListings(db)
   console.log(`[tickerref] curated listings upserted: ${curated}`)

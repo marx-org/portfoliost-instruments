@@ -145,7 +145,7 @@ describe("syncExchangeReference", () => {
 })
 
 describe("tickerref curated listings (plan 34.5)", () => {
-  it("upserts crypto pairs + TFI funds idempotently", async () => {
+  it("upserts crypto pairs idempotently", async () => {
     const { syncCuratedListings, curatedListingRows } = await import("../scripts/tickerref-sync.js")
     const t = await createTestDb()
     try {
@@ -158,11 +158,9 @@ describe("tickerref curated listings (plan 34.5)", () => {
       // matic + pol both price via POL-USD but stay separate rows
       expect(rows.filter((r) => r.name === "POL-USD")).toHaveLength(2)
       expect(new Set(rows.map((r) => r.listing_key)).size).toBe(rows.length)
-      expect(rows.find((r) => r.listing_key === "TFI::NNEP25")).toMatchObject({
-        ticker: "NNEP25",
-        asset_type: "fund",
-        exchange: "GPW",
-      })
+      // TFI funds were removed from curated listings (plan §38: resolved via
+      // NAME_VENUE_OVERRIDES at the import step, not reference data)
+      expect(rows.some((r) => r.listing_key.startsWith("TFI::"))).toBe(false)
 
       const first = await syncCuratedListings(t.db)
       expect(first).toBe(rows.length)
@@ -174,8 +172,6 @@ describe("tickerref curated listings (plan 34.5)", () => {
       expect(all).toHaveLength(rows.length)
       const btc = all.find((r) => r.ticker === "BTC")
       expect(btc?.assetType).toBe("crypto")
-      const fund = all.find((r) => r.ticker === "NNEP25")
-      expect(fund?.assetType).toBe("fund")
     } finally {
       await t.client.close()
     }
