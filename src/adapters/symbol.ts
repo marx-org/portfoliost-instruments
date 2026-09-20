@@ -22,3 +22,14 @@ export function venueFreeSymbol(routeSymbol: string): string {
   const idx = routeSymbol.lastIndexOf(".")
   return idx === -1 ? routeSymbol : routeSymbol.slice(0, idx)
 }
+
+/** Retail savings-bond emission codes (ROD/EDO + 4 digits). These are never
+ * exchange-listed and never appear in `ticker_reference` (they are imported
+ * separately by the openst bond job) — the obligacje engine is their price
+ * source. Single source of truth for the bond-tier routing (plan §37.1). */
+export const SAVINGS_BOND = /^(ROD|EDO)\d{4}$/
+
+/** Whether a route symbol (any venue form) is a savings-bond emission. */
+export function isSavingsBond(routeSymbol: string): boolean {
+  return SAVINGS_BOND.test(venueFreeSymbol(routeSymbol.toUpperCase()))
+}
