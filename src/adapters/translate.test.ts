@@ -19,7 +19,8 @@ import {
   toNewsArticleItem,
   toNewsArticleList,
 } from "./translate.js"
-import type { OpenstOhlcvRow } from "./openst-types.js"
+import type { OpenstOhlcvRow, OpenstProfile, OpenstQuote } from "./openst-types.js"
+import type { CurrencyResolution } from "../services/instrument-currency.js"
 
 const fmpProfile = {
   symbol: "AAPL",
@@ -49,6 +50,7 @@ describe("toInstrumentDetail", () => {
       exchange: "NASDAQ",
       type: "STOCK",
       currency: "USD",
+      currencySource: "provider",
     })
   })
 
@@ -66,6 +68,8 @@ describe("toInstrumentDetail", () => {
       exchange: "PL",
       type: "BOND",
       currency: "PLN",
+      // no provider currency on the bond profile → local PLN heuristic = estimated
+      currencySource: "estimated",
     })
   })
 
@@ -352,9 +356,14 @@ describe("toPriceHistory", () => {
     expect(h.volumes).toEqual([250, 200])
   })
 
-  it("carries the instrument currency (defaults to USD) — §36", () => {
-    expect((toPriceHistory(rows, "daily") as Record<string, any>).currency).toBe("USD")
+  it("carries the instrument currency — §36 (§47: null default, never guessed)", () => {
+    const daily = toPriceHistory(rows, "daily") as Record<string, any>
+    expect(daily.currency).toBeNull()
+    expect(daily.currencySource).toBe("unknown")
     expect((toPriceHistory(rows, "daily", "PLN") as Record<string, any>).currency).toBe("PLN")
+    expect((toPriceHistory(rows, "daily", "PLN", "estimated") as Record<string, any>).currencySource).toBe(
+      "estimated",
+    )
     expect((toPriceHistory(rows, "monthly", "EUR") as Record<string, any>).currency).toBe("EUR")
   })
 })
@@ -507,6 +516,60 @@ describe("toProjections estimate/recommendation blocks", () => {
     expect(out.priceTarget).toMatchObject({ low: null, high: null })
     expect(out.earnings).toMatchObject({ avg: null, periods: expect.any(Array) })
     expect(out.recommendation).toMatchObject({ buy: 0, analysts: null })
+  })
+})
+
+describe("currencySource emission across quote/profile/detail — §47.4", () => {
+  const q = { symbol: "NNEP65.TFI", last_price: 102.4, currency: "PLN" } as never as OpenstQuote
+  const profile = { symbol: "NNEP65.TFI", name: "Fund", currency: "PLN" } as never as OpenstProfile
+  const detail = profile
+  const bq = { symbol: "AAPL", last_price: 220.1, currency: "USD" } as never as OpenstQuote
+
+  it("provider pass-through: quote + profile + detail + history emit provider when the resolution is provider", () => {
+    const res: CurrencyResolution = { currency: "PLN", currencySource: "provider" }
+    expect(toQuote(q, res).currency).toBe("PLN")
+    expect(toQuote(q, res).currencySource).toBe("provider")
+    expect(toInstrumentProfile("NNEP65.TFI", profile, res).currencySource).toBe("provider")
+    expect(toInstrumentDetail("NNEP65.TFI", detail, res).currencySource).toBe("provider")
+    expect(toPriceHistory([], "daily", "PLN", "provider").currencySource).toBe("provider")
+  })
+
+  it("estimated: provider silent, local resolution steps in", () => {
+    const res: CurrencyResolution = { currency: "PLN", currencySource: "estimated" }
+    expect(toQuote(q, res).currency).toBe("PLN")
+    expect(toQuote(q, res).currencySource).toBe("estimated")
+    expect(toInstrumentProfile("NNEP65.TFI", profile, res).currencySource).toBe("estimated")
+    expect(toInstrumentDetail("NNEP65.TFI", detail, res).currencySource).toBe("estimated")
+  })
+
+  it("unknown: resolution carries null currency and the source flags it", () => {
+    const res: CurrencyResolution = { currency: null, currencySource: "unknown" }
+    expect(toQuote(bq, res).currency).toBeNull()
+    expect(toQuote(bq, res).currencySource).toBe("unknown")
+    expect(toInstrumentProfile("AAPL", profile as never, res).currency).toBeNull()
+    expect(toInstrumentDetail("AAPL", detail as never, res).currencySource).toBe("unknown")
+  })
+
+  it("no resolution passed: derives provider/estimated from the row itself", () => {
+    // provider declares USD on the quote → provider; provider silent on a bond
+    // profile → estimated (local PLN heuristic); fully silent → unknown.
+    // (fund→PLN lives in the DB resolver, applied via `resolution` in routes.)
+    expect(toQuote(bq).currencySource).toBe("provider")
+    const bondProfile = {
+      symbol: "ROD0938",
+      name: "Rodzinne 2026",
+      rate_rule: "3m_wibor+margin",
+      currency: "PLN",
+    }
+    expect(toInstrumentDetail("ROD0938", bondProfile as never).currencySource).toBe("provider")
+    const silentBond = { symbol: "ROD0938", name: "Rodzinne 2026", rate_rule: "3m_wibor+margin" }
+    expect(toInstrumentDetail("ROD0938", silentBond as never).currency).toBe("PLN")
+    expect(toInstrumentDetail("ROD0938", silentBond as never).currencySource).toBe("estimated")
+    expect(toInstrumentProfile("ROD0938", silentBond as never).currency).toBe("PLN")
+    const silentFund = { symbol: "NNEP25.TFI", name: "Fund" }
+    expect(toInstrumentDetail("NNEP25.TFI", silentFund as never).currency).toBeNull()
+    expect(toInstrumentDetail("NNEP25.TFI", silentFund as never).currencySource).toBe("unknown")
+    expect(toQuote({ symbol: "XAUR", last_price: 1 } as never).currencySource).toBe("unknown")
   })
 })
 

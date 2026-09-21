@@ -8,10 +8,10 @@
  *   2. bond (savings-bond engine)  → PLN (obligacje prices in PLN)
  *   3. corp_bond / fund (.WA/.TFI) → PLN (biznesradar Catalyst/TFI universe)
  *   4. ticker_reference.country_code → ISO-4217 map
- *   5. everything else             → "USD"
+ *   5. everything else             → null (NOT "USD" — plan §47: never guess)
  *
- * DB lookups degrade silently: a resolution hiccup must never break a
- * history/price-bars request, so every failure falls back to "USD".
+ * DB lookups degrade to ``null``, never a guessed code: the SPA takes the
+ * ``currencySource`` signal ("estimated" vs "unknown") to red-flag it.
  */
 import { CURRENCIES } from "@marx2/contracts/currencies"
 import type { DB } from "../db/index.js"
@@ -23,6 +23,15 @@ import {
   type AssetType,
 } from "../db/tickerref-queries.js"
 import { symbolSuffix, venueFreeSymbol } from "../adapters/symbol.js"
+
+/** How an instrument's ``currency`` was determined (contract CurrencySource, §47.3). */
+export type CurrencySource = "provider" | "estimated" | "unknown"
+
+/** Currency + sourcing signal, as served on quote/profile/history (§47.4). */
+export interface CurrencyResolution {
+  currency: string | null
+  currencySource: CurrencySource
+}
 
 /** ISO-4217 for the currencies the contract catalog knows (upper-cased codes). */
 const KNOWN_CODES = new Set(CURRENCIES.map((c) => c.code))
@@ -84,10 +93,10 @@ const COUNTRY_CURRENCY: Record<string, string> = {
   VN: "VND",
 }
 
-function currencyForCountry(countryCode: string | null | undefined): string {
+function currencyForCountry(countryCode: string | null | undefined): string | null {
   const c = (countryCode ?? "").toUpperCase()
   const mapped = COUNTRY_CURRENCY[c]
-  return mapped && KNOWN_CODES.has(mapped) ? mapped : "USD"
+  return mapped && KNOWN_CODES.has(mapped) ? mapped : null
 }
 
 /** Quote currency of a crypto pair (BTC-USD → USD); null for non-pairs. */
@@ -101,17 +110,18 @@ export function cryptoPairCurrency(symbol: string): string | null {
 
 /**
  * Resolve the trading currency for a route symbol (SNT.WA, AAPL, BTC-USD,
- * ROD1033…). Pure local lookup — no upstream HTTP. Always returns a valid
- * ISO-4217 code, "USD" on any uncertainty.
+ * ROD1033…). Pure local lookup — no upstream HTTP. Returns an ISO-4217 code
+ * when the symbol type/country is known, ``null`` on any uncertainty (plan
+ * §47 — never guess USD; consumers read ``currencySource`` to differentiate).
  */
 export async function resolveInstrumentCurrency(
   db: DB | null,
   routeSymbol: string,
-): Promise<string> {
+): Promise<string | null> {
   const symbol = routeSymbol.toUpperCase()
   const pairCcy = cryptoPairCurrency(symbol)
   if (pairCcy) return pairCcy
-  if (!db) return "USD"
+  if (!db) return null
   try {
     const assetType: AssetType = normalizeAssetType(await assetTypeForSymbol(db, symbol))
     if (assetType === "bond" || assetType === "corp_bond" || assetType === "fund") {
@@ -124,8 +134,46 @@ export async function resolveInstrumentCurrency(
     const rows = await searchTickerReference(db, symbol, 1, exchange)
     const row = rows[0]
     if (row && row.countryCode) return currencyForCountry(row.countryCode)
-    return "USD"
+    return null
   } catch {
-    return "USD"
+    return null
   }
+}
+
+/** §39 — OpenBB labels LSE pence quotes "GBp"; the ISO code is "GBP".
+ * "GBp" and "GBP" collide once lowercased, so the ISO code is excluded
+ * case-sensitively (mirrors translate.ts isPence). */
+function normalizeProviderDeclaration(currency: string | null | undefined): string | null {
+  const c = (currency ?? "").trim()
+  if (!c) return null
+  if (c !== "GBP" && c.toLowerCase() === "gbp") return "GBP"
+  return c.toUpperCase()
+}
+
+/**
+ * Compare the provider's declared currency against the local resolver and
+ * derive the ``currency`` + ``currencySource`` pair served to clients (§47.4):
+ *
+ * - provider declared AND matches local       → provider value, ``provider``
+ * - provider declared but local differs      → local value, ``estimated``
+ *   (the local, instrument-aware resolution wins over a provider mismatch)
+ * - provider declared, local silent          → provider value, ``provider``
+ *   (a real declaration is never downgraded by a silence)
+ * - provider silent, local resolved          → local value, ``estimated``
+ * - both silent                              → ``null``, ``unknown``
+ */
+export async function resolveCurrency(
+  db: DB | null,
+  routeSymbol: string,
+  providerCurrency: string | null | undefined,
+): Promise<CurrencyResolution> {
+  const provider = normalizeProviderDeclaration(providerCurrency)
+  const local = await resolveInstrumentCurrency(db, routeSymbol)
+  if (provider) {
+    if (provider === local) return { currency: provider, currencySource: "provider" }
+    if (local) return { currency: local, currencySource: "estimated" }
+    return { currency: provider, currencySource: "provider" }
+  }
+  if (local) return { currency: local, currencySource: "estimated" }
+  return { currency: null, currencySource: "unknown" }
 }

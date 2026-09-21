@@ -52,8 +52,8 @@ export interface PriceBarRow {
 export interface PriceBarSeriesResult {
   symbol: string
   stale: boolean
-  /** ISO-4217 currency of the closes (§36 — resolved, "USD" when unknown). */
-  currency: string
+  /** ISO-4217 currency of the closes (§36 — resolved, null when unknown). */
+  currency: string | null
   dates: string[]
   closes: number[]
 }
