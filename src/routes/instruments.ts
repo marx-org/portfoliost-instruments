@@ -4,7 +4,7 @@ import { openApi } from "hono-zod-openapi"
 import { userIdentityMiddleware } from "../auth.js"
 import { getDb } from "../db/index.js"
 import { getPriceBarSeries, backgroundUpsertBars } from "../services/price-bars.js"
-import { resolveInstrumentCurrency } from "../services/instrument-currency.js"
+import { resolveCurrency, resolveInstrumentCurrency } from "../services/instrument-currency.js"
 import { fetchQuoteByAssetClass } from "../services/quote-dispatch.js"
 import { getNewsForTicker, getRecentNews, getNewsStats } from "../services/news.js"
 import { isSavingsBond, providerSymbol, symbolSuffix, venueFreeSymbol } from "../adapters/symbol.js"
@@ -273,20 +273,23 @@ export function createInstrumentsRoutes() {
       },
     }),
     async (c) => {
-      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
+      const routeSymbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(routeSymbol)
       if (isSavingsBond(symbol)) {
         // Plan §37.2 — savings-bond emissions have no equity profile; go
         // straight to the obligacje bond profile (no equity 404 round-trip).
         try {
           const bondProfile = (await fetchBondProfile(symbol)) as OpenstProfile
-          return c.json(toInstrumentDetail(symbol, bondProfile))
+          const resolution = await resolveCurrency(getDb(), routeSymbol, bondProfile.currency)
+          return c.json(toInstrumentDetail(symbol, bondProfile, resolution))
         } catch (e) {
           return upstreamErrorResponse(c, e)
         }
       }
       try {
         const profile = (await fetchProfile(symbol)) as OpenstProfile
-        return c.json(toInstrumentDetail(symbol, profile))
+        const resolution = await resolveCurrency(getDb(), routeSymbol, profile.currency)
+        return c.json(toInstrumentDetail(symbol, profile, resolution))
       } catch (e) {
         // D79 — savings-bond emissions (ROD0938, EDO0936, …) have no equity
         // profile: a bond symbol either 404s the equity tier (no match, fast)
@@ -296,7 +299,8 @@ export function createInstrumentsRoutes() {
         if (e instanceof UpstreamError) {
           try {
             const bondProfile = (await fetchBondProfile(symbol)) as OpenstProfile
-            return c.json(toInstrumentDetail(symbol, bondProfile))
+            const resolution = await resolveCurrency(getDb(), routeSymbol, bondProfile.currency)
+            return c.json(toInstrumentDetail(symbol, bondProfile, resolution))
           } catch {
             /* not a bond either — fall through to the original error */
           }
@@ -329,14 +333,20 @@ export function createInstrumentsRoutes() {
         // for an emission; never probe the equity tier for it.
         try {
           const bondProfile = (await fetchBondProfile(symbol)) as OpenstProfile
-          return c.json(toInstrumentProfile(symbol, bondProfile))
+          const resolution = await resolveCurrency(getDb(), routeSymbol, bondProfile.currency)
+          return c.json(toInstrumentProfile(symbol, bondProfile, resolution))
         } catch (e) {
           return upstreamErrorResponse(c, e)
         }
       }
       try {
         const profile = (await fetchProfile(symbol)) as OpenstProfile
-        const out: ReturnType<typeof toInstrumentProfile> = toInstrumentProfile(symbol, profile)
+        const resolution = await resolveCurrency(getDb(), routeSymbol, profile.currency)
+        const out: ReturnType<typeof toInstrumentProfile> = toInstrumentProfile(
+          symbol,
+          profile,
+          resolution,
+        )
         // Fill identity gaps (ISIN, sector, country, exchange) from the
         // local reference table when the provider profile lacks them.
         try {
@@ -364,7 +374,8 @@ export function createInstrumentsRoutes() {
         if (e instanceof UpstreamError) {
           try {
             const bondProfile = (await fetchBondProfile(symbol)) as OpenstProfile
-            const out = toInstrumentProfile(symbol, bondProfile)
+            const resolution = await resolveCurrency(getDb(), routeSymbol, bondProfile.currency)
+            const out = toInstrumentProfile(symbol, bondProfile, resolution)
             return c.json(out)
           } catch {
             /* not a bond either — fall through to the original error */
@@ -472,7 +483,8 @@ export function createInstrumentsRoutes() {
         // quote, crypto → crypto quote (pair-normalized), everything else
         // (incl. corp_bond/fund, verified in 34.1) stays on the equity quote.
         const q = (await fetchQuoteByAssetClass(getDb(), routeSymbol)) as OpenstQuote
-        return c.json(toQuote({ symbol, ...q }))
+        const resolution = await resolveCurrency(getDb(), routeSymbol, q.currency)
+        return c.json(toQuote({ symbol, ...q }, resolution))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
@@ -505,9 +517,16 @@ export function createInstrumentsRoutes() {
         const rows = await fetchOhlcvWithBondFallback(symbol, start, end)
         // H4: background write-through — accumulates price_bars organically
         backgroundUpsertBars(getDb(), c.req.param("symbol").toUpperCase(), rows)
-        // §36 — the series is denominated in the instrument's trading currency
-        const currency = await resolveInstrumentCurrency(getDb(), c.req.param("symbol"))
-        const history = toPriceHistory(rows, resolutionParam, currency)
+        // §36 — the series is denominated in the instrument's trading currency.
+        // 47.4 — no USD guess: the resolution may legitimately be null, which is
+        // reported via currencySource="unknown".
+        const resolution = await resolveCurrency(getDb(), c.req.param("symbol"), null)
+        const history = toPriceHistory(
+          rows,
+          resolutionParam,
+          resolution.currency,
+          resolution.currencySource,
+        )
 
         // Benchmarks are liquid ETF proxies fetched over the same window and
         // aligned to the symbol's trading days (carry-forward on gaps).
@@ -579,8 +598,10 @@ export function createInstrumentsRoutes() {
           return c.json({ symbol, price: Number(last.close), currency: null, date: last.date })
         }
         // 34 — asset-class-aware dispatch (bond/crypto/equity), same as /quote.
-        const q = (await fetchQuoteByAssetClass(getDb(), c.req.param("symbol").toUpperCase())) as OpenstQuote
-        return c.json({ symbol, price: Number(q.last_price ?? 0), currency: q.currency ?? "USD" })
+        const routeSymbol = c.req.param("symbol").toUpperCase()
+        const q = (await fetchQuoteByAssetClass(getDb(), routeSymbol)) as OpenstQuote
+        const resolution = await resolveCurrency(getDb(), routeSymbol, q.currency)
+        return c.json({ symbol, price: Number(q.last_price ?? 0), currency: resolution.currency })
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
@@ -841,8 +862,10 @@ export function registerPt2Routes(instruments: Hono) {
         const rows = await fetchDividendHistory(symbol)
         // §36 — dividend amounts are denominated in the instrument's trading
         // currency; rows carrying their own currency still win.
+        // §47 — dividends are deferred: keep the §36 USD-on-uncertainty
+        // fallback until a later step threads the nullable resolution.
         const currency = await resolveInstrumentCurrency(getDb(), routeSymbol)
-        return c.json(toDividends(rows as any[], currency))
+        return c.json(toDividends(rows as any[], currency ?? "USD"))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }

@@ -5,9 +5,35 @@ import type {
   OpenstConsensus,
 } from "./openst-types.js"
 import { normalizeCryptoRows } from "./crypto.js"
+import type { CurrencyResolution } from "../services/instrument-currency.js"
 import type { components } from "../generated/api-types.js"
 
 type S = components["schemas"]
+
+/** CurrencySource for a provider-declared code when no resolution is passed. */
+function sourceFor(
+  resolution: CurrencyResolution | undefined,
+  providerCcy: string | null,
+  estimated: boolean,
+): S["CurrencySource"] {
+  if (resolution) return resolution.currencySource
+  if (providerCcy) return "provider"
+  return estimated ? "estimated" : "unknown"
+}
+
+/**
+ * §47.4 — a provided resolution wins verbatim, including a null currency
+ * ("unknown" must not be masked by a provider-declared fallback). Without a
+ * resolution, fall back to the provider declaration then the local heuristic.
+ */
+function resolutionCurrency(
+  resolution: CurrencyResolution | undefined,
+  providerCcy: string | null,
+  estimatedCcy: string | null,
+): string | null {
+  if (resolution) return resolution.currency
+  return providerCcy ?? estimatedCcy
+}
 
 export type Row = Record<string, unknown>
 
@@ -124,7 +150,11 @@ function fromPence(value: number | undefined | null, pence: boolean): number | u
   return value != null && pence ? value / 100 : value
 }
 
-export function toInstrumentDetail(symbol: string, profile: OpenstProfile): S["InstrumentDetail"] {
+export function toInstrumentDetail(
+  symbol: string,
+  profile: OpenstProfile,
+  resolution?: CurrencyResolution,
+): S["InstrumentDetail"] {
   const row = profile as Row
   const isBond = row.rate_rule !== undefined || row.series_code !== undefined
   // D82 — honour the provider's asset_type when it carries one (corp_bond/fund
@@ -135,32 +165,37 @@ export function toInstrumentDetail(symbol: string, profile: OpenstProfile): S["I
     : isBond
       ? "BOND"
       : "STOCK"
+  const providerCcy = toIsoCurrency(str(profile.currency)) ?? null
   return {
     id: symbol.toUpperCase(),
     symbol: symbol.toUpperCase(),
     name: str(profile.name) ?? symbol.toUpperCase(),
     exchange: str(pick(row, "stock_exchange", "exchange")) ?? (isBond ? "PL" : "US"),
     type,
-    // 45.3 — never guess the price currency: bonds are obligacje.pl (PLN by
-    // construction); anything else the provider didn't declare stays null
-    // (the contract currency field is nullable since 1.6.29).
-    currency: toIsoCurrency(str(profile.currency)) ?? (isBond ? "PLN" : null),
+    // 45.3 — never guess the price currency (contract field nullable).
+    // 47.4 — the route hands the compare-of-provider-vs-local resolution.
+    currency: resolutionCurrency(resolution, providerCcy, isBond ? "PLN" : null),
+    currencySource: sourceFor(resolution, providerCcy, isBond),
   }
 }
 
-export function toInstrumentProfile(symbol: string, p: OpenstProfile): S["InstrumentProfile"] {
+export function toInstrumentProfile(
+  symbol: string,
+  p: OpenstProfile,
+  resolution?: CurrencyResolution,
+): S["InstrumentProfile"] {
   const marketCap = num(pick(p as Row, "market_cap"))
-  // 45.3 — same no-guess rule as toInstrumentDetail: the openst biznesradar
-  // page now carries the priceCurrency meta (45.1); when it doesn't, the
-  // currency is null instead of a silent USD.
+  // 45.3 — same no-guess rule as toInstrumentDetail.
   const row = p as Row
   const isBond = row.rate_rule !== undefined || row.series_code !== undefined
-  const currency = toIsoCurrency(str(p.currency)) ?? (isBond ? "PLN" : null)
+  const providerCcy = toIsoCurrency(str(p.currency)) ?? null
+  const currency = resolutionCurrency(resolution, providerCcy, isBond ? "PLN" : null)
   return {
     ticker: symbol.toUpperCase(),
     name: str(p.name),
     country: str(pick(p as Row, "hq_country", "country")),
     currency,
+    currencySource: sourceFor(resolution, providerCcy, isBond),
     exchange: str(pick(p as Row, "stock_exchange", "exchange")),
     finnhubIndustry: str(pick(p as Row, "industry_category", "sector")) ?? null,
     ipo: str(pick(p as Row, "ipo_date", "first_stock_price_date")) ?? null,
@@ -184,11 +219,12 @@ export function toInstrumentProfile(symbol: string, p: OpenstProfile): S["Instru
   }
 }
 
-export function toQuote(q: OpenstQuote): S["Quote"] {
+export function toQuote(q: OpenstQuote, resolution?: CurrencyResolution): S["Quote"] {
   // §39 — LSE rows arrive in pence with currency "GBp": divide every price
   // field by 100 and emit the ISO code so consumers (wallets quotes pass,
   // SPA pre-fills) never see sub-unit prices.
   const pence = isPence(str(q.currency))
+  const providerCcy = toIsoCurrency(str(q.currency)) ?? null
   // §42 — CBOE-shaped rows for EU-listed ETFs (SP20.L, ETFSP500.WA, ETFBTCPL.WA,
   // EMIM.AS, …) carry NO `last_price`/`close` — only bid/ask and sometimes
   // open/prev_close. A 200 with `currentPrice: 0` is silently dropped by the
@@ -236,9 +272,11 @@ export function toQuote(q: OpenstQuote): S["Quote"] {
     ask: fromPence(num(q.ask), pence) ?? 0,
     bidSize: num(q.bid_size) ?? 0,
     askSize: num(q.ask_size) ?? 0,
-    // 45.3 — null when the provider row declares no currency (contract 1.6.29
-    // made Quote.currency nullable so this can no longer be a USD guess).
-    currency: toIsoCurrency(str(q.currency)) ?? null,
+    // 45.3 — null when the provider row declares no currency (plan §47: never a
+    // USD guess). 47.4 — the route passes the provider-vs-local comparison;
+    // the emit here is `currency` + `currencySource` from the same resolution.
+    currency: resolutionCurrency(resolution, providerCcy, null),
+    currencySource: sourceFor(resolution, providerCcy, false),
     regularMarketPrice: lastPrice,
     extendedHoursChange: 0,
     extendedHoursChangePercent: 0,
@@ -255,7 +293,8 @@ function dayStartEpoch(date: string): number {
 export function toPriceHistory(
   rows: OpenstOhlcvRow[],
   resolution: "daily" | "monthly",
-  currency = "USD",
+  currency: string | null = null,
+  currencySource: S["CurrencySource"] = "unknown",
 ): S["PriceHistory"] {
   if (resolution === "monthly") {
     const buckets = new Map<string, OpenstOhlcvRow[]>()
@@ -284,6 +323,7 @@ export function toPriceHistory(
     timestamps: rows.map((r) => dayStartEpoch(r.date)),
     status: "ok",
     currency,
+    currencySource,
   }
 }
 

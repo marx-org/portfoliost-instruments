@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm"
 import { createTestDb } from "../db/test-db.js"
 import type { DB } from "../db/index.js"
 import { exchangeReference, tickerReference } from "../db/schema.js"
-import { cryptoPairCurrency, resolveInstrumentCurrency } from "./instrument-currency.js"
+import { cryptoPairCurrency, resolveCurrency, resolveInstrumentCurrency } from "./instrument-currency.js"
 
 vi.mock("../adapters/cachest.js", () => ({
   fetchOhlcv: vi.fn(),
@@ -94,11 +94,46 @@ describe("instrument currency (§36)", () => {
     expect(await resolveInstrumentCurrency(db, "NNEP25.TFI")).toBe("PLN")
   })
 
-  it("falls back to USD for unknown symbols and a null db", async () => {
-    expect(await resolveInstrumentCurrency(db, "UNKNOWNXYZ")).toBe("USD")
-    expect(await resolveInstrumentCurrency(null, "AAPL")).toBe("USD")
+  it("never guesses USD for unknown symbols or a null db (§47)", async () => {
+    expect(await resolveInstrumentCurrency(db, "UNKNOWNXYZ")).toBeNull()
+    expect(await resolveInstrumentCurrency(null, "AAPL")).toBeNull()
     // pair currency resolves even without a db
     expect(await resolveInstrumentCurrency(null, "BTC-USD")).toBe("USD")
     expect(await resolveInstrumentCurrency(null, "BTC-EUR")).toBe("EUR")
+  })
+
+  describe("resolveCurrency — provider vs local comparison (§47.4)", () => {
+    it("provider declared + matches local → provider", async () => {
+      const r = await resolveCurrency(db, "SNT.WA", "PLN")
+      expect(r).toEqual({ currency: "PLN", currencySource: "provider" })
+    })
+
+    it("provider declared but local differs → estimated, local wins", async () => {
+      // SNT.WA is PLN locally; a provider claiming USD must not win.
+      const r = await resolveCurrency(db, "SNT.WA", "USD")
+      expect(r).toEqual({ currency: "PLN", currencySource: "estimated" })
+    })
+
+    it("provider declared, local silent → provider (real declaration wins)", async () => {
+      const r = await resolveCurrency(db, "UNKNOWNXYZ", "USD")
+      expect(r).toEqual({ currency: "USD", currencySource: "provider" })
+    })
+
+    it("provider pence label normalized to GBP for comparison (plan §39)", async () => {
+      const r = await resolveCurrency(null, "CSN.L", "uSD")
+      expect(r).toEqual({ currency: "USD", currencySource: "provider" })
+      const gbp = await resolveCurrency(null, "CSN.L", "GBp")
+      expect(gbp).toEqual({ currency: "GBP", currencySource: "provider" })
+    })
+
+    it("provider silent + local resolved → estimated", async () => {
+      const r = await resolveCurrency(db, "SNT.WA", null)
+      expect(r).toEqual({ currency: "PLN", currencySource: "estimated" })
+    })
+
+    it("both silent → unknown with null currency", async () => {
+      const r = await resolveCurrency(db, "UNKNOWNXYZ", null)
+      expect(r).toEqual({ currency: null, currencySource: "unknown" })
+    })
   })
 })
