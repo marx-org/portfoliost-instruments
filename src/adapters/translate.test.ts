@@ -620,3 +620,77 @@ describe("toOwnershipData", () => {
 function roundish(n: number): number {
   return Math.round(n * 100) / 100
 }
+
+
+// ─── 45.3 — nullable currency: never guess USD ─────────────────────────────
+
+
+describe("currency is null when the provider row has none (45.3)", () => {
+  it("quote: currency-less row -> currency null (no USD guess)", () => {
+    const q = toQuote({ symbol: "INGAKC.TFI", last_price: 812.36, prev_close: 798.8 }) as Record<string, any>
+    expect(q.currency).toBeNull()
+  })
+
+  it("quote: PLN row (45.1 shape) passes through", () => {
+    const q = toQuote({ symbol: "INGAKC.TFI", last_price: 812.36, currency: "PLN" }) as Record<string, any>
+    expect(q.currency).toBe("PLN")
+  })
+
+  it("quote: GBp/USD regressions unchanged", () => {
+    const gbp = toQuote({ symbol: "CSN.L", last_price: 1234, currency: "GBp" }) as Record<string, any>
+    expect(gbp.currency).toBe("GBP")
+    const usd = toQuote({ symbol: "AAPL", last_price: 200, currency: "USD" }) as Record<string, any>
+    expect(usd.currency).toBe("USD")
+  })
+
+  it("profile: currency-less non-bond row -> currency null", () => {
+    const p = toInstrumentProfile("INGAKC.TFI", {
+      symbol: "INGAKC.TFI",
+      name: "ING Akcji",
+      asset_type: "fund",
+      stock_exchange: "GPW",
+    }) as Record<string, any>
+    expect(p.currency).toBeNull()
+    expect(p.marketCapCurrency).toBeNull()
+  })
+
+  it("profile: currency-less bond row -> PLN", () => {
+    const p = toInstrumentProfile("EDO0936", {
+      symbol: "EDO0936",
+      name: "Obligacje",
+      series_code: "EDO",
+      rate_rule: "cpi_12m+margin",
+    }) as Record<string, any>
+    expect(p.currency).toBe("PLN")
+  })
+
+  it("profile: PLN row (45.1 shape) passes through", () => {
+    const p = toInstrumentProfile("INGAKC.TFI", {
+      symbol: "INGAKC.TFI",
+      name: "ING Akcji",
+      asset_type: "fund",
+      currency: "PLN",
+      stock_exchange: "GPW",
+    }) as Record<string, any>
+    expect(p.currency).toBe("PLN")
+  })
+
+  it("detail: currency-less non-bond row -> currency null", () => {
+    const d = toInstrumentDetail("INGAKC.TFI", {
+      symbol: "INGAKC.TFI",
+      name: "ING Akcji",
+      asset_type: "fund",
+    })
+    expect(d.currency).toBeNull()
+  })
+
+  it("detail: currency-less bond row -> PLN", () => {
+    const d = toInstrumentDetail("EDO0936", {
+      symbol: "EDO0936",
+      name: "Obligacje",
+      series_code: "EDO",
+      rate_rule: "cpi_12m+margin",
+    })
+    expect(d.currency).toBe("PLN")
+  })
+})
