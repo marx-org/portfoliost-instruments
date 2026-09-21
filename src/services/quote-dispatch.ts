@@ -54,9 +54,12 @@ export async function fetchQuoteByAssetClass(
       const row = await fetchCryptoQuote(pair)
       // The crypto tier reports the price under `price` (equity uses
       // `last_price`) and the bar day under `date` — normalize so toQuote
-      // reuses unchanged.
+      // reuses unchanged. 45.3: the quote currency is declared from the pair
+      // form (the tier only serves -USD pairs) instead of relying on toQuote's
+      // no-guess null default.
       return {
         ...row,
+        currency: row.currency ?? "USD",
         last_price: row.price ?? row.last_price,
         last_timestamp: row.last_timestamp ?? (typeof row.date === "string" ? row.date : undefined),
       }

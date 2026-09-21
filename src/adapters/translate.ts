@@ -141,13 +141,21 @@ export function toInstrumentDetail(symbol: string, profile: OpenstProfile): S["I
     name: str(profile.name) ?? symbol.toUpperCase(),
     exchange: str(pick(row, "stock_exchange", "exchange")) ?? (isBond ? "PL" : "US"),
     type,
-    currency: toIsoCurrency(str(profile.currency)) ?? (isBond ? "PLN" : "USD"),
+    // 45.3 — never guess the price currency: bonds are obligacje.pl (PLN by
+    // construction); anything else the provider didn't declare stays null
+    // (the contract currency field is nullable since 1.6.29).
+    currency: toIsoCurrency(str(profile.currency)) ?? (isBond ? "PLN" : null),
   }
 }
 
 export function toInstrumentProfile(symbol: string, p: OpenstProfile): S["InstrumentProfile"] {
   const marketCap = num(pick(p as Row, "market_cap"))
-  const currency = toIsoCurrency(str(p.currency)) ?? "USD"
+  // 45.3 — same no-guess rule as toInstrumentDetail: the openst biznesradar
+  // page now carries the priceCurrency meta (45.1); when it doesn't, the
+  // currency is null instead of a silent USD.
+  const row = p as Row
+  const isBond = row.rate_rule !== undefined || row.series_code !== undefined
+  const currency = toIsoCurrency(str(p.currency)) ?? (isBond ? "PLN" : null)
   return {
     ticker: symbol.toUpperCase(),
     name: str(p.name),
@@ -228,7 +236,9 @@ export function toQuote(q: OpenstQuote): S["Quote"] {
     ask: fromPence(num(q.ask), pence) ?? 0,
     bidSize: num(q.bid_size) ?? 0,
     askSize: num(q.ask_size) ?? 0,
-    currency: toIsoCurrency(str(q.currency)) ?? "USD",
+    // 45.3 — null when the provider row declares no currency (contract 1.6.29
+    // made Quote.currency nullable so this can no longer be a USD guess).
+    currency: toIsoCurrency(str(q.currency)) ?? null,
     regularMarketPrice: lastPrice,
     extendedHoursChange: 0,
     extendedHoursChangePercent: 0,
