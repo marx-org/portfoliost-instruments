@@ -181,8 +181,31 @@ export function toQuote(q: OpenstQuote): S["Quote"] {
   // field by 100 and emit the ISO code so consumers (wallets quotes pass,
   // SPA pre-fills) never see sub-unit prices.
   const pence = isPence(str(q.currency))
-  const lastPrice = fromPence(num(pick(q as Row, "last_price")), pence) ?? 0
-  const prevClose = fromPence(num(pick(q as Row, "prev_close")), pence) ?? lastPrice
+  // §42 — CBOE-shaped rows for EU-listed ETFs (SP20.L, ETFSP500.WA, ETFBTCPL.WA,
+  // EMIM.AS, …) carry NO `last_price`/`close` — only bid/ask and sometimes
+  // open/prev_close. A 200 with `currentPrice: 0` is silently dropped by the
+  // wallets quotes pass (`if (!price) return null`), leaving positions with
+  // NULL current_price. Fallback chain: last_price → close → bid/ask midpoint
+  // (only when BOTH sides are positive — a zero on one side is "no trade",
+  // not a price) → open → high → low.
+  const row = q as Row
+  const priceField = (key: string): number | undefined =>
+    fromPence(num(row[key]), pence) ?? undefined
+  const bid = priceField("bid")
+  const ask = priceField("ask")
+  const midpoint =
+    bid !== undefined && ask !== undefined && bid > 0 && ask > 0
+      ? (bid + ask) / 2
+      : undefined
+  const lastPrice =
+    priceField("last_price") ??
+    priceField("close") ??
+    midpoint ??
+    priceField("open") ??
+    priceField("high") ??
+    priceField("low") ??
+    0
+  const prevClose = fromPence(num(pick(row, "prev_close")), pence) ?? lastPrice
   let percentChange = num(q.change_percent)
   if (percentChange !== undefined && Math.abs(percentChange) < 1) percentChange *= 100
   const change = fromPence(num(q.change), pence) ?? (lastPrice - prevClose)
