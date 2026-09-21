@@ -2363,6 +2363,17 @@ export interface components {
                 [key: string]: unknown;
             }[];
         };
+        /**
+         * @description How the instrument `currency` was determined (plan §47):
+         *     - `provider` — the upstream provider declared the currency (e.g. the
+         *       biznesradar `priceCurrency` meta tag);
+         *     - `estimated` — no provider declaration; resolved locally from the
+         *       symbol (e.g. `.TFI`/`.FIZ` → PLN) or the exchange;
+         *     - `unknown` — nothing is known; `currency` is null and must never be
+         *       silently defaulted to a code.
+         * @enum {string}
+         */
+        CurrencySource: "provider" | "estimated" | "unknown";
         /** @enum {string} */
         InstrumentType: "STOCK" | "ETF" | "BOND" | "CRYPTO" | "FUND" | "CORP_BOND";
         InstrumentDetail: {
@@ -2373,6 +2384,8 @@ export interface components {
             type?: components["schemas"]["InstrumentType"];
             /** @description ISO-4217; null when the provider does not declare one (45.2 — never guessed) */
             currency?: string | null;
+            /** @description How currency was determined (provider/estimated/unknown, plan §47.3) */
+            currencySource?: components["schemas"]["CurrencySource"];
         };
         InstrumentProfile: {
             ticker?: string;
@@ -2385,6 +2398,8 @@ export interface components {
             exchange?: string;
             finnhubIndustry?: string | null;
             ipo?: string | null;
+            /** @description How currency was determined (provider/estimated/unknown, plan §47.3) */
+            currencySource?: components["schemas"]["CurrencySource"];
             logo?: string | null;
             marketCapitalization?: number | null;
             marketCapCurrency?: string | null;
@@ -2499,6 +2514,8 @@ export interface components {
             askSize: number;
             /** @description ISO-4217; null when the provider does not declare one (45.2 — never guessed) */
             currency: string | null;
+            /** @description How currency was determined (provider/estimated/unknown, plan §47.3) */
+            currencySource?: components["schemas"]["CurrencySource"];
             regularMarketPrice: number;
             extendedHoursChange: number;
             extendedHoursChangePercent: number;
@@ -2515,7 +2532,10 @@ export interface components {
             volumes: number[];
             timestamps: number[];
             status: string;
-            currency: string;
+            /** @description ISO-4217; null when the provider does not declare one (45.2 — never guessed). PriceHistory.currency was previously non-null; plan §47 makes it nullable to match Quote/Profile */
+            currency: string | null;
+            /** @description How currency was determined (provider/estimated/unknown, plan §47.3) */
+            currencySource?: components["schemas"]["CurrencySource"];
         };
         SearchResult: {
             symbol?: string;
