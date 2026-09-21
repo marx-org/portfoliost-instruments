@@ -38,6 +38,7 @@ export interface OpenstQuote {
   exchange?: string
   currency?: string
   last_price?: number
+  close?: number
   last_timestamp?: string
   open?: number
   high?: number

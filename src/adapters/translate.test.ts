@@ -232,6 +232,82 @@ describe("toQuote", () => {
     expect(gbp.bid).toBe(3.565)
   })
 
+  it("§42: CBOE row without last_price → bid/ask midpoint (SP20.L shape)", () => {
+    const q = toQuote({
+      symbol: "SP20.L",
+      bid: 5.142,
+      ask: 5.148,
+      open: 5.148,
+      high: 5.148,
+      low: 5.138,
+      prev_close: 5.09,
+      volume: 800,
+      currency: "GBP",
+    }) as Record<string, any>
+    expect(q.currentPrice).toBeCloseTo(5.145, 10)
+    expect(q.regularMarketPrice).toBeCloseTo(5.145, 10)
+    expect(q.previousClose).toBe(5.09)
+    // change derived from midpoint - prev_close
+    expect(q.change).toBeCloseTo(5.145 - 5.09, 10)
+    expect(q.percentChange).toBeCloseTo(((5.145 - 5.09) / 5.09) * 100, 6)
+    expect(q.currency).toBe("GBP")
+  })
+
+  it("§42: zero bid/ask is 'no trade', not a price → falls back to open", () => {
+    const q = toQuote({
+      symbol: "EMIM.AS",
+      bid: 0,
+      ask: 0,
+      open: 48.585,
+      high: 48.59,
+      low: 48.495,
+      prev_close: 47.68,
+      currency: "EUR",
+    }) as Record<string, any>
+    expect(q.currentPrice).toBe(48.585)
+    // one-sided quote is equally unusable
+    const oneSided = toQuote({
+      symbol: "X",
+      bid: 0,
+      ask: 10,
+      open: 8,
+      currency: "EUR",
+    }) as Record<string, any>
+    expect(oneSided.currentPrice).toBe(8)
+  })
+
+  it("§42: `close` is used when present without last_price", () => {
+    const q = toQuote({ symbol: "X", close: 42.5, bid: 42.4, ask: 42.6 }) as Record<string, any>
+    expect(q.currentPrice).toBe(42.5)
+  })
+
+  it("§42: pence row without last_price divides the midpoint by 100", () => {
+    const q = toQuote({
+      symbol: "X.L",
+      bid: 1020,
+      ask: 1030,
+      open: 1025,
+      prev_close: 1000,
+      currency: "GBp",
+    }) as Record<string, any>
+    expect(q.currency).toBe("GBP")
+    expect(q.currentPrice).toBeCloseTo(10.25, 10)
+    expect(q.bid).toBeCloseTo(10.2, 10)
+    expect(q.ask).toBeCloseTo(10.3, 10)
+  })
+
+  it("§42: last_price still wins over bid/ask (fmp/biznesradar regression)", () => {
+    const q = toQuote({
+      symbol: "AAPL",
+      last_price: 309.35,
+      bid: 307.5,
+      ask: 307.62,
+      prev_close: 311.3,
+      currency: "USD",
+    }) as Record<string, any>
+    expect(q.currentPrice).toBe(309.35)
+  })
+
   it("§39: maps GBp profile currency to GBP (detail + profile)", () => {
     const detail = toInstrumentDetail("CSN.L", {
       symbol: "CSN.L",
