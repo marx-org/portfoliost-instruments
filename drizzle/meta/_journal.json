@@ -15,6 +15,13 @@
       "when": 1788867283000,
       "tag": "0001_news_articles",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790053166338,
+      "tag": "0002_nosy_korvac",
+      "breakpoints": true
     }
   ]
 }

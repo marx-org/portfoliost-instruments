@@ -1,4 +1,4 @@
-import { date, index, integer, numeric, pgSchema, primaryKey, text, timestamp } from "drizzle-orm/pg-core"
+import { char, date, index, integer, numeric, pgSchema, primaryKey, text, timestamp } from "drizzle-orm/pg-core"
 
 export const instrumentsSchema = pgSchema("instruments")
 
@@ -151,3 +151,29 @@ export const newsArticles = instrumentsSchema.table(
     index("idx_news_expires").on(t.expiresAt),
   ],
 )
+
+/**
+ * Global EUR-quoted daily FX closes (plan §48, moved out of wallets 2026-09-26:
+ * FX rates are daily market data, same module as price bars). NOT user-scoped —
+ * shared reference data. Availability of distinct currencies here IS the
+ * supported-currency registry served publicly as GET /api/currencies (D26).
+ */
+export const fxRates = instrumentsSchema.table(
+  "fx_rates",
+  {
+    rateDate: date("rate_date").notNull(),
+    currency: char("currency", { length: 3 }).notNull(),
+    rate: numeric("rate", { precision: 20, scale: 10 }).notNull(),
+    source: text("source").notNull().default("ecb"),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.rateDate, t.currency] })],
+)
+
+/** Singleton bookkeeping row for the daily FX import job. */
+export const fxSyncState = instrumentsSchema.table("fx_sync_state", {
+  id: integer("id").primaryKey().default(1),
+  lastRateDate: date("last_rate_date"),
+  lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+  lastStatus: text("last_status"),
+})
