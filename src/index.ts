@@ -1,6 +1,7 @@
 import { Hono } from "hono"
 import { pino } from "pino"
 import { createInstrumentsRoutes, createNewsRoutes } from "./routes/instruments.js"
+import { createFxRoutes } from "./routes/fx.js"
 import { createDoc } from "./doc.js"
 import { validateJwt } from "./auth.js"
 import { moduleMeta } from "./meta.js"
@@ -65,6 +66,10 @@ app.post("/internal/stooq-imported", async (c) => {
 const api = new Hono()
 api.route("/instruments", createInstrumentsRoutes())
 api.route("/news", createNewsRoutes())
+// plan §48.3 — FX endpoints follow the fx_rates table into instruments:
+// /api/currencies (public registry, D26), /api/fx/latest (SPA dialogs),
+// /api/internal/fx-rates (service-to-service), /api/admin/fx-rates (D47)
+api.route("/", createFxRoutes())
 
 const doc = createDoc(api)
 app.get("/api/doc", (c) => c.json(doc))
