@@ -52,8 +52,14 @@ export interface PriceBarRow {
 export interface PriceBarSeriesResult {
   symbol: string
   stale: boolean
-  /** ISO-4217 currency of the closes (§36 — resolved, null when unknown). */
+  /** ISO-4217 currency of the served closes — the `?currency=` target when
+   * converted, the native base otherwise (§48.2). */
   currency: string | null
+  /** ISO-4217 the closes are natively denominated in (§48.2). */
+  baseCurrency: string | null
+  /** Earliest fx_rates date covering the window; bars before it are
+   * unconverted (native base). Null when no conversion was applied. */
+  fxFrom: string | null
   dates: string[]
   closes: number[]
 }
@@ -82,6 +88,66 @@ export async function queryView(
     order by date asc, case when source = 'stooq' then 0 else 1 end
   `)
   return rowsOf<PriceBarRow>(result)
+}
+
+/**
+ * §48.2 — the parameterized conversion join (`price_bars_as`):
+ * `close × rate(target)/rate(base)` over `price_bars_all ⨝ fx_rates`, both
+ * rates EUR-quoted (the D27 cross-rate expressed in SQL). No new indexes
+ * are needed — the fx joins are equality probes on the (rate_date, currency)
+ * PK, and the ≤~2.5k-bar probe against the ~200k-row fx build side is a
+ * trivial hash join (verified by EXPLAIN in the tests).
+ *
+ * A bar whose date has no rate row (before the fx floor, or inside a source
+ * gap such as the ECB's ISK break 2008–2018) is served UNCONVERTED in the
+ * base currency — no carry-forward. `fx_from` (repeated on every row) is the
+ * earliest converted date in the window; null when nothing converted.
+ *
+ * Exported so the EXPLAIN test can pin the plan shape of the real query.
+ */
+export function conversionJoinSql(
+  symbol: string,
+  from: string,
+  to: string,
+  baseCcy: string,
+  targetCcy: string,
+) {
+  const base = baseCcy.toUpperCase()
+  const target = targetCcy.toUpperCase()
+  // EUR is the implicit fx base — there is no EUR row in fx_rates.
+  const baseRate = base === "EUR" ? sql`1.0::numeric` : sql`fb.rate`
+  const convertible =
+    base === "EUR" ? sql`f.rate is not null` : sql`f.rate is not null and fb.rate is not null`
+  return sql`
+    select b.symbol,
+      b.date,
+      case when ${convertible} then b.close * f.rate / ${baseRate} else b.close end as close,
+      b.source,
+      min(case when ${convertible} then b.date end) over () as "fxFrom"
+    from instruments.price_bars_all b
+    left join instruments.fx_rates f
+      on f.rate_date = b.date and f.currency = ${target}
+    left join instruments.fx_rates fb
+      on fb.rate_date = b.date and fb.currency = ${base}
+    where b.symbol = ${symbol}
+      and b.date between ${from} and ${to}
+    order by b.date asc, case when b.source = 'stooq' then 0 else 1 end
+  `
+}
+
+export async function queryViewAs(
+  db: DB,
+  symbol: string,
+  from: string,
+  to: string,
+  baseCcy: string,
+  targetCcy: string,
+): Promise<Array<PriceBarRow & { fxFrom: string | null }>> {
+  const result = await db.execute(conversionJoinSql(symbol, from, to, baseCcy, targetCcy))
+  return rowsOf<PriceBarRow & { fxFrom: string | null }>(result).map((r) => ({
+    ...r,
+    fxFrom: (r.fxFrom as string | null) ?? null,
+  }))
 }
 
 /** Last date present for a symbol across the whole view (for gap detection). */
@@ -260,6 +326,11 @@ export function upstreamFor(
 /**
  * Read-through daily close series. Returns the current DB state with a
  * `stale` flag. When stale and upstream is not cooling down, fills the gap.
+ *
+ * §48.2 — with `opts.targetCcy` (≠ the resolved base) the final read is the
+ * currency-converted join (`queryViewAs`); the response then carries
+ * `baseCurrency` + `fxFrom` and `currency` = the target. Same/absent target
+ * short-circuits to the plain base series (identity, no join).
  */
 export async function getPriceBarSeries(
   db: DB,
@@ -267,8 +338,18 @@ export async function getPriceBarSeries(
   from: string,
   to: string,
   now = new Date(),
+  opts: { targetCcy?: string | null } = {},
 ): Promise<PriceBarSeriesResult> {
-  const full = await queryView(db, symbol, from, to)
+  const baseCcy = await resolveInstrumentCurrency(db, symbol)
+  const target = opts.targetCcy?.toUpperCase() ?? null
+  const convertTo =
+    target && baseCcy && target !== baseCcy.toUpperCase()
+      ? { base: baseCcy, target: target.toUpperCase() }
+      : null
+
+  const full = convertTo
+    ? await queryViewAs(db, symbol, from, to, convertTo.base, convertTo.target)
+    : await queryView(db, symbol, from, to)
   const empty = full.length === 0
   const lastDate = await lastDateForSymbol(db, symbol)
 
@@ -307,7 +388,9 @@ export async function getPriceBarSeries(
         if (!hadRowsBefore && hadNewBars && (assetType === "stock" || assetType === "etf")) {
           await checkSplitBoundary(db, symbol, stooqTicker).catch(() => undefined)
         }
-        rows = await queryView(db, symbol, from, to)
+        rows = convertTo
+          ? await queryViewAs(db, symbol, from, to, convertTo.base, convertTo.target)
+          : await queryView(db, symbol, from, to)
         stale = false
       } catch {
         await db
@@ -322,11 +405,24 @@ export async function getPriceBarSeries(
     }
   }
 
+  // §48.2 — bars with no fx row for their date stay in the base currency;
+  // fxFrom marks the first converted date (null when nothing converted).
+  let fxFrom: string | null = null
+  if (convertTo) {
+    for (const r of rows as Array<PriceBarRow & { fxFrom: string | null }>) {
+      if (r.fxFrom !== null) {
+        fxFrom = r.fxFrom
+        break
+      }
+    }
+  }
+
   return {
     symbol,
     stale,
-    // §36 — closes are denominated in the instrument's trading currency.
-    currency: await resolveInstrumentCurrency(db, symbol),
+    currency: convertTo ? convertTo.target : baseCcy,
+    baseCurrency: baseCcy,
+    fxFrom,
     dates: rows.map((r) => r.date),
     closes: rows.map((r) => Number(r.close)),
   }

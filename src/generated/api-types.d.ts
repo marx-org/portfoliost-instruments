@@ -2532,10 +2532,17 @@ export interface components {
             volumes: number[];
             timestamps: number[];
             status: string;
-            /** @description ISO-4217; null when the provider does not declare one (45.2 — never guessed). PriceHistory.currency was previously non-null; plan §47 makes it nullable to match Quote/Profile */
+            /** @description ISO-4217; null when the provider does not declare one (45.2 — never guessed). PriceHistory.currency was previously non-null; plan §47 makes it nullable to match Quote/Profile. With ?currency= (plan §48.2) this is the converted output currency */
             currency: string | null;
             /** @description How currency was determined (provider/estimated/unknown, plan §47.3) */
             currencySource?: components["schemas"]["CurrencySource"];
+            /** @description ISO-4217 the series is natively denominated in (resolved; null when unknown). Equals currency when no conversion was applied (plan §48.2) */
+            baseCurrency?: string | null;
+            /**
+             * Format: date
+             * @description Earliest FX rate date covering the window; bars before it are unconverted (native baseCurrency). Null when no conversion was applied (plan §48.2)
+             */
+            fxFrom?: string | null;
         };
         SearchResult: {
             symbol?: string;
@@ -2720,13 +2727,27 @@ export interface components {
             date?: string;
             price?: number;
             currency?: string;
+            /** @description ISO-4217 the price is natively denominated in (resolved; null when unknown). Equals currency when no conversion was applied (plan §48.2) */
+            baseCurrency?: string | null;
+            /**
+             * Format: date
+             * @description Date of the FX rate table used for the conversion; null when no conversion was applied (plan §48.2)
+             */
+            fxFrom?: string | null;
         };
         PriceBarSeries: {
             symbol: string;
             timeframe: string;
             stale: boolean;
-            /** @description ISO-4217 currency of the closes (resolved from the profile/ticker reference; USD when unknown - 45.2: this resolver always returns a code, so the field stays non-null) */
+            /** @description ISO-4217 currency of the closes — the native trading currency, or the ?currency= target when converted (plan §48.2) */
             currency: string;
+            /** @description ISO-4217 the closes are natively denominated in (resolved; null when unknown). Equals currency when no conversion was applied (plan §48.2) */
+            baseCurrency?: string | null;
+            /**
+             * Format: date
+             * @description Earliest FX rate date covering the window; bars before it are unconverted (native baseCurrency). Null when no conversion was applied (plan §48.2)
+             */
+            fxFrom?: string | null;
             dates: string[];
             closes: number[];
         };
@@ -3800,6 +3821,8 @@ export interface components {
         eventId: string;
         /** @description Opaque cursor for keyset pagination */
         cursor: string;
+        /** @description Optional ISO-4217 target currency — prices are converted server-side (plan §48.2); same/absent value serves the native series */
+        currency: string;
         limit: number;
         page: number;
         perPage: number;
@@ -4638,6 +4661,8 @@ export interface operations {
             query?: {
                 resolution?: "1" | "5" | "15" | "30" | "60" | "daily" | "weekly" | "monthly";
                 timeframe?: string;
+                /** @description Optional ISO-4217 target currency — prices are converted server-side (plan §48.2); same/absent value serves the native series */
+                currency?: components["parameters"]["currency"];
             };
             header?: never;
             path: {
@@ -4828,6 +4853,8 @@ export interface operations {
             query: {
                 date: string;
                 exchange?: string;
+                /** @description Optional ISO-4217 target currency — prices are converted server-side (plan §48.2); same/absent value serves the native series */
+                currency?: components["parameters"]["currency"];
             };
             header?: never;
             path: {
@@ -4854,6 +4881,8 @@ export interface operations {
             query: {
                 from: string;
                 to: string;
+                /** @description Optional ISO-4217 target currency — prices are converted server-side (plan §48.2); same/absent value serves the native series */
+                currency?: components["parameters"]["currency"];
             };
             header?: never;
             path: {

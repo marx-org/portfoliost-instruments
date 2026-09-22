@@ -95,6 +95,8 @@ export const PriceHistorySchema = z.object({
   timestamps: z.array(z.number()),
   status: z.string().optional(),
   currency: z.string().optional(),
+  baseCurrency: z.string().nullish(),
+  fxFrom: z.string().nullish(),
 })
 
 export const PriceTargetSchema = z.object({

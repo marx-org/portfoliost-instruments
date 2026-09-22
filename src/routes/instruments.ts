@@ -1,10 +1,15 @@
 import { Hono } from "hono"
+import type { Context } from "hono"
 import { z } from "zod"
 import { openApi } from "hono-zod-openapi"
+import { convert } from "@marx2/contracts/fx"
 import { userIdentityMiddleware } from "../auth.js"
 import { getDb } from "../db/index.js"
+import { fxWindow, latestFxRates } from "../db/fx-rates.js"
 import { getPriceBarSeries, backgroundUpsertBars } from "../services/price-bars.js"
 import { resolveCurrency, resolveInstrumentCurrency } from "../services/instrument-currency.js"
+import { TRACKED_CURRENCIES } from "../services/fx-import.js"
+import { convertSeries, rateTablesByDate } from "../services/fx-convert.js"
 import { fetchQuoteByAssetClass } from "../services/quote-dispatch.js"
 import { getNewsForTicker, getRecentNews, getNewsStats } from "../services/news.js"
 import { isSavingsBond, providerSymbol, symbolSuffix, venueFreeSymbol } from "../adapters/symbol.js"
@@ -161,6 +166,20 @@ function dateRange(date: string, days = 30): { start: string; end: string } {
   const start = new Date(end.getTime() - days * 86400_000)
   const fmt = (d: Date) => d.toISOString().slice(0, 10)
   return { start: fmt(start), end: date }
+}
+
+/** §48.2 — currencies the fx_rates table can convert to (tracker set + the
+ * implicit EUR base). Anything else is a 400, never a silent no-op. */
+const CONVERSION_CURRENCIES = new Set<string>([...TRACKED_CURRENCIES, "EUR"])
+
+function targetCurrencyParam(c: Context): { value: string | null } | { status: 400; message: string } {
+  const raw = c.req.query("currency")
+  if (!raw) return { value: null }
+  const v = raw.trim().toUpperCase()
+  if (!/^[A-Z]{3}$/.test(v) || !CONVERSION_CURRENCIES.has(v)) {
+    return { status: 400, message: `currency not supported: ${raw}` }
+  }
+  return { value: v }
 }
 
 function upstreamErrorResponse(c: any, e: unknown) {
@@ -510,6 +529,10 @@ export function createInstrumentsRoutes() {
       const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       const resolutionParam = c.req.query("resolution") === "monthly" ? "monthly" : "daily"
       const compareParam = c.req.query("compare")
+      const target = targetCurrencyParam(c)
+      if ("status" in target) {
+        return c.json({ error: "BadRequest", message: target.message }, 400)
+      }
       try {
         // Serve deep history so client-side timeframe slicing (3Y/5Y/10Y/MAX)
         // has data: 11 years of daily bars, 20 years of monthly bars.
@@ -521,12 +544,35 @@ export function createInstrumentsRoutes() {
         // 47.4 — no USD guess: the resolution may legitimately be null, which is
         // reported via currencySource="unknown".
         const resolution = await resolveCurrency(getDb(), c.req.param("symbol"), null)
-        const history = toPriceHistory(
-          rows,
-          resolutionParam,
-          resolution.currency,
-          resolution.currencySource,
-        )
+        const base = toPriceHistory(rows, resolutionParam, resolution.currency, resolution.currencySource)
+
+        // §48.2 — server-side conversion to ?currency=: one fx_rates window
+        // read, D27 crossRate per dated table. Bars without a rate row stay
+        // in the base currency (floor semantics, no carry-forward).
+        let history = base
+        let fxFrom: string | null = null
+        const targetCcy = target.value
+        const baseCcy = resolution.currency
+        const tables =
+          targetCcy && baseCcy && targetCcy !== baseCcy
+            ? rateTablesByDate(await fxWindow(getDb(), [baseCcy, targetCcy], start, end))
+            : null
+        if (tables && targetCcy && baseCcy) {
+          const dates = base.timestamps.map((ts) => new Date(ts * 1000).toISOString().slice(0, 10))
+          const cc = convertSeries(dates, base.closePrices, baseCcy, targetCcy, tables)
+          const ch = convertSeries(dates, base.highPrices, baseCcy, targetCcy, tables)
+          const cl = convertSeries(dates, base.lowPrices, baseCcy, targetCcy, tables)
+          const co = convertSeries(dates, base.openPrices, baseCcy, targetCcy, tables)
+          fxFrom = cc.fxFrom
+          history = {
+            ...base,
+            closePrices: cc.converted,
+            highPrices: ch.converted,
+            lowPrices: cl.converted,
+            openPrices: co.converted,
+            currency: targetCcy,
+          }
+        }
 
         // Benchmarks are liquid ETF proxies fetched over the same window and
         // aligned to the symbol's trading days (carry-forward on gaps).
@@ -542,18 +588,28 @@ export function createInstrumentsRoutes() {
             const benchRows = (await fetchOhlcv(bench.etf, start, end)) as unknown as OpenstOhlcvRow[]
             const byDate = new Map(benchRows.map((r) => [r.date, Number(r.close)]))
             let last: number | null = null
-            const closePrices = (history.timestamps as number[]).map((ts) => {
-              const date = new Date(ts * 1000).toISOString().slice(0, 10)
+            const dates = (history.timestamps as number[]).map((ts) => new Date(ts * 1000).toISOString().slice(0, 10))
+            let closePrices = dates.map((date) => {
               const v = byDate.get(date)
               if (v !== undefined && Number.isFinite(v) && v > 0) last = v
               return last ?? 0
             })
-            compare = { name: bench.name, closePrices, timestamps: history.timestamps, currency: "USD" }
+            // §48.2 — the overlay shares the selected currency (benchmarks are USD).
+            if (tables && targetCcy) {
+              closePrices = convertSeries(dates, closePrices, "USD", targetCcy, tables).converted
+            }
+            compare = { name: bench.name, closePrices, timestamps: history.timestamps, currency: tables && targetCcy ? targetCcy : "USD" }
           } catch {
             compare = undefined
           }
         }
-        return c.json({ ...history, symbol, ...(compare ? { compare } : {}) })
+        return c.json({
+          ...history,
+          symbol,
+          baseCurrency: resolution.currency,
+          fxFrom,
+          ...(compare ? { compare } : {}),
+        })
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
@@ -571,7 +627,13 @@ export function createInstrumentsRoutes() {
           description: "Current price",
           content: {
             "application/json": {
-              schema: z.object({ symbol: z.string(), price: z.number(), currency: z.string().optional() }),
+              schema: z.object({
+                symbol: z.string(),
+                price: z.number(),
+                currency: z.string().optional(),
+                baseCurrency: z.string().nullish(),
+                fxFrom: z.string().nullish(),
+              }),
             },
           },
         },
@@ -582,6 +644,10 @@ export function createInstrumentsRoutes() {
     async (c) => {
       const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       const date = c.req.query("date")
+      const target = targetCurrencyParam(c)
+      if ("status" in target) {
+        return c.json({ error: "BadRequest", message: target.message }, 400)
+      }
       try {
         if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
           return c.json({ error: "BadRequest", message: "date must be YYYY-MM-DD" }, 400)
@@ -595,13 +661,53 @@ export function createInstrumentsRoutes() {
           if (!last) {
             return c.json({ error: "NotFound", message: `No price found for ${symbol} on or before ${date}` }, 404)
           }
-          return c.json({ symbol, price: Number(last.close), currency: null, date: last.date })
+          const baseCcy = await resolveInstrumentCurrency(getDb(), c.req.param("symbol"))
+          let price = Number(last.close)
+          let currency: string | null = null
+          let fxFrom: string | null = null
+          // §48.2 — convert against the newest rate table on/before the bar date.
+          if (target.value && baseCcy && target.value !== baseCcy) {
+            const rates = await latestFxRates(getDb(), [baseCcy, target.value], last.date)
+            const table: Record<string, number> = {}
+            for (const r of rates) table[r.currency] = Number(r.rate)
+            const conv = convert(price, baseCcy, target.value, table)
+            if (conv === undefined) {
+              return c.json(
+                { error: "BadRequest", message: `no FX rate for ${baseCcy} to ${target.value} on or before ${last.date}` },
+                400,
+              )
+            }
+            price = conv
+            currency = target.value
+            fxFrom = rates.map((r) => r.rateDate).sort()[0] ?? null
+          }
+          return c.json({ symbol, price, currency, baseCurrency: baseCcy, fxFrom, date: last.date })
         }
         // 34 — asset-class-aware dispatch (bond/crypto/equity), same as /quote.
         const routeSymbol = c.req.param("symbol").toUpperCase()
         const q = (await fetchQuoteByAssetClass(getDb(), routeSymbol)) as OpenstQuote
         const resolution = await resolveCurrency(getDb(), routeSymbol, q.currency)
-        return c.json({ symbol, price: Number(q.last_price ?? 0), currency: resolution.currency })
+        let price = Number(q.last_price ?? 0)
+        let currency = resolution.currency
+        let fxFrom: string | null = null
+        // §48.2 — convert the live quote against the newest rate table.
+        if (target.value && resolution.currency && target.value !== resolution.currency) {
+          const today = new Date().toISOString().slice(0, 10)
+          const rates = await latestFxRates(getDb(), [resolution.currency, target.value], today)
+          const table: Record<string, number> = {}
+          for (const r of rates) table[r.currency] = Number(r.rate)
+          const conv = convert(price, resolution.currency, target.value, table)
+          if (conv === undefined) {
+            return c.json(
+              { error: "BadRequest", message: `no FX rate for ${resolution.currency} to ${target.value}` },
+              400,
+            )
+          }
+          price = conv
+          currency = target.value
+          fxFrom = rates.map((r) => r.rateDate).sort()[0] ?? null
+        }
+        return c.json({ symbol, price, currency, baseCurrency: resolution.currency, fxFrom })
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
@@ -617,6 +723,12 @@ export function createInstrumentsRoutes() {
       parameters: [
         { name: "from", in: "query", required: true, schema: { type: "string", format: "date" } },
         { name: "to", in: "query", required: true, schema: { type: "string", format: "date" } },
+        {
+          name: "currency",
+          in: "query",
+          schema: { type: "string" },
+          description: "Optional ISO-4217 target currency — closes are converted server-side (plan §48.2)",
+        },
       ],
       responses: {
         200: {
@@ -628,6 +740,8 @@ export function createInstrumentsRoutes() {
                 timeframe: z.string(),
                 stale: z.boolean(),
                 currency: z.string(),
+                baseCurrency: z.string().nullish(),
+                fxFrom: z.string().nullish(),
                 dates: z.array(z.string()),
                 closes: z.array(z.number()),
               }),
@@ -646,12 +760,23 @@ export function createInstrumentsRoutes() {
       if (!from || !to || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
         return c.json({ error: "BadRequest", message: "from and to must be YYYY-MM-DD" }, 400)
       }
-      const series = await getPriceBarSeries(getDb(), symbol, from, to)
+      const target = targetCurrencyParam(c)
+      if ("status" in target) {
+        return c.json({ error: "BadRequest", message: target.message }, 400)
+      }
+      // §48.2 — conversion needs a known base; an unresolvable base currency
+      // is a 400, never a silently unconverted series.
+      if (target.value && !(await resolveInstrumentCurrency(getDb(), symbol))) {
+        return c.json({ error: "BadRequest", message: "base currency unknown; cannot convert" }, 400)
+      }
+      const series = await getPriceBarSeries(getDb(), symbol, from, to, new Date(), { targetCcy: target.value })
       return c.json({
         symbol: series.symbol,
         timeframe: "daily",
         stale: series.stale,
         currency: series.currency,
+        baseCurrency: series.baseCurrency,
+        fxFrom: series.fxFrom,
         dates: series.dates,
         closes: series.closes,
       })
