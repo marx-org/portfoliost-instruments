@@ -13,6 +13,10 @@
     "db:pricebars:sim": "tsx src/scripts/price-bars-sim.ts",
     "tickerref:sync": "node dist/scripts/tickerref-sync.js",
     "tickerref:sync:dev": "tsx src/scripts/tickerref-sync.ts",
+    "fx:sync": "node dist/scripts/fx-sync.js",
+    "fx:sync:dev": "tsx src/scripts/fx-sync.ts",
+    "fx:backfill": "node dist/scripts/fx-backfill.js",
+    "fx:backfill:dev": "tsx src/scripts/fx-backfill.ts",
     "gen:openapi": "tsx src/gen-openapi.ts",
     "gen:types": "openapi-typescript node_modules/@marx2/contracts/openapi.yaml -o src/generated/api-types.d.ts"
   },
