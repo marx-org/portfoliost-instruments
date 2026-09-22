@@ -76,3 +76,33 @@ export async function latestFxRates(
     rate: r.rate,
   }))
 }
+
+/** Distinct rate dates on/before `asOf`, newest first (walk-back source). */
+export async function distinctRateDatesBefore(
+  db: DB,
+  asOf: string,
+  limit = 10,
+): Promise<string[]> {
+  const result = await db.execute(sql`
+    select distinct rate_date
+    from instruments.fx_rates
+    where rate_date <= ${asOf}
+    order by rate_date desc
+    limit ${limit}
+  `)
+  return rowsOf<{ rate_date: string }>(result).map((r) => r.rate_date)
+}
+
+/** One day's full EUR-quoted table (currency → rate). */
+export async function ratesTableForDate(db: DB, date: string): Promise<Record<string, number>> {
+  const rows = await db.execute(sql`
+    select currency, rate
+    from instruments.fx_rates
+    where rate_date = ${date}
+  `)
+  const t: Record<string, number> = {}
+  for (const r of rowsOf<{ currency: string; rate: string }>(rows)) {
+    t[r.currency] = Number(r.rate)
+  }
+  return t
+}
