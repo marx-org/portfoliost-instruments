@@ -644,6 +644,110 @@ describe("GET /api/instruments/:symbol/history", () => {
     expect(res.status).toBe(404)
     expect((await res.json()).error).toBe("NotFound")
   })
+
+  describe("local read-through fallback (plan §48.4a)", () => {
+    const TICKERS_CSV = `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::SNT.WA,SNT.WA,WSE,Synektik Sa,Stock,,Health Care,,PL,,
+ US::SPY,SPY,US,SPDR S&P 500 ETF,ETF,Index Fund,,,US,,`
+
+    /** PGlite with the local price_bars stand-ins + stooq bars seeded. */
+    async function dbWithLocalBars(
+      bars: Array<[string, string, string, number]>, // [table, ticker, date, close]
+    ) {
+      const { createTestDb } = await import("../db/test-db.js")
+      const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+      const { LOCAL_PRICE_BARS_SETUP_SQL } = await import("../db/price-bars.js")
+      const { sql } = await import("drizzle-orm")
+      const t = await createTestDb()
+      dbState.db = t.db
+      await syncTickerReference(TICKERS_CSV, t.db)
+      for (const stmt of LOCAL_PRICE_BARS_SETUP_SQL) {
+        await t.db.execute(sql.raw(stmt))
+      }
+      for (const [table, ticker, date, close] of bars) {
+        await t.db.execute(
+          sql.raw(`INSERT INTO instruments.${table} (ticker, period, date, close) VALUES ('${ticker}', 'd', '${date}', ${close});`),
+        )
+      }
+      return t
+    }
+
+    function mockProviderBurst() {
+      mocked.fetchOhlcv.mockRejectedValue(new cachest.UpstreamError("x", 502))
+      mocked.fetchBondOhlcv.mockRejectedValue(new cachest.UpstreamError("y", 404))
+    }
+
+    it("serves local price_bars when the provider leg 502s", async () => {
+      const t = await dbWithLocalBars([
+        ["stooq_daily_pl", "SNT.WA", "2026-08-18", 98.5],
+        ["stooq_daily_pl", "SNT.WA", "2026-08-19", 99.2],
+      ])
+      mockProviderBurst()
+      try {
+        const res = await req("/api/instruments/SNT.WA/history?resolution=daily")
+        expect(res.status).toBe(200)
+        const body = await res.json()
+        expect(body.closePrices).toEqual([98.5, 99.2])
+        expect(body.baseCurrency).toBe("PLN")
+        expect(body.currency).toBe("PLN")
+        expect(body.timestamps).toHaveLength(2)
+      } finally {
+        await t.client.close()
+        dbState.db = null
+      }
+    })
+
+    it("serves local price_bars when the provider leg returns an empty series", async () => {
+      const t = await dbWithLocalBars([
+        ["stooq_daily_pl", "SNT.WA", "2026-08-18", 98.5],
+      ])
+      mocked.fetchOhlcv.mockResolvedValue([])
+      try {
+        const res = await req("/api/instruments/SNT.WA/history?resolution=daily")
+        expect(res.status).toBe(200)
+        expect((await res.json()).closePrices).toEqual([98.5])
+      } finally {
+        await t.client.close()
+        dbState.db = null
+      }
+    })
+
+    it("keeps upstream errors when there is no local data either", async () => {
+      const t = await dbWithLocalBars([])
+      mockProviderBurst()
+      try {
+        const res = await req("/api/instruments/SNT.WA/history?resolution=daily")
+        expect(res.status).toBe(502)
+        expect((await res.json()).error).toBe("BadGateway")
+      } finally {
+        await t.client.close()
+        dbState.db = null
+      }
+    })
+
+    it("serves the benchmark overlay from local price_bars (no provider bench call)", async () => {
+      const t = await dbWithLocalBars([
+        ["stooq_daily_pl", "SNT.WA", "2026-08-18", 98.5],
+        ["stooq_daily_pl", "SNT.WA", "2026-08-19", 99.2],
+        ["stooq_daily_us", "SPY.US", "2026-08-18", 601.2],
+        ["stooq_daily_us", "SPY.US", "2026-08-19", 604.8],
+      ])
+      mockProviderBurst()
+      try {
+        const res = await req("/api/instruments/SNT.WA/history?resolution=daily&compare=spy")
+        expect(res.status).toBe(200)
+        const body = await res.json()
+        expect(body.compare.name).toBe("S&P 500 (SPY)")
+        expect(body.compare.closePrices).toEqual([601.2, 604.8])
+        expect(body.compare.currency).toBe("USD")
+        // exactly one provider call: the (failed) main leg — never the benchmark
+        expect(mocked.fetchOhlcv).toHaveBeenCalledTimes(1)
+      } finally {
+        await t.client.close()
+        dbState.db = null
+      }
+    })
+  })
 })
 
 describe("GET /api/instruments/:symbol/metrics", () => {

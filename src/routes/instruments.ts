@@ -4,9 +4,9 @@ import { z } from "zod"
 import { openApi } from "hono-zod-openapi"
 import { convert } from "@marx2/contracts/fx"
 import { userIdentityMiddleware } from "../auth.js"
-import { getDb } from "../db/index.js"
+import { getDb, type DB } from "../db/index.js"
 import { fxWindow, latestFxRates } from "../db/fx-rates.js"
-import { getPriceBarSeries, backgroundUpsertBars } from "../services/price-bars.js"
+import { getPriceBarSeries, backgroundUpsertBars, queryView } from "../services/price-bars.js"
 import { resolveCurrency, resolveInstrumentCurrency } from "../services/instrument-currency.js"
 import { TRACKED_CURRENCIES } from "../services/fx-import.js"
 import { convertSeries, rateTablesByDate } from "../services/fx-convert.js"
@@ -220,6 +220,33 @@ async function fetchOhlcvWithBondFallback(
     }
     throw e
   }
+}
+
+/**
+ * Plan §48.4a — the read-through fallback for /history: when the provider
+ * leg fails (502 bursts under parallel load) or returns an empty series,
+ * serve the local `price_bars_all` instead, so a failed /history never
+ * wipes the series the SPA already rendered from the price-bars leg.
+ *
+ * Close-only rows (OHLC synthesized from close); (symbol,date) duplicates
+ * from stooq/overflow overlap are dropped, stooq-first (view ordering).
+ */
+async function localHistoryRows(
+  db: DB,
+  symbol: string,
+  start: string,
+  end: string,
+): Promise<OpenstOhlcvRow[]> {
+  const rows = await queryView(db, symbol, start, end)
+  const seen = new Set<string>()
+  const out: OpenstOhlcvRow[] = []
+  for (const r of rows) {
+    if (seen.has(r.date)) continue
+    seen.add(r.date)
+    const close = Number(r.close)
+    out.push({ date: r.date, open: close, high: close, low: close, close, volume: 0 })
+  }
+  return out
 }
 
 export function createInstrumentsRoutes() {
@@ -537,9 +564,37 @@ export function createInstrumentsRoutes() {
         // Serve deep history so client-side timeframe slicing (3Y/5Y/10Y/MAX)
         // has data: 11 years of daily bars, 20 years of monthly bars.
         const { start, end } = resolutionParam === "monthly" ? todayRange(7300) : todayRange(4018)
-        const rows = await fetchOhlcvWithBondFallback(symbol, start, end)
+        const systemSymbol = c.req.param("symbol").toUpperCase()
+        // Plan §48.4a — provider leg first; on upstream failure OR an empty
+        // series, fall back to the local read-through cache (price_bars_all)
+        // so a 502 burst never wipes the chart the SPA already rendered.
+        let rows: OpenstOhlcvRow[] | null = null
+        let providerError: unknown = null
+        try {
+          rows = await fetchOhlcvWithBondFallback(symbol, start, end)
+        } catch (e) {
+          providerError = e
+        }
+        let fromLocal = false
+        if (!rows || rows.length === 0) {
+          const db = getDb()
+          if (db) {
+            const local = await localHistoryRows(db, systemSymbol, start, end)
+            if (local.length > 0) {
+              rows = local
+              fromLocal = true
+            }
+          }
+        }
+        if (rows === null) {
+          // No local data: old semantics — the original upstream error
+          // (404/502), or an empty 200 when the provider simply had no data.
+          if (providerError !== null) throw providerError
+          rows = []
+        }
         // H4: background write-through — accumulates price_bars organically
-        backgroundUpsertBars(getDb(), c.req.param("symbol").toUpperCase(), rows)
+        // (provider rows only; local rows are already in the view).
+        if (!fromLocal) backgroundUpsertBars(getDb(), systemSymbol, rows)
         // §36 — the series is denominated in the instrument's trading currency.
         // 47.4 — no USD guess: the resolution may legitimately be null, which is
         // reported via currencySource="unknown".
@@ -585,7 +640,19 @@ export function createInstrumentsRoutes() {
         let compare: Record<string, unknown> | undefined
         if (bench && resolutionParam === "daily" && (history.timestamps as number[]).length) {
           try {
-            const benchRows = (await fetchOhlcv(bench.etf, start, end)) as unknown as OpenstOhlcvRow[]
+            // Plan §48.4a — the overlay is deterministic on the compose stack:
+            // read the ETF from local price_bars_all first (pricebars-sim
+            // seeds SPY/QQQ/IWM); fall back to the live provider only when no
+            // local bars exist (e.g. a fresh prod overflow table).
+            let benchRows: Array<{ date: string; close: number }> = []
+            const db = getDb()
+            if (db) {
+              const local = await localHistoryRows(db, bench.etf, start, end)
+              if (local.length > 0) benchRows = local
+            }
+            if (benchRows.length === 0) {
+              benchRows = (await fetchOhlcv(bench.etf, start, end)) as unknown as Array<{ date: string; close: number }>
+            }
             const byDate = new Map(benchRows.map((r) => [r.date, Number(r.close)]))
             let last: number | null = null
             const dates = (history.timestamps as number[]).map((ts) => new Date(ts * 1000).toISOString().slice(0, 10))
