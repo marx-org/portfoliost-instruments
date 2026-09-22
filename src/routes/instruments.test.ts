@@ -512,7 +512,13 @@ describe("GET /api/instruments/:symbol/quote — asset-class dispatch (34)", () 
     try {
       const res = await req("/api/instruments/ROD1033/price")
       expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ symbol: "ROD1033", price: 151.99, currency: "PLN" })
+      expect(await res.json()).toEqual({
+        symbol: "ROD1033",
+        price: 151.99,
+        currency: "PLN",
+        baseCurrency: "PLN",
+        fxFrom: null,
+      })
       expect(mocked.fetchFixedincomeQuote).toHaveBeenCalledWith("ROD1033")
       expect(mocked.fetchQuote).not.toHaveBeenCalled()
     } finally {
@@ -1301,6 +1307,279 @@ v1,WSE,XWAR,,Warsaw Stock Exchange,PL,active`,
       expect(body.countryCode).toBe("PL")
       expect(body.exchange).toBe("WSE")
       expect(body.gicsSector).toBe("Healthcare")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+})
+
+describe("GET /:symbol/price-bars — ?currency= (plan §48.2)", () => {
+  async function dbWithFx() {
+    const { sql } = await import("drizzle-orm")
+    const { createTestDb } = await import("../db/test-db.js")
+    const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const { LOCAL_PRICE_BARS_SETUP_SQL } = await import("../db/price-bars.js")
+    const t = await createTestDb()
+    dbState.db = t.db
+    for (const stmt of LOCAL_PRICE_BARS_SETUP_SQL) {
+      await t.db.execute(sql.raw(stmt))
+    }
+    await syncTickerReference(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::PKN,PKN,WSE,PKN Orlen,Stock,Energy,,Poland,PL,PLPKNO0000070294,`,
+      t.db,
+    )
+    await t.db.execute(sql.raw(`
+      INSERT INTO instruments.price_bars (symbol, date, close, source) VALUES
+        ('PKN', '2026-09-16', 100.00000000, 'openst'),
+        ('PKN', '2026-09-17', 102.00000000, 'openst'),
+        ('PKN', '2026-09-18', 101.00000000, 'openst'),
+        ('PKN', '2026-09-19', 105.00000000, 'openst'),
+        ('PKN', '2026-09-10', 98.00000000, 'openst');
+    `))
+    await t.db.execute(sql.raw(`
+      INSERT INTO instruments.fx_rates (rate_date, currency, rate, source) VALUES
+        ('2026-09-16', 'PLN', 4.0000000000, 'ecb'),
+        ('2026-09-16', 'USD', 4.3000000000, 'ecb'),
+        ('2026-09-17', 'PLN', 4.1000000000, 'ecb'),
+        ('2026-09-17', 'USD', 4.2000000000, 'ecb'),
+        ('2026-09-18', 'PLN', 4.2000000000, 'ecb'),
+        ('2026-09-18', 'USD', 4.0000000000, 'ecb'),
+        ('2026-09-19', 'PLN', 4.3000000000, 'ecb'),
+        ('2026-09-19', 'USD', 4.4000000000, 'ecb');
+    `))
+    return t
+  }
+
+  it("same-currency request short-circuits to the plain base series", async () => {
+    const t = await dbWithFx()
+    try {
+      const res = await req("/api/instruments/PKN/price-bars?from=2026-09-16&to=2026-09-19&currency=PLN")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.closes).toEqual([100, 102, 101, 105])
+      expect(body.currency).toBe("PLN")
+      expect(body.baseCurrency).toBe("PLN")
+      expect(body.fxFrom).toBeNull()
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("converts closes to the target currency server-side", async () => {
+    const t = await dbWithFx()
+    try {
+      const res = await req("/api/instruments/PKN/price-bars?from=2026-09-16&to=2026-09-19&currency=usd")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.closes[0]).toBeCloseTo(107.5, 8)
+      expect(body.closes[1]).toBeCloseTo((102 * 4.2) / 4.1, 8)
+      expect(body.closes[2]).toBeCloseTo((101 * 4.0) / 4.2, 8)
+      expect(body.closes[3]).toBeCloseTo((105 * 4.4) / 4.3, 8)
+      expect(body.currency).toBe("USD")
+      expect(body.baseCurrency).toBe("PLN")
+      expect(body.fxFrom).toBe("2026-09-16")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("serves bars before the fx floor unconverted and reports fxFrom", async () => {
+    const t = await dbWithFx()
+    try {
+      const res = await req("/api/instruments/PKN/price-bars?from=2026-09-09&to=2026-09-19&currency=USD")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.dates[0]).toBe("2026-09-10")
+      expect(body.closes[0]).toBe(98) // no fx row for 2026-09-10 → base close
+      expect(body.fxFrom).toBe("2026-09-16")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("rejects unsupported currencies with 400", async () => {
+    const t = await dbWithFx()
+    try {
+      const res = await req("/api/instruments/PKN/price-bars?from=2026-09-16&to=2026-09-19&currency=XXX")
+      expect(res.status).toBe(400)
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("rejects conversion when the base currency is unresolvable", async () => {
+    const t = await dbWithFx()
+    try {
+      const res = await req("/api/instruments/NOPE/price-bars?from=2026-09-16&to=2026-09-19&currency=USD")
+      expect(res.status).toBe(400)
+      expect((await res.json()).message).toMatch(/base currency unknown/)
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+})
+
+describe("GET /:symbol/history — ?currency= (plan §48.2)", () => {
+  it("converts the provider series + keeps baseCurrency/fxFrom", async () => {
+    const { sql } = await import("drizzle-orm")
+    const { createTestDb } = await import("../db/test-db.js")
+    const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const t = await createTestDb()
+    dbState.db = t.db
+    await syncTickerReference(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::PKN,PKN,WSE,PKN Orlen,Stock,Energy,,Poland,PL,PLPKNO0000070294,`,
+      t.db,
+    )
+    await t.db.execute(sql.raw(`
+      INSERT INTO instruments.fx_rates (rate_date, currency, rate, source) VALUES
+        ('2026-09-16', 'PLN', 4.0000000000, 'ecb'),
+        ('2026-09-16', 'USD', 4.3000000000, 'ecb'),
+        ('2026-09-17', 'PLN', 4.1000000000, 'ecb'),
+        ('2026-09-17', 'USD', 4.2000000000, 'ecb');
+    `))
+    mocked.fetchOhlcv.mockResolvedValue([
+      { date: "2026-09-16", open: 99, high: 101, low: 98, close: 100, volume: 10 },
+      { date: "2026-09-17", open: 101, high: 103, low: 100, close: 102, volume: 12 },
+    ])
+    try {
+      const res = await req("/api/instruments/PKN/history?resolution=daily&currency=USD")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.closePrices[0]).toBeCloseTo((100 * 4.3) / 4.0, 8)
+      expect(body.closePrices[1]).toBeCloseTo((102 * 4.2) / 4.1, 8)
+      expect(body.highPrices[0]).toBeCloseTo((101 * 4.3) / 4.0, 8)
+      expect(body.currency).toBe("USD")
+      expect(body.baseCurrency).toBe("PLN")
+      expect(body.fxFrom).toBe("2026-09-16")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("leaves the series unconverted without ?currency=", async () => {
+    const { sql } = await import("drizzle-orm")
+    const { createTestDb } = await import("../db/test-db.js")
+    const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const t = await createTestDb()
+    dbState.db = t.db
+    await syncTickerReference(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::PKN,PKN,WSE,PKN Orlen,Stock,Energy,,Poland,PL,PLPKNO0000070294,`,
+      t.db,
+    )
+    mocked.fetchOhlcv.mockResolvedValue([
+      { date: "2026-09-16", open: 99, high: 101, low: 98, close: 100, volume: 10 },
+    ])
+    try {
+      const res = await req("/api/instruments/PKN/history?resolution=daily")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.closePrices).toEqual([100])
+      expect(body.currency).toBe("PLN")
+      expect(body.baseCurrency).toBe("PLN")
+      expect(body.fxFrom).toBeNull()
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+})
+
+describe("GET /:symbol/price — ?currency= (plan §48.2)", () => {
+  async function dbWithFx() {
+    const { sql } = await import("drizzle-orm")
+    const { createTestDb } = await import("../db/test-db.js")
+    const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const t = await createTestDb()
+    dbState.db = t.db
+    await syncTickerReference(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::PKN,PKN,WSE,PKN Orlen,Stock,Energy,,Poland,PL,PLPKNO0000070294,`,
+      t.db,
+    )
+    await t.db.execute(sql.raw(`
+      INSERT INTO instruments.fx_rates (rate_date, currency, rate, source) VALUES
+        ('2026-09-16', 'PLN', 4.0000000000, 'ecb'),
+        ('2026-09-16', 'USD', 4.3000000000, 'ecb'),
+        ('2026-09-17', 'PLN', 4.1000000000, 'ecb'),
+        ('2026-09-17', 'USD', 4.2000000000, 'ecb'),
+        ('2026-09-19', 'PLN', 4.3000000000, 'ecb'),
+        ('2026-09-19', 'USD', 4.4000000000, 'ecb');
+    `))
+    return t
+  }
+
+  it("converts a dated price against the newest rate on/before that date", async () => {
+    const t = await dbWithFx()
+    mocked.fetchOhlcv.mockResolvedValue([
+      { date: "2026-09-16", open: 99, high: 101, low: 98, close: 100, volume: 10 },
+      { date: "2026-09-17", open: 101, high: 103, low: 100, close: 102, volume: 12 },
+    ])
+    try {
+      const res = await req("/api/instruments/PKN/price?date=2026-09-17&currency=USD")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.price).toBeCloseTo((102 * 4.2) / 4.1, 8)
+      expect(body.currency).toBe("USD")
+      expect(body.baseCurrency).toBe("PLN")
+      expect(body.fxFrom).toBe("2026-09-17")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("converts the live quote against the newest rate table", async () => {
+    const t = await dbWithFx()
+    mocked.fetchQuote.mockResolvedValue({
+      last_price: 102,
+      prev_close: 101,
+      change: 1,
+      change_percent: 0.0099,
+      currency: "PLN",
+      last_timestamp: "2026-09-19 17:00:01",
+    })
+    try {
+      const res = await req("/api/instruments/PKN/price?currency=USD")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.price).toBeCloseTo((102 * 4.4) / 4.3, 8)
+      expect(body.currency).toBe("USD")
+      expect(body.baseCurrency).toBe("PLN")
+      expect(body.fxFrom).toBe("2026-09-19")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("serves the native price when no ?currency=", async () => {
+    const t = await dbWithFx()
+    mocked.fetchQuote.mockResolvedValue({
+      last_price: 102,
+      prev_close: 101,
+      change: 1,
+      change_percent: 0.0099,
+      currency: "PLN",
+      last_timestamp: "2026-09-19 17:00:01",
+    })
+    try {
+      const res = await req("/api/instruments/PKN/price")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.price).toBe(102)
+      expect(body.currency).toBe("PLN")
+      expect(body.baseCurrency).toBe("PLN")
+      expect(body.fxFrom).toBeNull()
     } finally {
       await t.client.close()
       dbState.db = null
