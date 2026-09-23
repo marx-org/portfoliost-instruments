@@ -622,7 +622,10 @@ export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Ro
   return { earnings, exDividend, currency }
 }
 
-export function toDividends(rows: Row[], currencyFallback = "USD"): S["DividendsData"] {
+export function toDividends(
+  rows: Row[],
+  resolution: CurrencyResolution = { currency: "USD", currencySource: "unknown" },
+): S["DividendsData"] {
   type DividendRow = {
     date: string
     year: number
@@ -630,6 +633,9 @@ export function toDividends(rows: Row[], currencyFallback = "USD"): S["Dividends
     currency: string
     type: string
   }
+  // §49.6 — the resolved currency is always set (never null), per plan;
+  // `currencySource` carries how it was determined for the research page.
+  const fallback = resolution.currency ?? "USD"
   const history = rows
     .map((r) => {
       const date = str(r.date) ?? str(r.ex_dividend_date)
@@ -639,13 +645,13 @@ export function toDividends(rows: Row[], currencyFallback = "USD"): S["Dividends
         date,
         year: Number(date.slice(0, 4)),
         amount,
-        currency: str(r.currency) ?? currencyFallback,
+        currency: str(r.currency) ?? fallback,
         type: str(r.type) ?? "regular",
       }
       return row
     })
     .filter((r): r is DividendRow => r !== null)
-  return { history }
+  return { history, currency: fallback, currencySource: resolution.currencySource }
 }
 
 type ProjectionsResult = S["ProjectionsData"]

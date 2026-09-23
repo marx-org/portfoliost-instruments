@@ -2622,6 +2622,7 @@ export interface components {
             sumOfCurrentPositions: number;
             sumOfCurrentPositionsValue: number;
         };
+        /** @description Instrument research dividend history (`history`) OR the portfolio's own dividend rows (`totalDividends`/`count`/`items`) — see the exposing endpoint. For portfolio items, gross = quantity × price, taxes is the withholding tax, amount is the NET (gross − taxes) per the example-service convention, and convertedAmount is amount in the display currency. The research `/dividends` endpoint always also sets `currency` + `currencySource` (plan §49.6, currency is never null); the portfolio endpoint does not. */
         DividendsData: {
             history?: {
                 date: string;
@@ -2629,6 +2630,26 @@ export interface components {
                 amount: number;
                 currency: string;
                 type: string;
+            }[];
+            /** @description Research side only: the instrument's resolved trading currency — always set (fallback "USD" only on total uncertainty), see `currencySource` for how it was determined. */
+            currency?: string;
+            /** @description Research side only — how `currency` was determined (§47). */
+            currencySource?: components["schemas"]["CurrencySource"];
+            /** @description Sum of net dividend amounts in the display currency */
+            totalDividends?: number;
+            count?: number;
+            items?: {
+                symbol: string;
+                instrumentName?: string | null;
+                date: string;
+                quantity: number;
+                gross: number;
+                taxes?: number | null;
+                amount: number;
+                currency: string;
+                exchangeRate?: number | null;
+                convertedAmount?: number | null;
+                notes?: string | null;
             }[];
         };
         CalendarData: {
@@ -2848,6 +2869,7 @@ export interface components {
             strategy: string;
             type: string;
             currency: string;
+            baseCurrency?: string;
             /** Format: uuid */
             walletId: string;
             totalInvested: number;
@@ -3190,6 +3212,7 @@ export interface components {
                 issues?: Record<string, never>[];
             };
         };
+        /** @description A portfolio transaction row. For `type: DIVIDEND` the example-service convention applies (verified against the live API 2026-09-26): `price` is the per-share gross dividend, `quantity × price` is the gross total, `taxes` is the withholding tax, and `totalAmount` is the **net** (gross − taxes). BUY/SELL rows keep `totalAmount = quantity × price + fees`. */
         Transaction: components["schemas"]["FeeFxFields"] & {
             /** Format: uuid */
             id: string;
@@ -3206,6 +3229,8 @@ export interface components {
             quantity: number;
             price: number;
             fees: number;
+            /** @description Withholding tax on a DIVIDEND (gross − taxes = net totalAmount); null otherwise */
+            taxes?: number | null;
             totalAmount: number;
             currency: string;
             priceCurrency: string;
@@ -3232,6 +3257,8 @@ export interface components {
             originalQuantity?: number | null;
             /** @description Pre-split/pre-restatement price; frozen at creation */
             originalPrice?: number | null;
+            /** @description Optional user note on the transaction (e.g. dividend remittance details) */
+            notes?: string | null;
             labels?: components["schemas"]["Label"][];
         };
         FeeFxFields: {
@@ -3256,6 +3283,10 @@ export interface components {
             fees?: number;
             /** @enum {string} */
             feesType?: "fixed" | "pct";
+            /** @description Withholding tax on a DIVIDEND (nullable, ≥ 0). When set for `type: DIVIDEND`, totalAmount is stored net (quantity × price − taxes). */
+            taxes?: number | null;
+            /** @description Optional user note on the transaction */
+            notes?: string | null;
             /** Format: date-time */
             executedAt?: string;
             /** Format: uuid */
