@@ -1005,10 +1005,12 @@ export function registerPt2Routes(instruments: Hono) {
     async (c) => {
       const routeSymbol = c.req.param("symbol").toUpperCase()
       const symbol = providerSymbol(routeSymbol)
-      // §49.9 follow-up — the window must reach into the future: quarterly
+      // §49.9 follow-up — the calendar must (a) reach the future: quarterly
       // dividends/earnings (ex-date and payment date) otherwise never qualify
-      // as "upcoming". Past 45d (history context) + next 120d.
-      const { start, end } = todayRange(45, 120)
+      // as "upcoming"; and (b) keep the past lookback ≤ 30d: the fmp free tier
+      // rejects a deeper `from` with 402 (premium) → openst blocks fmp for 24h
+      // and nasdaq's calendar API is bot-blocked (403) — empty calendar.
+      const { start, end } = todayRange(30, 120)
       if (isSavingsBond(symbol)) {
         // Plan §37.2 — no earnings/dividend calendar for an emission; skip
         // the equity calendar probes and the fetchProfile call.
