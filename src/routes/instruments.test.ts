@@ -855,6 +855,16 @@ describe("pt2 routes", () => {
       expect(body.exDividend[0]).toMatchObject({ date: "2026-09-01", amount: 0.26 })
     })
 
+    it("requests a window reaching into the future (upcoming entries)", async () => {
+      mocked.fetchCalendarEarnings.mockResolvedValue([])
+      mocked.fetchCalendarDividends.mockResolvedValue([])
+      await req("/api/instruments/AAPL/calendar")
+      const end = mocked.fetchCalendarDividends.mock.calls[0][1] as string
+      expect(new Date(`${end}T00:00:00Z`).getTime()).toBeGreaterThanOrEqual(
+        new Date().setHours(0, 0, 0, 0),
+      )
+    })
+
     it("resolves the calendar currency via the §49.6 single resolver, not the profile (§47 parity)", async () => {
       const { createTestDb } = await import("../db/test-db.js")
       const { syncTickerReference } = await import("../scripts/tickerref-sync.js")

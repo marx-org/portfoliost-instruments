@@ -154,9 +154,10 @@ const UPSTREAM_ERROR = {
   content: { "application/json": { schema: ErrorResponseSchema } },
 } as const
 
-function todayRange(days = 365): { start: string; end: string } {
-  const end = new Date()
-  const start = new Date(end.getTime() - days * 86400_000)
+function todayRange(days = 365, futureDays = 0): { start: string; end: string } {
+  const now = Date.now()
+  const start = new Date(now - days * 86400_000)
+  const end = new Date(now + futureDays * 86400_000)
   const fmt = (d: Date) => d.toISOString().slice(0, 10)
   return { start: fmt(start), end: fmt(end) }
 }
@@ -1004,7 +1005,10 @@ export function registerPt2Routes(instruments: Hono) {
     async (c) => {
       const routeSymbol = c.req.param("symbol").toUpperCase()
       const symbol = providerSymbol(routeSymbol)
-      const { start, end } = todayRange(45)
+      // §49.9 follow-up — the window must reach into the future: quarterly
+      // dividends/earnings (ex-date and payment date) otherwise never qualify
+      // as "upcoming". Past 45d (history context) + next 120d.
+      const { start, end } = todayRange(45, 120)
       if (isSavingsBond(symbol)) {
         // Plan §37.2 — no earnings/dividend calendar for an emission; skip
         // the equity calendar probes and the fetchProfile call.
