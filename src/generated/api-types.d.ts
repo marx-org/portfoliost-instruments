@@ -2630,6 +2630,7 @@ export interface components {
                 amount: number;
                 currency: string;
                 type: string;
+                /** @description Dividend payment date (when the provider carries it; NASDAQ does). Null when the provider only reports the ex-dividend date (e.g. yfinance) — plan §49.9. */
                 paymentDate?: string | null;
             }[];
             /** @description Research side only: the instrument's resolved trading currency — always set (fallback "USD" only on total uncertainty), see `currencySource` for how it was determined. */
