@@ -855,13 +855,15 @@ describe("pt2 routes", () => {
       expect(body.exDividend[0]).toMatchObject({ date: "2026-09-01", amount: 0.26 })
     })
 
-    it("requests a window reaching into the future (upcoming entries)", async () => {
+    it("requests a window reaching into the future, keeping the past ≤ 30d (fmp free-tier lookback, upcoming entries)", async () => {
       mocked.fetchCalendarEarnings.mockResolvedValue([])
       mocked.fetchCalendarDividends.mockResolvedValue([])
       await req("/api/instruments/AAPL/calendar")
-      const end = mocked.fetchCalendarDividends.mock.calls[0][1] as string
-      expect(new Date(`${end}T00:00:00Z`).getTime()).toBeGreaterThanOrEqual(
-        new Date().setHours(0, 0, 0, 0),
+      const [start, end] = mocked.fetchCalendarDividends.mock.calls[0] as [string, string]
+      const today = new Date().setHours(0, 0, 0, 0)
+      expect(new Date(`${end}T00:00:00Z`).getTime()).toBeGreaterThanOrEqual(today)
+      expect(new Date(`${start}T00:00:00Z`).getTime()).toBeGreaterThanOrEqual(
+        today - 30 * 86400_000,
       )
     })
 
