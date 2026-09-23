@@ -2630,6 +2630,7 @@ export interface components {
                 amount: number;
                 currency: string;
                 type: string;
+                paymentDate?: string | null;
             }[];
             /** @description Research side only: the instrument's resolved trading currency — always set (fallback "USD" only on total uncertainty), see `currencySource` for how it was determined. */
             currency?: string;

@@ -74,6 +74,7 @@ export type OpenstPeriod = "annual" | "quarter"
 export interface OpenstCalendarEntry {
   report_date?: string
   ex_dividend_date?: string
+  payment_date?: string
   symbol?: string
   [key: string]: unknown
 }
