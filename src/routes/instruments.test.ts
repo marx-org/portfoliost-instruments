@@ -854,18 +854,51 @@ describe("pt2 routes", () => {
       expect(body.earnings[0]).toMatchObject({ date: "2026-09-15", year: 2026, quarter: 3 })
       expect(body.exDividend[0]).toMatchObject({ date: "2026-09-01", amount: 0.26 })
     })
+
+    it("resolves the calendar currency via the §49.6 single resolver, not the profile (§47 parity)", async () => {
+      const { createTestDb } = await import("../db/test-db.js")
+      const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+      const t = await createTestDb()
+      dbState.db = t.db
+      await syncTickerReference(
+        `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::SNT,SNT,WSE,Synektik Sa,Stock,,,,PL,,`,
+        t.db,
+      )
+      await t.db.execute((await import("drizzle-orm")).sql`INSERT INTO instruments.exchange_reference (exchange_code, canonical_name, yahoo_suffix) VALUES ('WSE', 'Warsaw Stock Exchange', 'WA') ON CONFLICT DO NOTHING`)
+      try {
+        // The provider profile (had the route used it) would say USD — the
+        // resolver must win: SNT.WA → PLN via the WSE/country mapping.
+        mocked.fetchProfile.mockResolvedValue({ currency: "USD" })
+        mocked.fetchCalendarEarnings.mockResolvedValue([])
+        mocked.fetchCalendarDividends.mockResolvedValue([
+          { symbol: "SNT.WA", ex_dividend_date: "2026-09-01", amount: 0.26 },
+        ])
+        const res = await req("/api/instruments/SNT.WA/calendar")
+        expect(res.status).toBe(200)
+        const body = await res.json()
+        expect(body.currency).toBe("PLN")
+        expect(mocked.fetchProfile).not.toHaveBeenCalled()
+      } finally {
+        await t.client.close()
+        dbState.db = null
+      }
+    })
   })
 
   describe("GET /:symbol/dividends", () => {
-    it("maps openst dividend rows into stoxly history shape", async () => {
+    it("maps openst dividend rows into stoxly history shape with currency + currencySource", async () => {
       mocked.fetchDividendHistory.mockResolvedValue([
-        { date: "2026-05-12", amount: "0.2600" },
-        { date: "2026-02-09", amount: "0.2500" },
+        { date: "2026-05-12", amount: "0.2600", currency: "USD" },
+        { date: "2026-02-09", amount: "0.2500", currency: "USD" },
       ])
       const res = await req("/api/instruments/AAPL/dividends")
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.history[0]).toEqual({ date: "2026-05-12", year: 2026, amount: 0.26, currency: "USD", type: "regular" })
+      // §49.6 — provider-declared → provider; currency always set
+      expect(body.currency).toBe("USD")
+      expect(body.currencySource).toBe("provider")
     })
 
     it("resolves the instrument trading currency for rows without one (§36)", async () => {
@@ -892,10 +925,52 @@ describe("pt2 routes", () => {
         expect(body.history[0]).toMatchObject({ date: "2026-04-15", amount: 1.2, currency: "PLN" })
         // row with its own currency keeps it
         expect(body.history[1]).toMatchObject({ date: "2025-12-15", currency: "PLN" })
+        // §49.6 — provider-declared (row) against a matching local resolution → provider
+        expect(body.currency).toBe("PLN")
+        expect(body.currencySource).toBe("provider")
       } finally {
         await t.client.close()
         dbState.db = null
       }
+    })
+
+    it("marks a locally resolved currency 'estimated' when the provider is silent", async () => {
+      const { createTestDb } = await import("../db/test-db.js")
+      const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+      const t = await createTestDb()
+      dbState.db = t.db
+      await syncTickerReference(
+        `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ WSE::PKN,PKN,WSE,Orlen,Stock,,,,PL,,`,
+        t.db,
+      )
+      await t.db.execute((await import("drizzle-orm")).sql`INSERT INTO instruments.exchange_reference (exchange_code, canonical_name, yahoo_suffix) VALUES ('WSE', 'Warsaw Stock Exchange', 'WA') ON CONFLICT DO NOTHING`)
+      try {
+        mocked.fetchDividendHistory.mockResolvedValue([
+          { date: "2026-04-15", amount: "1.20" },
+        ])
+        const res = await req("/api/instruments/PKN.WA/dividends")
+        expect(res.status).toBe(200)
+        const body = await res.json()
+        expect(body.history[0]).toMatchObject({ currency: "PLN" })
+        expect(body.currency).toBe("PLN")
+        expect(body.currencySource).toBe("estimated")
+      } finally {
+        await t.client.close()
+        dbState.db = null
+      }
+    })
+
+    it("falls back to USD with 'unknown' source when nothing declares or resolves (§49.6, currency never null)", async () => {
+      mocked.fetchDividendHistory.mockResolvedValue([
+        { date: "2026-04-15", amount: "1.20" },
+      ])
+      const res = await req("/api/instruments/UNKNOWNXYZ/dividends")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.history[0]).toMatchObject({ currency: "USD" })
+      expect(body.currency).toBe("USD")
+      expect(body.currencySource).toBe("unknown")
     })
   })
 

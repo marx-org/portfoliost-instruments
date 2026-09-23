@@ -1002,7 +1002,8 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
+      const routeSymbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(routeSymbol)
       const { start, end } = todayRange(45)
       if (isSavingsBond(symbol)) {
         // Plan §37.2 — no earnings/dividend calendar for an emission; skip
@@ -1019,12 +1020,13 @@ export function registerPt2Routes(instruments: Hono) {
         }
       }
       try {
-        const [earningsRows, dividendRows, profileData] = await Promise.all([
+        const [earningsRows, dividendRows] = await Promise.all([
           orEmpty(fetchCalendarEarnings(start, end)),
           orEmpty(fetchCalendarDividends(start, end)),
-          Promise.resolve(fetchProfile(symbol)).catch(() => null),
         ])
-        const currency = (profileData as Record<string, unknown> | null)?.currency as string ?? "USD"
+        // §49.6 — the resolved instrument currency replaces the §36 profile
+        // fallback; currency is always set (resolver silence grants "USD").
+        const currency = (await resolveInstrumentCurrency(getDb(), routeSymbol)) ?? "USD"
         return c.json(toCalendar(symbol, earningsRows as any[], dividendRows as any[], currency))
       } catch (e) {
         return upstreamErrorResponse(c, e)
@@ -1052,12 +1054,14 @@ export function registerPt2Routes(instruments: Hono) {
       const symbol = providerSymbol(routeSymbol)
       try {
         const rows = await fetchDividendHistory(symbol)
-        // §36 — dividend amounts are denominated in the instrument's trading
-        // currency; rows carrying their own currency still win.
-        // §47 — dividends are deferred: keep the §36 USD-on-uncertainty
-        // fallback until a later step threads the nullable resolution.
-        const currency = await resolveInstrumentCurrency(getDb(), routeSymbol)
-        return c.json(toDividends(rows as any[], currency ?? "USD"))
+        // §49.6 — thread the §47.4 currencySource treatment: the first
+        // provider-declared row currency is the declaration; the single
+        // resolver fills the silence. The response carries non-null `currency`
+        // (fallback "USD" only when nothing is known) + `currencySource`.
+        const providerCurrency =
+          (rows as unknown as Array<{ currency?: string | null }>).find((r) => (r?.currency ?? "").trim())?.currency ?? null
+        const resolution = await resolveCurrency(getDb(), routeSymbol, providerCurrency)
+        return c.json(toDividends(rows as any[], resolution))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
