@@ -619,7 +619,23 @@ export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Ro
     })
     .sort((a, b) => a.date.localeCompare(b.date))
 
-  return { earnings, exDividend, currency }
+  // §49.9 — payment dates ride on the same calendar rows that carry the
+  // ex-dividend date; a row may feed both arrays (ex-date + pay-date).
+  const dividend = dividendRows
+    .filter((r) => str(r.symbol)?.toUpperCase() === sym && str(r.payment_date))
+    .map((r) => {
+      const date = str(r.payment_date)!
+      const amount = num(r.amount)
+      return {
+        date,
+        title: "Dividend Payment",
+        year: Number(date.slice(0, 4)),
+        amount: amount ?? undefined,
+      }
+    })
+    .sort((a, b) => a.date.localeCompare(b.date))
+
+  return { earnings, exDividend, dividend, currency }
 }
 
 export function toDividends(
@@ -632,6 +648,7 @@ export function toDividends(
     amount: number
     currency: string
     type: string
+    paymentDate: string | null
   }
   // §49.6 — the resolved currency is always set (never null), per plan;
   // `currencySource` carries how it was determined for the research page.
@@ -647,6 +664,7 @@ export function toDividends(
         amount,
         currency: str(r.currency) ?? fallback,
         type: str(r.type) ?? "regular",
+        paymentDate: str(r.payment_date) ?? null,
       }
       return row
     })

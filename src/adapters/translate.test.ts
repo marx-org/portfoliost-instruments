@@ -18,6 +18,8 @@ import {
   toOwnershipData,
   toNewsArticleItem,
   toNewsArticleList,
+  toCalendar,
+  toDividends,
 } from "./translate.js"
 import type { OpenstOhlcvRow, OpenstProfile, OpenstQuote } from "./openst-types.js"
 import type { CurrencyResolution } from "../services/instrument-currency.js"
@@ -755,5 +757,73 @@ describe("currency is null when the provider row has none (45.3)", () => {
       rate_rule: "cpi_12m+margin",
     })
     expect(d.currency).toBe("PLN")
+  })
+})
+
+describe("toCalendar (§49.9 dividend payment dates)", () => {
+  const rows = [
+    {
+      symbol: "AAPL",
+      ex_dividend_date: "2026-08-10",
+      amount: 0.27,
+      payment_date: "2026-08-13",
+    },
+    {
+      symbol: "AAPL",
+      ex_dividend_date: "2026-05-11",
+      amount: 0.27,
+      payment_date: "2026-05-14",
+    },
+    // ex-date only (yfinance-style history row) — must not land in dividend[]
+    { symbol: "AAPL", ex_dividend_date: "2026-02-09", amount: 0.27 },
+    // payment date only — must not land in exDividend[]
+    { symbol: "AAPL", payment_date: "2026-11-15", amount: 0.3 },
+    // other symbol — filtered out entirely
+    { symbol: "MSFT", ex_dividend_date: "2026-08-20", amount: 0.83, payment_date: "2026-09-10" },
+  ]
+
+  it("feeds both arrays from the same calendar rows", () => {
+    const cal = toCalendar("AAPL", [], rows as any)
+    expect(cal.exDividend!.map((r) => r.date)).toEqual(["2026-02-09", "2026-05-11", "2026-08-10"])
+    expect(cal.dividend).toEqual([
+      { date: "2026-05-14", title: "Dividend Payment", year: 2026, amount: 0.27 },
+      { date: "2026-08-13", title: "Dividend Payment", year: 2026, amount: 0.27 },
+      { date: "2026-11-15", title: "Dividend Payment", year: 2026, amount: 0.3 },
+    ])
+    expect(cal.earnings).toEqual([])
+  })
+
+  it("payment-date only rows stay out of exDividend", () => {
+    const cal = toCalendar("AAPL", [], [rows[4], rows[3]] as any)
+    expect(cal.exDividend!.map((r) => r.date)).toEqual([])
+    expect(cal.dividend!.map((r) => r.date)).toEqual(["2026-11-15"])
+  })
+})
+
+describe("toDividends (§49.9 paymentDate passthrough)", () => {
+  it("carries payment_date when present, null when absent", () => {
+    const rows = [
+      { date: "2026-08-10", amount: 0.27, payment_date: "2026-08-13", type: "regular" },
+      { ex_dividend_date: "2026-02-09", amount: 0.27, type: "regular" },
+    ]
+    const d = toDividends(rows as any)
+    expect(d.history).toEqual([
+      {
+        date: "2026-08-10",
+        year: 2026,
+        amount: 0.27,
+        currency: "USD",
+        type: "regular",
+        paymentDate: "2026-08-13",
+      },
+      {
+        date: "2026-02-09",
+        year: 2026,
+        amount: 0.27,
+        currency: "USD",
+        type: "regular",
+        paymentDate: null,
+      },
+    ])
   })
 })

@@ -889,13 +889,15 @@ describe("pt2 routes", () => {
   describe("GET /:symbol/dividends", () => {
     it("maps openst dividend rows into stoxly history shape with currency + currencySource", async () => {
       mocked.fetchDividendHistory.mockResolvedValue([
-        { date: "2026-05-12", amount: "0.2600", currency: "USD" },
+        { date: "2026-05-12", amount: "0.2600", currency: "USD", payment_date: "2026-05-15" },
         { date: "2026-02-09", amount: "0.2500", currency: "USD" },
       ])
       const res = await req("/api/instruments/AAPL/dividends")
       expect(res.status).toBe(200)
       const body = await res.json()
-      expect(body.history[0]).toEqual({ date: "2026-05-12", year: 2026, amount: 0.26, currency: "USD", type: "regular" })
+      // §49.9 — paymentDate rides through when the provider carries it
+      expect(body.history[0]).toEqual({ date: "2026-05-12", year: 2026, amount: 0.26, currency: "USD", type: "regular", paymentDate: "2026-05-15" })
+      expect(body.history[1].paymentDate).toBeNull()
       // §49.6 — provider-declared → provider; currency always set
       expect(body.currency).toBe("USD")
       expect(body.currencySource).toBe("provider")
