@@ -47,6 +47,36 @@ describe("instrument currency (§36)", () => {
         country: "Canada",
         countryCode: "CA",
       })
+    // §56 — AMD on four exchanges (the PROD §54.5 collision shape)
+    const amd = [
+      { exchange: "ASX", country: "Australia", countryCode: "AU" },
+      { exchange: "NASDAQ", country: "United States", countryCode: "US" },
+      { exchange: "NEO", country: "Brazil", countryCode: "BR" },
+      { exchange: "TASE", country: "Israel", countryCode: "IL" },
+    ]
+    await db
+      .insert(tickerReference)
+      .values(amd.map((a) => ({
+        listingKey: `${a.exchange}::AMD`,
+        ticker: "AMD",
+        exchange: a.exchange,
+        name: a.exchange === "NASDAQ" ? "Advanced Micro Devices" : `AMD (${a.exchange})`,
+        assetType: "Stock",
+        country: a.country,
+        countryCode: a.countryCode,
+      })))
+    // Single-listing ticker — resolution still works when there is one venue
+    await db
+      .insert(tickerReference)
+      .values({
+        listingKey: "LSE::BATS",
+        ticker: "BATS",
+        exchange: "LSE",
+        name: "BATS plc",
+        assetType: "Stock",
+        country: "United Kingdom",
+        countryCode: "GB",
+      })
   })
 
   afterAll(async () => {
@@ -64,11 +94,29 @@ describe("instrument currency (§36)", () => {
     expect(await resolveInstrumentCurrency(db, "SNT.WA")).toBe("PLN")
   })
 
-  it("SNT (unlisted venue) resolves to one of the listed countries' currencies", async () => {
-    // Bare SNT matches both venues (no exchange scoping without a suffix);
-    // either listing yields a real currency — never the USD fallback.
-    const ccy = await resolveInstrumentCurrency(db, "SNT")
-    expect(["PLN", "CAD"]).toContain(ccy)
+  it("SNT (un-suffixed, two venues) is ambiguity → null (§56)", async () => {
+    // Bare SNT matches WSE AND NASDAQ with no exchange hint: that is §47
+    // uncertainty — silence, not a venue picked by heap luck.
+    expect(await resolveInstrumentCurrency(db, "SNT")).toBeNull()
+  })
+
+  it("AMD-shaped 4-exchange collision → null (PROD §54.5 shape, plan §56)", async () => {
+    expect(await resolveInstrumentCurrency(db, "AMD")).toBeNull()
+  })
+
+  it("single-listing ticker still resolves via country code (§56 regression guard)", async () => {
+    expect(await resolveInstrumentCurrency(db, "BATS")).toBe("GBP")
+  })
+
+  it("venue-qualified SNT.WA resolves to the WSE row despite a cross-exchange SNT collision (§49.9 guard)", async () => {
+    expect(await resolveInstrumentCurrency(db, "SNT.WA")).toBe("PLN")
+  })
+
+  it("AMD collision + provider-declared USD → provider wins (no silent wrong local)", async () => {
+    // Before §56 the resolver guessed AUD (ASX row won the tie); now the
+    // provider's real declaration beats the silence.
+    const r = await resolveCurrency(db, "AMD", "USD")
+    expect(r).toEqual({ currency: "USD", currencySource: "provider" })
   })
 
   it("corp_bond/fund/bond resolve to PLN without a tickerref row", async () => {
