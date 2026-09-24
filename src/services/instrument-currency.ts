@@ -131,7 +131,15 @@ export async function resolveInstrumentCurrency(
     }
     const suffix = symbolSuffix(symbol)
     const exchange = suffix ? await getExchangeBySuffix(db, suffix) : null
-    const rows = await searchTickerReference(db, symbol, 1, exchange)
+    const rows = await searchTickerReference(db, symbol, 10, exchange)
+    if (!exchange) {
+      // No exchange hint: an exact ticker listed on more than one exchange
+      // is §47 uncertainty — silence (null) instead of guessing a venue
+      // (plan §56; the AMD-on-4-exchanges AUD/USD collision, §54.5 follow-up).
+      const base = venueFreeSymbol(symbol)
+      const exchanges = new Set(rows.filter((r) => r.ticker === base).map((r) => r.exchange))
+      if (exchanges.size > 1) return null
+    }
     const row = rows[0]
     if (row && row.countryCode) return currencyForCountry(row.countryCode)
     return null
