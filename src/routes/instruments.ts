@@ -561,6 +561,18 @@ export function createInstrumentsRoutes() {
       if ("status" in target) {
         return c.json({ error: "BadRequest", message: target.message }, 400)
       }
+      // §48.2 / plan §56.3 — conversion needs a known base; an unresolvable
+      // base currency (a multi-exchange ticker collision that the resolver
+      // leaves silent per §47) is a 400, never a silently unconverted series.
+      // The price-bars leg already guards; this is the /history leg of
+      // PriceChart, which previously returned 200 with currency:null + USD
+      // closes while the title selector still read the chosen display ccy.
+      if (
+        target.value &&
+        !(await resolveInstrumentCurrency(getDb(), c.req.param("symbol").toUpperCase()))
+      ) {
+        return c.json({ error: "BadRequest", message: "base currency unknown; cannot convert" }, 400)
+      }
       try {
         // Serve deep history so client-side timeframe slicing (3Y/5Y/10Y/MAX)
         // has data: 11 years of daily bars, 20 years of monthly bars.
