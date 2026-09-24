@@ -798,6 +798,24 @@ describe("toCalendar (§49.9 dividend payment dates)", () => {
     expect(cal.exDividend!.map((r) => r.date)).toEqual([])
     expect(cal.dividend!.map((r) => r.date)).toEqual(["2026-11-15"])
   })
+
+  it("§52 follow-up — bare GPW ticker rows match a venue-qualified route symbol", () => {
+    // biznesradar calendar rows carry bare tickers ("MBR") while the route
+    // symbol is "MBR.WA" — the bare ticker must match as a fallback.
+    const pl = [
+      { symbol: "MBR", ex_dividend_date: "2026-07-28", amount: 15.23, payment_date: "2026-10-05" },
+      { symbol: "MBR.WA", ex_dividend_date: "2026-05-01", amount: 1.0 },
+      { symbol: "BFT", ex_dividend_date: "2026-09-03", amount: 100.0 },
+    ]
+    const cal = toCalendar("MBR.WA", [], pl as any)
+    expect(cal.exDividend!.map((r) => r.date)).toEqual(["2026-05-01", "2026-07-28"])
+    expect(cal.dividend).toEqual([
+      { date: "2026-10-05", title: "Dividend Payment", year: 2026, amount: 15.23 },
+    ])
+    // bare route symbols (US convention) still match bare rows exactly
+    const us = toCalendar("BFT", [], pl as any)
+    expect(us.exDividend!.map((r) => r.date)).toEqual(["2026-09-03"])
+  })
 })
 
 describe("toDividends (§49.9 paymentDate passthrough)", () => {
