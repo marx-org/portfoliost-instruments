@@ -592,8 +592,16 @@ function quarterFromDate(date: string): number {
 
 export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Row[], currency = "USD"): S["CalendarData"] {
   const sym = symbol.toUpperCase()
+  // §52 follow-up — biznesradar calendar rows carry bare GPW tickers ("MBR")
+  // while the route symbol is venue-qualified ("MBR.WA"); match the bare
+  // ticker as a fallback for venue-qualified route symbols.
+  const bare = sym.includes(".") ? sym.slice(0, sym.lastIndexOf(".")) : sym
+  const matches = (rowSymbol: string | undefined) => {
+    const s = rowSymbol?.toUpperCase()
+    return s === sym || s === bare
+  }
   const earnings = earningsRows
-    .filter((r) => str(r.symbol)?.toUpperCase() === sym && str(r.report_date))
+    .filter((r) => matches(str(r.symbol)) && str(r.report_date))
     .map((r) => {
       const date = str(r.report_date)!
       return {
@@ -606,7 +614,7 @@ export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Ro
     .sort((a, b) => a.date.localeCompare(b.date))
 
   const exDividend = dividendRows
-    .filter((r) => str(r.symbol)?.toUpperCase() === sym && str(r.ex_dividend_date))
+    .filter((r) => matches(str(r.symbol)) && str(r.ex_dividend_date))
     .map((r) => {
       const date = str(r.ex_dividend_date)!
       const amount = num(r.amount)
@@ -622,7 +630,7 @@ export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Ro
   // §49.9 — payment dates ride on the same calendar rows that carry the
   // ex-dividend date; a row may feed both arrays (ex-date + pay-date).
   const dividend = dividendRows
-    .filter((r) => str(r.symbol)?.toUpperCase() === sym && str(r.payment_date))
+    .filter((r) => matches(str(r.symbol)) && str(r.payment_date))
     .map((r) => {
       const date = str(r.payment_date)!
       const amount = num(r.amount)
