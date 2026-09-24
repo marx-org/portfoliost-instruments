@@ -1685,6 +1685,43 @@ describe("GET /:symbol/history — ?currency= (plan §48.2)", () => {
       dbState.db = null
     }
   })
+
+  it("rejects conversion when the base currency is unresolvable (plan §56.3)", async () => {
+    const { createTestDb } = await import("../db/test-db.js")
+    const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const t = await createTestDb()
+    dbState.db = t.db
+    // AMD on four exchanges (the PROD §54.5 collision shape): the resolver
+    // stays silent for the un-suffixed ticker (plan §56.1) — a conversion
+    // request must 400, never return a silently unconverted series.
+    await syncTickerReference(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ ASX::AMD,AMD,ASX,Arrow Minerals Ltd,Stock,,,Australia,AU,,
+ NASDAQ::AMD,AMD,NASDAQ,Advanced Micro Devices,Stock,,,United States,US,,
+ NEO::AMD,AMD,NEO,CDR AMD,Stock,,,Brazil,BR,,
+ TASE::AMD,AMD,TASE,Amiad Water Systems,Stock,,,Israel,IL,,`,
+      t.db,
+    )
+    mocked.fetchOhlcv.mockResolvedValue([
+      { date: "2026-09-16", open: 99, high: 101, low: 98, close: 100, volume: 10 },
+    ])
+    try {
+      const res = await req("/api/instruments/AMD/history?resolution=daily&currency=PLN")
+      expect(res.status).toBe(400)
+      expect((await res.json()).message).toMatch(/base currency unknown/)
+      expect(mocked.fetchOhlcv).not.toHaveBeenCalled()
+      // No ?currency= → the native series still loads (default chart path).
+      const plain = await req("/api/instruments/AMD/history?resolution=daily")
+      expect(plain.status).toBe(200)
+      const body = await plain.json()
+      expect(body.closePrices).toEqual([100])
+      expect(body.currency).toBeNull()
+      expect(body.baseCurrency).toBeNull()
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
 })
 
 describe("GET /:symbol/price — ?currency= (plan §48.2)", () => {
