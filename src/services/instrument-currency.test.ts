@@ -119,6 +119,60 @@ describe("instrument currency (§36)", () => {
     expect(r).toEqual({ currency: "USD", currencySource: "provider" })
   })
 
+  // §63.10.5 — the `exchanges.size > 1 → null` rule silenced the currency of
+  // plain US large caps whenever a second listing existed anywhere, which made
+  // `?currency=` return 400 and left the wallets backfill unable to value them
+  // (PROD: MSFT matched NASDAQ + NEO, both US, and resolved to null).
+  describe("multi-venue listings that agree on currency (§63.10.5)", () => {
+    beforeAll(async () => {
+      // MSFT: NASDAQ + NEO, both country US.
+      for (const exchange of ["NASDAQ", "NEO"]) {
+        await db
+          .insert(tickerReference)
+          .values({
+            listingKey: `${exchange}::MSFT`,
+            ticker: "MSFT",
+            exchange,
+            name: "Microsoft Corporation",
+            assetType: "Stock",
+            country: "United States",
+            countryCode: "US",
+          })
+      }
+      // META: NASDAQ (US) vs LSE (IE) vs STO (SE) — EUR vs USD, a real
+      // disagreement that must stay silent.
+      for (const [exchange, cc, country] of [
+        ["NASDAQ", "US", "United States"],
+        ["LSE", "IE", "Ireland"],
+        ["STO", "SE", "Sweden"],
+      ] as const) {
+        await db
+          .insert(tickerReference)
+          .values({
+            listingKey: `${exchange}::META`,
+            ticker: "META",
+            exchange,
+            name: "Meta Platforms",
+            assetType: exchange === "NASDAQ" ? "Stock" : "ETF",
+            country,
+            countryCode: cc,
+          })
+      }
+    })
+
+    it("resolves when every candidate listing maps to the same currency", async () => {
+      expect(await resolveInstrumentCurrency(db, "MSFT")).toBe("USD")
+    })
+
+    it("still returns null when the candidate listings disagree", async () => {
+      expect(await resolveInstrumentCurrency(db, "META")).toBeNull()
+    })
+
+    it("a venue-qualified symbol is unaffected", async () => {
+      expect(await resolveInstrumentCurrency(db, "SNT.WA")).toBe("PLN")
+    })
+  })
+
   it("corp_bond/fund/bond resolve to PLN without a tickerref row", async () => {
     await db
       .insert(tickerReference)

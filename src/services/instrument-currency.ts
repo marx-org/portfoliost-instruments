@@ -133,12 +133,28 @@ export async function resolveInstrumentCurrency(
     const exchange = suffix ? await getExchangeBySuffix(db, suffix) : null
     const rows = await searchTickerReference(db, symbol, 10, exchange)
     if (!exchange) {
-      // No exchange hint: an exact ticker listed on more than one exchange
-      // is §47 uncertainty — silence (null) instead of guessing a venue
-      // (plan §56; the AMD-on-4-exchanges AUD/USD collision, §54.5 follow-up).
+      // No venue hint, so the ticker matched listings on several exchanges. For
+      // the *quote* that is §47 uncertainty — the venue decides the instrument,
+      // and silence beats guessing (plan §56; the AMD-on-4-exchanges AUD/USD
+      // collision, §54.5 follow-up).
+      //
+      // For the *currency* it is not: what matters is only whether the
+      // candidates agree. MSFT matches NASDAQ and NEO, both US, so USD is not a
+      // guess — the venue is unknown but the currency is not. The old
+      // `exchanges.size > 1 → null` rule silenced plain US large caps whenever a
+      // second listing existed anywhere (BDR, European cross-listing), which
+      // made `?currency=` 400 and left the backfill unable to value them.
+      // Genuine disagreement (AFL: ASX/AUD vs NYSE/USD; META: NASDAQ/USD vs
+      // LSE+STO/EUR) still returns null, as §47 requires.
       const base = venueFreeSymbol(symbol)
-      const exchanges = new Set(rows.filter((r) => r.ticker === base).map((r) => r.exchange))
-      if (exchanges.size > 1) return null
+      const candidates = rows.filter((r) => r.ticker === base)
+      const codes = new Set(
+        candidates.map((r) => currencyForCountry(r.countryCode)).filter((c): c is string => c !== null),
+      )
+      if (candidates.length > 1) {
+        if (codes.size === 1) return [...codes][0]
+        return null
+      }
     }
     const row = rows[0]
     if (row && row.countryCode) return currencyForCountry(row.countryCode)
