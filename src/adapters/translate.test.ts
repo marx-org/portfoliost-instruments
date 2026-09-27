@@ -783,7 +783,7 @@ describe("toCalendar (§49.9 dividend payment dates)", () => {
   ]
 
   it("feeds both arrays from the same calendar rows", () => {
-    const cal = toCalendar("AAPL", [], rows as any)
+    const cal = toCalendar("AAPL", [], rows as any, "USD")
     expect(cal.exDividend!.map((r) => r.date)).toEqual(["2026-02-09", "2026-05-11", "2026-08-10"])
     expect(cal.dividend).toEqual([
       { date: "2026-05-14", title: "Dividend Payment", year: 2026, amount: 0.27 },
@@ -794,7 +794,7 @@ describe("toCalendar (§49.9 dividend payment dates)", () => {
   })
 
   it("payment-date only rows stay out of exDividend", () => {
-    const cal = toCalendar("AAPL", [], [rows[4], rows[3]] as any)
+    const cal = toCalendar("AAPL", [], [rows[4], rows[3]] as any, "USD")
     expect(cal.exDividend!.map((r) => r.date)).toEqual([])
     expect(cal.dividend!.map((r) => r.date)).toEqual(["2026-11-15"])
   })
@@ -807,13 +807,13 @@ describe("toCalendar (§49.9 dividend payment dates)", () => {
       { symbol: "MBR.WA", ex_dividend_date: "2026-05-01", amount: 1.0 },
       { symbol: "BFT", ex_dividend_date: "2026-09-03", amount: 100.0 },
     ]
-    const cal = toCalendar("MBR.WA", [], pl as any)
+    const cal = toCalendar("MBR.WA", [], pl as any, "PLN")
     expect(cal.exDividend!.map((r) => r.date)).toEqual(["2026-05-01", "2026-07-28"])
     expect(cal.dividend).toEqual([
       { date: "2026-10-05", title: "Dividend Payment", year: 2026, amount: 15.23 },
     ])
     // bare route symbols (US convention) still match bare rows exactly
-    const us = toCalendar("BFT", [], pl as any)
+    const us = toCalendar("BFT", [], pl as any, "PLN")
     expect(us.exDividend!.map((r) => r.date)).toEqual(["2026-09-03"])
   })
 })
