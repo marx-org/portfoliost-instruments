@@ -4,7 +4,7 @@ import { CURRENCIES } from "@marx2/contracts/currencies"
 import { crossRate } from "@marx2/contracts/fx"
 import { z } from "zod"
 import { openApi } from "hono-zod-openapi"
-import { userIdentityMiddleware, requireGroup } from "../auth.js"
+import { serviceOrUserMiddleware, userIdentityMiddleware, requireGroup } from "../auth.js"
 import { getDb, type DB } from "../db/index.js"
 import { fxRates } from "../db/schema.js"
 import { distinctRateDatesBefore, ratesTableForDate } from "../db/fx-rates.js"
@@ -142,7 +142,9 @@ export function createFxRoutes(db?: DB) {
       ],
       responses: { ...FX_LATEST_RESPONSES, 401: { description: "Unauthorized" } },
     }),
-    userIdentityMiddleware,
+    // §63.10 — the wallets backfill reads this with its service token; the SPA
+    // reads it with a user JWT. /admin/fx-rates below stays user-only.
+    serviceOrUserMiddleware,
     async (c) => internalRate(c, getDbInstance()),
   )
 
@@ -160,7 +162,9 @@ export function createFxRoutes(db?: DB) {
       ],
       responses: { ...FX_LATEST_RESPONSES, 401: { description: "Unauthorized" } },
     }),
-    userIdentityMiddleware,
+    // §63.10 — the wallets backfill reads this with its service token; the SPA
+    // reads it with a user JWT. /admin/fx-rates below stays user-only.
+    serviceOrUserMiddleware,
     async (c) => internalRate(c, getDbInstance()),
   )
 
