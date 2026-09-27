@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
-import { sql } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { createTestDb } from "../db/test-db.js"
 import type { DB } from "../db/index.js"
 import { priceBarMetadata, tickerReference } from "../db/schema.js"
@@ -7,8 +7,11 @@ import { LOCAL_PRICE_BARS_SETUP_SQL } from "../db/price-bars.js"
 import {
   backgroundUpsertBars,
   checkSplitBoundary,
+  cooldownFor,
+  describeFailure,
   getPriceBarSeries,
   hasGap,
+  isTransientFailure,
   matchSplitFactor,
   normalizeAssetType,
   ohlcvToClose,
@@ -17,15 +20,18 @@ import {
   recentlyFailed,
   stooqTickerFor,
   upstreamFor,
+  COOLDOWN_MS,
+  TRANSIENT_COOLDOWN_MS,
 } from "./price-bars.js"
 
-vi.mock("../adapters/cachest.js", () => ({
+vi.mock("../adapters/cachest.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../adapters/cachest.js")>()),
   fetchOhlcv: vi.fn(),
   fetchBondOhlcv: vi.fn(),
   fetchCryptoOhlcv: vi.fn(),
 }))
 
-import { fetchOhlcv, fetchBondOhlcv, fetchCryptoOhlcv } from "../adapters/cachest.js"
+import { fetchOhlcv, fetchBondOhlcv, fetchCryptoOhlcv, UpstreamError } from "../adapters/cachest.js"
 
 const mockFetchOhlcv = vi.mocked(fetchOhlcv)
 const mockFetchBondOhlcv = vi.mocked(fetchBondOhlcv)
@@ -171,7 +177,7 @@ describe("price-bars (H3) service", () => {
   })
 
   it("serves stale data without fetching when a fetch failed within the hour", async () => {    await seedStooq(db, "NFLX", [["2026-06-01", "600.00000000"]])
-    mockFetchOhlcv.mockRejectedValue(new Error("boom"))
+    mockFetchOhlcv.mockRejectedValue(new UpstreamError("http://cachest/ohlcv/NFLX", 404))
     const t1 = new Date("2026-07-10T12:00:00Z")
     await getPriceBarSeries(db, "NFLX", "2026-06-01", "2026-07-10", t1) // triggers failing fetch
     const t2 = new Date("2026-07-10T12:30:00Z")
@@ -180,6 +186,66 @@ describe("price-bars (H3) service", () => {
     expect(res.closes).toEqual([600])
     // still only one upstream attempt
     expect(mockFetchOhlcv).toHaveBeenCalledTimes(1)
+  })
+
+  // --- §63.9.2: a transient failure must not park the symbol for an hour ----
+
+  it("records the upstream status in last_error", async () => {
+    await seedStooq(db, "AMZN", [["2026-06-01", "180.00000000"]])
+    mockFetchOhlcv.mockRejectedValue(new UpstreamError("http://cachest/ohlcv/AMZN", 503))
+    await getPriceBarSeries(db, "AMZN", "2026-06-01", "2026-07-10", new Date("2026-07-10T12:00:00Z"))
+    const [meta] = await db.select().from(priceBarMetadata).where(eq(priceBarMetadata.symbol, "AMZN"))
+    expect(meta.fetchStatus).toBe("failed")
+    // cachest's rate limiter answers 503 without ever calling the provider, so the
+    // status is the only thing that distinguishes "we lost a race" from "no data"
+    expect(meta.lastError).toContain("HTTP 503")
+  })
+
+  it("retries a transient 503 after minutes, not an hour", async () => {
+    await seedStooq(db, "NVDA", [["2026-06-01", "120.00000000"]])
+    mockFetchOhlcv
+      .mockRejectedValueOnce(new UpstreamError("http://cachest/ohlcv/NVDA", 503))
+      .mockResolvedValue([{ date: "2026-07-09", close: 125.0 }])
+    const t1 = new Date("2026-07-10T12:00:00Z")
+    await getPriceBarSeries(db, "NVDA", "2026-06-01", "2026-07-10", t1)
+    // 6 minutes later: past the transient cooldown, far short of the hourly one
+    const t2 = new Date("2026-07-10T12:06:00Z")
+    const res = await getPriceBarSeries(db, "NVDA", "2026-06-01", "2026-07-10", t2)
+    expect(mockFetchOhlcv).toHaveBeenCalledTimes(2)
+    expect(res.stale).toBe(false)
+    expect(res.closes).toContain(125)
+    const [meta] = await db.select().from(priceBarMetadata).where(eq(priceBarMetadata.symbol, "NVDA"))
+    expect(meta.fetchStatus).toBe("ok")
+    expect(meta.lastError).toBeNull()
+  })
+
+  it("keeps the hour-long breaker for a 404 (no such history upstream)", async () => {
+    await seedStooq(db, "TSLA", [["2026-06-01", "300.00000000"]])
+    mockFetchOhlcv.mockRejectedValue(new UpstreamError("http://cachest/ohlcv/TSLA", 404))
+    const t1 = new Date("2026-07-10T12:00:00Z")
+    await getPriceBarSeries(db, "TSLA", "2026-06-01", "2026-07-10", t1)
+    const t2 = new Date("2026-07-10T12:30:00Z")
+    await getPriceBarSeries(db, "TSLA", "2026-06-01", "2026-07-10", t2)
+    expect(mockFetchOhlcv).toHaveBeenCalledTimes(1)
+  })
+
+  it("classifies failures: only an upstream 404 earns the hourly breaker", () => {
+    expect(isTransientFailure(new UpstreamError("u", 503))).toBe(true)
+    expect(isTransientFailure(new UpstreamError("u", 429))).toBe(true)
+    expect(isTransientFailure(new UpstreamError("u", 502))).toBe(true)
+    expect(isTransientFailure(new UpstreamError("u", 504))).toBe(true)
+    expect(isTransientFailure(new Error("fetch failed"))).toBe(true)
+    expect(isTransientFailure(new SyntaxError("Unexpected token"))).toBe(true)
+    expect(isTransientFailure(new UpstreamError("u", 404))).toBe(false)
+    expect(cooldownFor("HTTP 404 upstream 404 for u")).toBe(COOLDOWN_MS)
+    expect(cooldownFor("HTTP 503 upstream 503 for u")).toBe(TRANSIENT_COOLDOWN_MS)
+    expect(cooldownFor(null)).toBe(TRANSIENT_COOLDOWN_MS)
+  })
+
+  it("bounds and formats last_error", () => {
+    expect(describeFailure(new UpstreamError("http://x/y", 503))).toContain("HTTP 503")
+    const long = describeFailure(new Error("x".repeat(5000)))
+    expect(long.length).toBeLessThanOrEqual(300)
   })
 
   it("detects a reverse split at the boundary and records a candidate", async () => {

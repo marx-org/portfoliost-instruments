@@ -1,0 +1,1 @@
+ALTER TABLE "instruments"."price_bar_metadata" ADD COLUMN "last_error" text;
