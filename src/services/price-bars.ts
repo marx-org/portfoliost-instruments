@@ -15,7 +15,7 @@ import {
   normalizeAssetType,
   type AssetType,
 } from "../db/tickerref-queries.js"
-import { fetchOhlcv, fetchBondOhlcv, fetchCryptoOhlcv } from "../adapters/cachest.js"
+import { fetchOhlcv, fetchBondOhlcv, fetchCryptoOhlcv, UpstreamError } from "../adapters/cachest.js"
 import { providerSymbol, venueFreeSymbol } from "../adapters/symbol.js"
 import { resolveInstrumentCurrency } from "./instrument-currency.js"
 
@@ -27,7 +27,19 @@ export const lookupAssetType = assetTypeForSymbol
 export type PriceBarAssetType = AssetType
 
 const STALE_AFTER_DAYS = 3
-const COOLDOWN_MS = 60 * 60 * 1000 // retry upstream at most hourly after a failure
+/** §63.9.2 — cooldown after a failure whose upstream status says "there is
+ * nothing to fetch" (a 404). Retrying an hour later is the point: the symbol
+ * genuinely has no history and hammering it would be worse. */
+export const COOLDOWN_MS = 60 * 60 * 1000
+/** …and after a *transient* failure (429/502/503/504, a network error, a body that
+ * would not parse). These say nothing about the symbol — most importantly
+ * cachest returns 503 for its own rate limiter *without calling the upstream at
+ * all* — so they must be retried in minutes, not parked for an hour. Before
+ * §63.9.2 both cases shared one hour-long breaker, so a symbol that merely lost
+ * a race in a 175-symbol sweep kept no price history for the rest of the day. */
+export const TRANSIENT_COOLDOWN_MS = 5 * 60 * 1000
+/** `last_error` is a diagnostic column, not a log store. */
+const MAX_ERROR_CHARS = 300
 
 /**
  * Normalize a raw `db.execute(sql`...`)` result to an array of rows. The
@@ -177,13 +189,46 @@ async function readMetadata(db: DB, symbol: string) {
   return rows[0]
 }
 
+/**
+ * Whether a failure is worth retrying soon rather than parking the symbol.
+ *
+ * §63.9.2. An `UpstreamError` carries the status cachest answered with, and
+ * cachest's own rate limiter answers 503 *without asking the provider anything*
+ * (plan §63.9) — so a 503 says nothing about whether the symbol has history.
+ * Everything that is not an explicit "no such data" is treated as transient.
+ * A non-`UpstreamError` (fetch threw, body would not parse, a DB error inside the
+ * try block) is transient too: retrying it is cheap and parking it is not.
+ */
+export function isTransientFailure(error: unknown): boolean {
+  if (error instanceof UpstreamError) return error.status !== 404
+  return true
+}
+
+/** Cooldown that applies to a recorded failure. */
+export function cooldownFor(lastError: string | null | undefined): number {
+  // A recorded 404 is the only "there is nothing to fetch" signal we persist, so
+  // it is the only one that earns the hour-long breaker. Everything else — a 503
+  // from cachest's rate limiter, a 502, a timeout, a thrown fetch — is transient.
+  return lastError?.includes("HTTP 404") ? COOLDOWN_MS : TRANSIENT_COOLDOWN_MS
+}
+
+/** A one-line, bounded description of a failure for `price_bar_metadata.last_error`. */
+export function describeFailure(error: unknown): string {
+  const raw =
+    error instanceof UpstreamError
+      ? `HTTP ${error.status} ${error.message}`
+      : `${(error as Error)?.name ?? "Error"}: ${(error as Error)?.message ?? String(error)}`
+  return raw.length > MAX_ERROR_CHARS ? `${raw.slice(0, MAX_ERROR_CHARS - 1)}…` : raw
+}
+
 /** Whether an earlier failed fetch should keep us from hitting upstream again. */
 export function recentlyFailed(
   meta: { lastFetchedAt: Date | null; fetchStatus: string } | undefined,
   now = new Date(),
+  cooldownMs = COOLDOWN_MS,
 ): boolean {
   if (!meta || meta.fetchStatus !== "failed" || !meta.lastFetchedAt) return false
-  return now.getTime() - meta.lastFetchedAt.getTime() < COOLDOWN_MS
+  return now.getTime() - meta.lastFetchedAt.getTime() < cooldownMs
 }
 
 /**
@@ -360,7 +405,7 @@ export async function getPriceBarSeries(
     stale = false
   } else if (empty || lastDate !== null) {
     const meta = await readMetadata(db, symbol)
-    if (recentlyFailed(meta, now)) {
+    if (recentlyFailed(meta, now, cooldownFor(meta?.lastError))) {
       stale = true
     } else {
       // D81 — route the gap fill by asset class (ticker_reference.asset_type,
@@ -378,12 +423,15 @@ export async function getPriceBarSeries(
           .filter((b): b is { date: string; close: string } => b !== null && !have.has(b.date))
         const hadNewBars = bars.length > 0
         await upsertOverflowBars(db, symbol, bars)
+        // `now` (not now()) so the breaker is measured against the same clock the
+        // caller passed in — otherwise it is untestable and, in a replayed window,
+        // nonsense.
         await db
           .insert(priceBarMetadata)
-          .values({ symbol, lastFetchedAt: new Date(), fetchStatus: "ok" })
+          .values({ symbol, lastFetchedAt: now, fetchStatus: "ok", lastError: null })
           .onConflictDoUpdate({
             target: priceBarMetadata.symbol,
-            set: { lastFetchedAt: sql`now()`, fetchStatus: "ok" },
+            set: { lastFetchedAt: now, fetchStatus: "ok", lastError: null },
           })
         if (!hadRowsBefore && hadNewBars && (assetType === "stock" || assetType === "etf")) {
           await checkSplitBoundary(db, symbol, stooqTicker).catch(() => undefined)
@@ -392,13 +440,26 @@ export async function getPriceBarSeries(
           ? await queryViewAs(db, symbol, from, to, convertTo.base, convertTo.target)
           : await queryView(db, symbol, from, to)
         stale = false
-      } catch {
+      } catch (e) {
+        // §63.9.2 — record *why*, and let `recentlyFailed` above pick the cooldown
+        // from it: a 404 keeps the hour-long breaker, a 503 (cachest's rate
+        // limiter, which never reached the provider) only parks the symbol for
+        // minutes. The bare `catch` used to make both indistinguishable.
         await db
           .insert(priceBarMetadata)
-          .values({ symbol, lastFetchedAt: new Date(), fetchStatus: "failed" })
+          .values({
+            symbol,
+            lastFetchedAt: now,
+            fetchStatus: "failed",
+            lastError: describeFailure(e),
+          })
           .onConflictDoUpdate({
             target: priceBarMetadata.symbol,
-            set: { lastFetchedAt: sql`now()`, fetchStatus: "failed" },
+            set: {
+              lastFetchedAt: now,
+              fetchStatus: "failed",
+              lastError: describeFailure(e),
+            },
           })
         stale = true
       }

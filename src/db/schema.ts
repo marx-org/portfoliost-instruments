@@ -81,11 +81,22 @@ export const priceBars = instrumentsSchema.table(
  * Per-symbol fetch circuit breaker (price-data-architecture H2): after a
  * fetch failure the read endpoint serves stale data for an hour before
  * retrying upstream, instead of hammering openst on every request.
+ *
+ * §63.9.2 — `lastError` exists because `fetchStatus` alone cannot say *why* a
+ * fetch failed, and the two reasons need opposite handling: a 404 means the
+ * symbol has no upstream history and retrying is pointless for an hour, while a
+ * 429/502/503/504 (notably cachest's own rate-limit 503, which is returned
+ * without the upstream ever being called) is transient and must be retried in
+ * minutes. Without the status code both looked identical, and one lost race in a
+ * 175-symbol sweep parked a symbol for the rest of the day.
  */
 export const priceBarMetadata = instrumentsSchema.table("price_bar_metadata", {
   symbol: text("symbol").primaryKey(),
   lastFetchedAt: timestamp("last_fetched_at", { withTimezone: true }),
   fetchStatus: text("fetch_status").notNull().default("ok"), // 'ok' | 'failed'
+  /** Upstream status + message behind a non-'ok' `fetchStatus`, truncated. NULL when
+   * the last fetch succeeded. */
+  lastError: text("last_error"),
 })
 
 /**
