@@ -3,7 +3,7 @@ import type { Context } from "hono"
 import { z } from "zod"
 import { openApi } from "hono-zod-openapi"
 import { convert } from "@marx2/contracts/fx"
-import { userIdentityMiddleware } from "../auth.js"
+import { serviceOrUserMiddleware } from "../auth.js"
 import { getDb, type DB } from "../db/index.js"
 import { fxWindow, latestFxRates } from "../db/fx-rates.js"
 import { getPriceBarSeries, backgroundUpsertBars, queryView } from "../services/price-bars.js"
@@ -252,7 +252,8 @@ async function localHistoryRows(
 
 export function createInstrumentsRoutes() {
   const instruments = new Hono()
-  instruments.use("*", userIdentityMiddleware)
+  // §63.10 — a service token (the scheduled wallets sweep) or a user JWT.
+  instruments.use("*", serviceOrUserMiddleware)
 
 
   instruments.get(
@@ -896,7 +897,7 @@ export function createInstrumentsRoutes() {
 // like the rest of instruments, returning contract NewsArticleList.
 export function createNewsRoutes() {
   const news = new Hono()
-  news.use("*", userIdentityMiddleware)
+  news.use("*", serviceOrUserMiddleware)
 
   news.get(
     "/articles",
