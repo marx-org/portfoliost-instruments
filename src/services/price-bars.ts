@@ -383,9 +383,21 @@ export async function getPriceBarSeries(
   from: string,
   to: string,
   now = new Date(),
-  opts: { targetCcy?: string | null } = {},
+  opts: { targetCcy?: string | null; baseCcy?: string | null } = {},
 ): Promise<PriceBarSeriesResult> {
-  const baseCcy = await resolveInstrumentCurrency(db, symbol)
+  const resolvedBase = await resolveInstrumentCurrency(db, symbol)
+  // §63.10.5 — the caller's declared base wins ONLY where the local resolver is
+  // silent. plan §48.3b already established that a caller which knows an
+  // instrument's currency (wallets reads it off the position/transaction) fetches
+  // `?currency=<base>`; the local resolver is a fallback for read paths that have
+  // no such fact, not an authority that can veto the caller. Without this, a
+  // ticker listed on several venues in different countries (AFL: NYSE+ASX,
+  // META: NASDAQ+LSE+STO) made `?currency=` 400 — and since §48.2 refuses an
+  // unresolvable base, one such position took its whole portfolio unvaluable.
+  // A locally *resolved* base is never overridden: §47's "never guess" stands,
+  // and the response reports which base was used.
+  const declared = opts.baseCcy?.toUpperCase() ?? null
+  const baseCcy = resolvedBase ?? declared
   const target = opts.targetCcy?.toUpperCase() ?? null
   const convertTo =
     target && baseCcy && target !== baseCcy.toUpperCase()
