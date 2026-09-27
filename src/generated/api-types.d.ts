@@ -1419,20 +1419,170 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/wallets/{walletId}/transactions/{transactionId}/labels": {
+    "/portfolios/{id}/cash": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                id: components["parameters"]["walletId"];
-                transactionId: string;
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        /** Portfolio cash position (per-currency balances + base total) */
+        get: operations["getPortfolioCash"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portfolios/{id}/cash/balance-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        /** Portfolio cash balance history (base-currency totals) */
+        get: operations["getPortfolioCashHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portfolios/{id}/cash/transactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        /** Portfolio cash transactions (external rows only) */
+        get: operations["getPortfolioCashTransactions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portfolios/{id}/cash/deposits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["portfolioId"];
             };
             cookie?: never;
         };
         get?: never;
         put?: never;
-        /** Set labels on a wallet transaction (replace semantics) */
-        post: operations["setWalletTransactionLabels"];
+        /** Deposit cash into a portfolio */
+        post: operations["depositCash"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portfolios/{id}/cash/withdrawals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Withdraw cash from a portfolio */
+        post: operations["withdrawCash"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portfolios/{id}/cash/transfers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Transfer cash between portfolios */
+        post: operations["transferCash"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portfolios/cash/recent-transactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Recent cash transactions across all portfolios */
+        get: operations["getRecentCashTransactions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portfolios/cash/transactions/{txId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                txId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete a cash transaction */
+        delete: operations["deleteCashTransaction"];
+        options?: never;
+        head?: never;
+        /** Update a cash transaction */
+        patch: operations["updateCashTransaction"];
+        trace?: never;
+    };
+    "/portfolios/cash/transactions/{txId}/labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                txId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set labels on a cash transaction (replace semantics) */
+        post: operations["setCashTransactionLabels"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1456,190 +1606,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/wallets": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List cash wallets */
-        get: operations["listWallets"];
-        put?: never;
-        /** Create wallet */
-        post: operations["createWallet"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/wallets/total-balance": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Total wallet balance */
-        get: operations["getWalletsTotalBalance"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/wallets/{id}/balance-history": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["walletId"];
-            };
-            cookie?: never;
-        };
-        /** Wallet balance history */
-        get: operations["getWalletBalanceHistory"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/wallets/{id}/deposits": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["walletId"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Deposit cash */
-        post: operations["depositCash"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/wallets/{id}/withdrawals": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["walletId"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Withdraw cash */
-        post: operations["withdrawCash"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/wallets/{id}/transfers": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["walletId"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Transfer between wallets */
-        post: operations["transferCash"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/wallets/{id}/transactions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["walletId"];
-            };
-            cookie?: never;
-        };
-        /** Cash transactions */
-        get: operations["getCashTransactions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/wallets/recent-transactions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Recent cash transactions across all wallets */
-        get: operations["getRecentCashTransactions"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/wallets/transactions/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** Delete a cash transaction */
-        delete: operations["deleteCashTransaction"];
-        options?: never;
-        head?: never;
-        /** Update a cash transaction */
-        patch: operations["updateCashTransaction"];
-        trace?: never;
-    };
-    "/import/wallets/bootstrap": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Idempotently ensure wallets exist, tagged with external_source */
-        post: operations["importWalletBootstrap"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/import/portfolios/bootstrap": {
         parameters: {
             query?: never;
@@ -1651,6 +1617,23 @@ export interface paths {
         put?: never;
         /** Idempotently ensure a portfolio exists, tagged with external_source */
         post: operations["importPortfolioBootstrap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/import/labels/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Idempotently ensure labels exist by name (palette-colored when created) */
+        post: operations["importLabelBootstrap"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2656,24 +2639,10 @@ export interface components {
         };
         CalendarData: {
             currency?: string;
-            earnings?: {
-                date: string;
-                title?: string;
-                year?: number;
-                quarter?: number;
-            }[];
-            exDividend?: {
-                date: string;
-                title?: string;
-                year?: number;
-                amount?: number;
-            }[];
-            dividend?: {
-                date: string;
-                title?: string;
-                year?: number;
-                amount?: number;
-            }[];
+            earnings?: components["schemas"]["CalendarEarningsItem"][];
+            exDividend?: components["schemas"]["CalendarExDividendItem"][];
+            dividend?: components["schemas"]["CalendarDividendItem"][];
+            holdings?: components["schemas"]["CalendarHolding"][];
             upcoming?: {
                 symbol?: string;
                 companyName?: string;
@@ -2692,6 +2661,32 @@ export interface components {
                 amount?: number | null;
                 quarter?: number | null;
             }[];
+        };
+        CalendarEarningsItem: {
+            date: string;
+            title?: string;
+            year?: number;
+            quarter?: number;
+        };
+        CalendarExDividendItem: {
+            date: string;
+            title?: string;
+            year?: number;
+            amount?: number;
+        };
+        CalendarDividendItem: {
+            date: string;
+            title?: string;
+            year?: number;
+            amount?: number;
+        };
+        CalendarHolding: {
+            symbol: string;
+            companyName?: string;
+            currency?: string;
+            earnings?: components["schemas"]["CalendarEarningsItem"][];
+            exDividend?: components["schemas"]["CalendarExDividendItem"][];
+            dividend?: components["schemas"]["CalendarDividendItem"][];
         };
         SeasonalityData: {
             symbol?: string;
@@ -2870,10 +2865,7 @@ export interface components {
             description?: string | null;
             strategy: string;
             type: string;
-            currency: string;
             baseCurrency?: string;
-            /** Format: uuid */
-            walletId: string;
             totalInvested: number;
             currentValue: number;
             isPublic: boolean;
@@ -2889,6 +2881,8 @@ export interface components {
                 openPositions?: number;
                 unrealizedGainLoss?: number;
             };
+            /** @description Portfolio-native cash position (plan §62) */
+            cash?: components["schemas"]["PortfolioCash"];
         };
         CreatePortfolioRequest: {
             name: string;
@@ -2917,6 +2911,50 @@ export interface components {
             externalCapitalBasisSource?: string | null;
             externalCapitalSuppressedReason?: string | null;
             externalCapitalReturnBasisKind?: string | null;
+            /** @description Total cash across all portfolios */
+            totalCash?: number;
+            /** @description Per-currency cash summary (dashboard cash card) */
+            cashBreakdown?: {
+                currency: string;
+                balance: number;
+                weight?: number | null;
+            }[];
+        };
+        /** @description Portfolio-native cash position (plan §62) — per-currency balances derived by transaction replay */
+        PortfolioCash: {
+            baseCurrency: string;
+            balances: {
+                currency: string;
+                /** @description Balance in that currency */
+                balance: number;
+            }[];
+            /** @description Base-currency total */
+            total: number;
+        };
+        /** @description Cash balance history — data[].balance is the base-currency total of all currency balances at that date */
+        PortfolioCashHistory: {
+            data: {
+                /** Format: date-time */
+                date: string;
+                balance: number;
+                change: number;
+                percentChange: number | null;
+                high: number;
+                low: number;
+            }[];
+            meta: {
+                period: string;
+                resolution: string;
+                high: number;
+                low: number;
+                average: number;
+                /** Format: date-time */
+                startDate: string;
+                /** Format: date-time */
+                endDate: string;
+                change: number;
+                percentChange?: number | null;
+            };
         };
         HeldStock: {
             symbol?: string;
@@ -3057,6 +3095,7 @@ export interface components {
                 timeSeries?: {
                     date?: string;
                     value?: number;
+                    invested?: number | null;
                     cumulativeTwr?: number;
                     cumulativeMwr?: number;
                     cumulativeSimple?: number;
@@ -3078,6 +3117,7 @@ export interface components {
                 month?: string;
                 returnPercent?: number;
             }[];
+            gapSymbols?: string[] | null;
         };
         PortfolioSnapshot: {
             allocation?: {
@@ -3154,6 +3194,7 @@ export interface components {
                 externalCapitalReturnBasisKind?: string | null;
             };
             positions?: components["schemas"]["PositionSummary"][];
+            cash?: components["schemas"]["PortfolioCash"];
         };
         PositionSummary: {
             /** Format: uuid */
@@ -3222,8 +3263,6 @@ export interface components {
             portfolioId: string;
             portfolioName: string;
             /** Format: uuid */
-            walletId: string;
-            /** Format: uuid */
             positionId?: string | null;
             type: string;
             instrumentSymbol: string;
@@ -3272,7 +3311,7 @@ export interface components {
             feeCurrency?: string | null;
             /** @enum {string|null} */
             feeRateSource?: "automatic" | "manual" | null;
-            /** @description Fee-currency -> transaction/wallet-currency rate for settlement. */
+            /** @description Fee-currency -> transaction-currency rate for settlement. */
             feeExchangeRate?: number | null;
         };
         CreateTransactionRequest: components["schemas"]["FeeFxFields"] & {
@@ -3291,38 +3330,30 @@ export interface components {
             notes?: string | null;
             /** Format: date-time */
             executedAt?: string;
+        };
+        DepositCashRequest: components["schemas"]["FeeFxFields"] & {
+            amount: number;
+            /** @description Defaults to the portfolio baseCurrency; any registry currency allowed */
+            currency?: string;
+            description?: string;
+            transactionDate?: string;
+        };
+        WithdrawCashRequest: components["schemas"]["FeeFxFields"] & {
+            amount: number;
+            /** @description Defaults to the portfolio baseCurrency; any registry currency allowed */
+            currency?: string;
+            description?: string;
+            transactionDate?: string;
+            paymentMethod?: string;
+        };
+        TransferCashRequest: components["schemas"]["FeeFxFields"] & {
+            amount: number;
+            currency: string;
+            description?: string;
+            transactionDate?: string;
             /** Format: uuid */
-            walletId?: string;
-        };
-        DepositRequest: components["schemas"]["FeeFxFields"] & {
-            amount?: number;
-            currency?: string;
-            description?: string;
-            transaction_date?: string;
-            fees?: number;
-            /** @enum {string} */
-            fees_type?: "fixed" | "pct";
-        };
-        WithdrawRequest: components["schemas"]["FeeFxFields"] & {
-            amount?: number;
-            currency?: string;
-            description?: string;
-            transaction_date?: string;
-            payment_method?: string;
-            fees?: number;
-            /** @enum {string} */
-            fees_type?: "fixed" | "pct";
-        };
-        TransferRequest: components["schemas"]["FeeFxFields"] & {
-            amount?: number;
-            currency?: string;
-            description?: string;
-            transfer_date?: string;
-            /** Format: uuid */
-            to_wallet_id?: string;
-            fees?: number;
-            /** @enum {string} */
-            fees_type?: "fixed" | "pct";
+            toPortfolioId: string;
+            /** @description D22 elastic target leg; server-computed when omitted */
             targetAmount?: number | null;
             targetFxRate?: number | null;
         };
@@ -3337,63 +3368,11 @@ export interface components {
         CurrenciesResponse: {
             currencies: components["schemas"]["CurrencyInfo"][];
         };
-        CashWallet: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            userId: string;
-            name: string;
-            currency: string;
-            balance: number;
-            availableBalance: number;
-            isDefault: boolean;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-        };
-        WalletsTotalBalance: {
-            totalBalance?: number;
-            totalAvailableBalance?: number;
-            baseCurrency?: string;
-            walletBreakdown?: {
-                id?: string;
-                name?: string;
-                balance?: number;
-                availableBalance?: number;
-                currency?: string;
-                weight?: number;
-            }[];
-        };
-        BalanceHistory: {
-            data: {
-                /** Format: date-time */
-                date: string;
-                balance: number;
-                change: number;
-                percentChange: number | null;
-                high: number;
-                low: number;
-            }[];
-            meta: {
-                period: string;
-                resolution: string;
-                high: number;
-                low: number;
-                average: number;
-                /** Format: date-time */
-                startDate: string;
-                /** Format: date-time */
-                endDate: string;
-                change: number;
-                percentChange?: number | null;
-            };
-        };
         CashTransaction: components["schemas"]["FeeFxFields"] & {
             /** Format: uuid */
             id: string;
             /** Format: uuid */
-            walletId: string;
+            portfolioId: string;
             type: string;
             amount: number;
             currency: string;
@@ -3401,15 +3380,15 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
             description?: string | null;
-            transaction_date?: string | null;
-            payment_method?: string | null;
+            transactionDate?: string | null;
+            paymentMethod?: string | null;
             fees?: number | null;
-            fees_type?: string | null;
+            feesType?: string | null;
             /** Format: uuid */
-            to_wallet_id?: string | null;
-            new_balance?: number | null;
-            remaining_balance?: number | null;
-            walletName?: string | null;
+            toPortfolioId?: string | null;
+            /** @description Row's own-currency balance after this tx (ledger-derived */
+            balanceAfter?: number | null;
+            portfolioName?: string | null;
             /** @description Import provenance tag; NULL for manually-created rows */
             externalSource?: string | null;
             /** @description Importer-supplied dedup key; unique per externalSource */
@@ -3420,8 +3399,8 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** Format: uuid */
-            walletId: string;
-            walletName?: string | null;
+            portfolioId: string;
+            portfolioName?: string | null;
             type: string;
             displayLabel: string;
             amount: string;
@@ -3433,7 +3412,7 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
             /** Format: uuid */
-            portfolioId?: string | null;
+            toPortfolioId?: string | null;
             fees?: number | null;
             taxes?: number | null;
             isInternalTransfer: boolean;
@@ -3454,26 +3433,6 @@ export interface components {
                 totalPages?: number;
             };
         };
-        ImportWalletBootstrapRequest: {
-            /** @description Source tag; created wallets get external_source = this value */
-            externalSource: string;
-            wallets: {
-                name: string;
-                currency: string;
-                baseCurrency?: string;
-            }[];
-        };
-        ImportWalletBootstrapResponse: {
-            wallets?: {
-                /** Format: uuid */
-                id: string;
-                name: string;
-                currency: string;
-                baseCurrency?: string;
-                /** @description true = just inserted (external_source tagged); false = already existed (not re-tagged) */
-                created: boolean;
-            }[];
-        };
         ImportPortfolioBootstrapRequest: {
             externalSource: string;
             name: string;
@@ -3489,6 +3448,20 @@ export interface components {
             /** @description true = just inserted (external_source tagged); false = already existed (not re-tagged) */
             created: boolean;
         };
+        ImportLabelBootstrapRequest: {
+            externalSource: string;
+            /** @description Label names to ensure; idempotent per (user, name) */
+            labels: string[];
+        };
+        ImportLabelBootstrapResponse: {
+            labels: {
+                name: string;
+                /** Format: uuid */
+                id: string;
+                /** @description true = just created; false = already existed */
+                created?: boolean;
+            }[];
+        };
         ImportTransactionsRequest: {
             source: {
                 externalSource: string;
@@ -3501,18 +3474,18 @@ export interface components {
         ImportTransaction: {
             /** @description Stable dedup key derived by the importer (e.g. SHA256 of source row fields) */
             externalId: string;
-            /** @description Must exist for this user; use wallets/bootstrap to create missing ones */
-            walletName: string;
+            /** @description Must exist for this user; use portfolios/bootstrap to create missing ones */
+            portfolioName: string;
             /** Format: date-time */
             executedAt: string;
-            walletTx: components["schemas"]["ImportWalletTx"];
+            cashTx?: components["schemas"]["ImportPortfolioCashTx"];
             /** @description Omit for pure-cash events (DEPOSIT/WITHDRAWAL) */
             portfolioTx?: components["schemas"]["ImportPortfolioTx"];
         };
-        ImportWalletTx: components["schemas"]["FeeFxFields"] & {
+        ImportPortfolioCashTx: components["schemas"]["FeeFxFields"] & {
             /** @enum {string} */
-            type: "DEPOSIT" | "WITHDRAWAL" | "TRANSFER" | "INVEST" | "SELL" | "DIVIDEND" | "FEE" | "INTEREST" | "ADJUSTMENT";
-            /** @description Signed; negative = cash out. ADJUSTMENT allows 0 (split markers) */
+            type: "DEPOSIT" | "WITHDRAWAL" | "TRANSFER";
+            /** @description Signed; negative = cash out */
             amount: number;
             currency: string;
             description?: string | null;
@@ -3523,16 +3496,19 @@ export interface components {
             fees?: number | null;
             /** @enum {string|null} */
             feesType?: "fixed" | "pct" | null;
-            taxes?: number | null;
+            exchangeRate?: number | null;
+            /** @description TRANSFER target; must exist and differ from the source portfolio */
+            toPortfolioName?: string | null;
+            targetAmount?: number | null;
             reference?: string | null;
-            /** Format: uuid */
-            portfolioId?: string | null;
+            /** @description Label names to bootstrap + attach (unknown name → row error) */
+            labels?: string[];
         };
         ImportPortfolioTx: components["schemas"]["FeeFxFields"] & {
             /** Format: uuid */
             portfolioId: string;
             /** @enum {string} */
-            type: "BUY" | "SELL" | "DIVIDEND";
+            type: "BUY" | "SELL" | "DIVIDEND" | "EXPIRATION";
             instrumentSymbol: string;
             instrumentName?: string | null;
             /** @default STOCK */
@@ -3560,13 +3536,17 @@ export interface components {
             /** Format: date-time */
             executedAt?: string | null;
             /**
-             * @description SHORT marks a short-option open (position-creating, regardless of type)
+             * @description SHORT marks a short-option open (position-creating, regardless of type); for type=EXPIRATION it closes the short-option lot at zero value (zero cash effect)
              * @enum {string|null}
              */
             direction?: "LONG" | "SHORT" | null;
             /** @enum {string|null} */
             optionType?: "CALL" | "PUT" | null;
             contractSize?: number | null;
+            /** @description Label names to attach to the row's open position (resolved server-side per user; unknown names are a row error) */
+            positionLabels?: string[];
+            /** @description Label names to attach to the row's portfolio transaction (same resolution as positionLabels) */
+            transactionLabels?: string[];
         };
         ImportTransactionsResponse: {
             inserted: number;
@@ -3592,7 +3572,7 @@ export interface components {
             /** Format: date-time */
             completedAt?: string | null;
             error?: string | null;
-            insertedWtx: number;
+            insertedCashTx: number;
             insertedPtx: number;
             skipped: number;
         };
@@ -3602,16 +3582,14 @@ export interface components {
         };
         SourceWipeResponse: {
             deleted?: {
-                walletTransactions?: number;
+                cashTransactions?: number;
                 portfolios?: number;
-                wallets?: number;
                 syncRuns?: number;
                 positions?: number;
                 portfolioTransactions?: number;
                 valueSnapshots?: number;
                 shares?: number;
                 portfolioBackfillMetadata?: number;
-                nulledWalletRefs?: number;
             };
         };
         ApplySplitRequest: {
@@ -3848,7 +3826,6 @@ export interface components {
         /** @description Instrument symbol, e.g. AAPL or AAPL.US */
         symbol: string;
         portfolioId: string;
-        walletId: string;
         watchlistId: string;
         positionId: string;
         eventId: string;
@@ -3856,6 +3833,8 @@ export interface components {
         cursor: string;
         /** @description Optional ISO-4217 target currency — prices are converted server-side (plan §48.2); same/absent value serves the native series */
         currency: string;
+        /** @description Optional ISO-4217 currency the CALLER believes the prices are denominated in (e.g. wallets passes the position's `instrumentCurrency`). Honoured only where the server's own resolver is silent; a locally resolved base is never overridden (plan §47, "never guess"). Without it, a ticker listed on several venues in different currencies cannot be converted at all, which made `currency` unusable for the caller's whole request (plan §63.10.5). */
+        baseCurrency: string;
         limit: number;
         page: number;
         perPage: number;
@@ -4916,6 +4895,8 @@ export interface operations {
                 to: string;
                 /** @description Optional ISO-4217 target currency — prices are converted server-side (plan §48.2); same/absent value serves the native series */
                 currency?: components["parameters"]["currency"];
+                /** @description Optional ISO-4217 currency the CALLER believes the prices are denominated in (e.g. wallets passes the position's `instrumentCurrency`). Honoured only where the server's own resolver is silent; a locally resolved base is never overridden (plan §47, "never guess"). Without it, a ticker listed on several venues in different currencies cannot be converted at all, which made `currency` unusable for the caller's whole request (plan §63.10.5). */
+                baseCurrency?: components["parameters"]["baseCurrency"];
             };
             header?: never;
             path: {
@@ -5916,13 +5897,242 @@ export interface operations {
             };
         };
     };
-    setWalletTransactionLabels: {
+    getPortfolioCash: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                id: components["parameters"]["walletId"];
-                transactionId: string;
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cash position */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortfolioCash"];
+                };
+            };
+        };
+    };
+    getPortfolioCashHistory: {
+        parameters: {
+            query?: {
+                period?: string;
+                resolution?: string;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cash balance history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortfolioCashHistory"];
+                };
+            };
+        };
+    };
+    getPortfolioCashTransactions: {
+        parameters: {
+            query?: {
+                page?: number;
+                limit?: number;
+                /** @description Comma-separated label ids; AND filter (entity must have all) */
+                labels?: string;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cash transactions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PageResponse"];
+                };
+            };
+        };
+    };
+    depositCash: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DepositCashRequest"];
+            };
+        };
+        responses: {
+            /** @description Deposited */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CashTransaction"];
+                };
+            };
+        };
+    };
+    withdrawCash: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WithdrawCashRequest"];
+            };
+        };
+        responses: {
+            /** @description Withdrawn */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CashTransaction"];
+                };
+            };
+        };
+    };
+    transferCash: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["portfolioId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferCashRequest"];
+            };
+        };
+        responses: {
+            /** @description Transferred */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CashTransaction"];
+                };
+            };
+        };
+    };
+    getRecentCashTransactions: {
+        parameters: {
+            query?: {
+                page?: components["parameters"]["page"];
+                limit?: components["parameters"]["limit"];
+                sortBy?: string;
+                sortOrder?: "asc" | "desc";
+                /** @description Comma-separated label ids; AND filter (entity must have all) */
+                labels?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recent cash transactions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecentCashTransactionsPage"];
+                };
+            };
+        };
+    };
+    deleteCashTransaction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                txId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateCashTransaction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                txId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    type?: string;
+                    amount?: number;
+                    description?: string;
+                    date?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecentCashTransaction"];
+                };
+            };
+        };
+    };
+    setCashTransactionLabels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                txId: string;
             };
             cookie?: never;
         };
@@ -5963,280 +6173,7 @@ export interface operations {
             };
         };
     };
-    listWallets: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Wallets */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    createWallet: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    name?: string;
-                    currency?: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashWallet"];
-                };
-            };
-        };
-    };
-    getWalletsTotalBalance: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Total balance */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WalletsTotalBalance"];
-                };
-            };
-        };
-    };
-    getWalletBalanceHistory: {
-        parameters: {
-            query?: {
-                period?: string;
-                resolution?: string;
-            };
-            header?: never;
-            path: {
-                id: components["parameters"]["walletId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Balance history */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BalanceHistory"];
-                };
-            };
-        };
-    };
-    depositCash: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["walletId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DepositRequest"];
-            };
-        };
-        responses: {
-            /** @description Deposited */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashTransaction"];
-                };
-            };
-        };
-    };
-    withdrawCash: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["walletId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["WithdrawRequest"];
-            };
-        };
-        responses: {
-            /** @description Withdrawn */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashTransaction"];
-                };
-            };
-        };
-    };
-    transferCash: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["walletId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TransferRequest"];
-            };
-        };
-        responses: {
-            /** @description Transferred */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashTransaction"];
-                };
-            };
-        };
-    };
-    getCashTransactions: {
-        parameters: {
-            query?: {
-                page?: number;
-                limit?: number;
-                /** @description Comma-separated label ids; AND filter (entity must have all) */
-                labels?: string;
-            };
-            header?: never;
-            path: {
-                id: components["parameters"]["walletId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Transactions */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PageResponse"];
-                };
-            };
-        };
-    };
-    getRecentCashTransactions: {
-        parameters: {
-            query?: {
-                page?: components["parameters"]["page"];
-                limit?: components["parameters"]["limit"];
-                sortBy?: string;
-                sortOrder?: "asc" | "desc";
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Recent transactions */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RecentCashTransactionsPage"];
-                };
-            };
-        };
-    };
-    deleteCashTransaction: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Deleted */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    updateCashTransaction: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    type?: string;
-                    amount?: number;
-                    description?: string;
-                    date?: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Updated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RecentCashTransaction"];
-                };
-            };
-        };
-    };
-    importWalletBootstrap: {
+    importPortfolioBootstrap: {
         parameters: {
             query?: never;
             header?: never;
@@ -6245,17 +6182,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ImportWalletBootstrapRequest"];
+                "application/json": components["schemas"]["ImportPortfolioBootstrapRequest"];
             };
         };
         responses: {
-            /** @description Wallets ensured */
+            /** @description Portfolio ensured */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImportWalletBootstrapResponse"];
+                    "application/json": components["schemas"]["ImportPortfolioBootstrapResponse"];
                 };
             };
             /** @description Missing or invalid token */
@@ -6278,7 +6215,7 @@ export interface operations {
             };
         };
     };
-    importPortfolioBootstrap: {
+    importLabelBootstrap: {
         parameters: {
             query?: never;
             header?: never;
@@ -6287,17 +6224,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ImportPortfolioBootstrapRequest"];
+                "application/json": components["schemas"]["ImportLabelBootstrapRequest"];
             };
         };
         responses: {
-            /** @description Portfolio ensured */
+            /** @description Labels ensured */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ImportPortfolioBootstrapResponse"];
+                    "application/json": components["schemas"]["ImportLabelBootstrapResponse"];
                 };
             };
             /** @description Missing or invalid token */

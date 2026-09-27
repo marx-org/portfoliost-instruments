@@ -810,6 +810,17 @@ export function createInstrumentsRoutes() {
           schema: { type: "string" },
           description: "Optional ISO-4217 target currency — closes are converted server-side (plan §48.2)",
         },
+        {
+          name: "baseCurrency",
+          in: "query",
+          schema: { type: "string" },
+          description:
+            "Optional ISO-4217 base currency the CALLER believes the closes are denominated in " +
+            "(e.g. wallets' position `instrumentCurrency`). Used only where the local resolver is " +
+            "silent — a locally resolved base is never overridden (§47 'never guess'). Without it a " +
+            "ticker listed on several venues in different currencies cannot be converted at all, " +
+            "which used to 400 and take the caller's whole request with it (§63.10.5).",
+        },
       ],
       responses: {
         200: {
@@ -846,11 +857,25 @@ export function createInstrumentsRoutes() {
         return c.json({ error: "BadRequest", message: target.message }, 400)
       }
       // §48.2 — conversion needs a known base; an unresolvable base currency
-      // is a 400, never a silently unconverted series.
-      if (target.value && !(await resolveInstrumentCurrency(getDb(), symbol))) {
+      // is a 400, never a silently unconverted series. §63.10.5 — unless the
+      // caller declared one (the base it already knows, e.g. the position's
+      // instrumentCurrency), which is only honoured when the local resolver is
+      // silent.
+      const declaredBase = c.req.query("baseCurrency")?.trim().toUpperCase() ?? null
+      if (declaredBase && !CONVERSION_CURRENCIES.has(declaredBase)) {
+        return c.json({ error: "BadRequest", message: `base currency not supported: ${declaredBase}` }, 400)
+      }
+      if (
+        target.value &&
+        !(await resolveInstrumentCurrency(getDb(), symbol)) &&
+        !declaredBase
+      ) {
         return c.json({ error: "BadRequest", message: "base currency unknown; cannot convert" }, 400)
       }
-      const series = await getPriceBarSeries(getDb(), symbol, from, to, new Date(), { targetCcy: target.value })
+      const series = await getPriceBarSeries(getDb(), symbol, from, to, new Date(), {
+        targetCcy: target.value,
+        baseCcy: declaredBase,
+      })
       return c.json({
         symbol: series.symbol,
         timeframe: "daily",
