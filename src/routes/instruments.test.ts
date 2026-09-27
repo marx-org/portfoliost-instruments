@@ -860,11 +860,14 @@ describe("pt2 routes", () => {
       mocked.fetchCalendarDividends.mockResolvedValue([])
       await req("/api/instruments/AAPL/calendar")
       const [start, end] = mocked.fetchCalendarDividends.mock.calls[0] as [string, string]
-      const today = new Date().setHours(0, 0, 0, 0)
-      expect(new Date(`${end}T00:00:00Z`).getTime()).toBeGreaterThanOrEqual(today)
-      expect(new Date(`${start}T00:00:00Z`).getTime()).toBeGreaterThanOrEqual(
-        today - 30 * 86400_000,
-      )
+      // The window is produced by `todayRange`, which formats with
+      // `toISOString().slice(0, 10)` — i.e. UTC dates. This test used to compare
+      // them against `setHours(0,0,0,0)`, which is LOCAL midnight: 22 h apart in
+      // Warsaw, so the assertion could only ever pass in UTC or west of it.
+      // Compare on the same basis the product uses.
+      const todayUtc = new Date().toISOString().slice(0, 10)
+      expect(end >= todayUtc).toBe(true)
+      expect(start >= new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10)).toBe(true)
     })
 
     it("resolves the calendar currency via the §49.6 single resolver, not the profile (§47 parity)", async () => {
