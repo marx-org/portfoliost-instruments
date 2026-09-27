@@ -10,6 +10,13 @@ import type { components } from "../generated/api-types.js"
 
 type S = components["schemas"]
 
+/** §66.4 — the placeholder used ONLY where a contract field is non-nullable and
+ * the currency genuinely could not be resolved. It is named so it is greppable
+ * and countable, it is always paired with `currencySource: "unknown"`, and it is
+ * never used where the value is an input (those parameters are now required, so
+ * the compiler forces the caller to pass a real one). */
+export const UNRESOLVED_CURRENCY = "USD"
+
 /** CurrencySource for a provider-declared code when no resolution is passed. */
 function sourceFor(
   resolution: CurrencyResolution | undefined,
@@ -590,7 +597,12 @@ function quarterFromDate(date: string): number {
   return month >= 1 && month <= 12 ? Math.floor((month - 1) / 3) + 1 : 0
 }
 
-export function toCalendar(symbol: string, earningsRows: Row[], dividendRows: Row[], currency = "USD"): S["CalendarData"] {
+export function toCalendar(
+  symbol: string,
+  earningsRows: Row[],
+  dividendRows: Row[],
+  currency: string,
+): S["CalendarData"] {
   const sym = symbol.toUpperCase()
   // §52 follow-up — biznesradar calendar rows carry bare GPW tickers ("MBR")
   // while the route symbol is venue-qualified ("MBR.WA"); match the bare
@@ -658,9 +670,14 @@ export function toDividends(
     type: string
     paymentDate: string | null
   }
-  // §49.6 — the resolved currency is always set (never null), per plan;
-  // `currencySource` carries how it was determined for the research page.
-  const fallback = resolution.currency ?? "USD"
+  // §49.6 — the contract requires a non-null currency, so an unresolved one is
+  // filled with the named placeholder and `currencySource` is set to "unknown"
+  // (via sourceFor) so the consumer can see it was not resolved. §66.4: this used
+  // to be an inline "USD" that read as a real answer.
+  const fallback = resolution.currency ?? UNRESOLVED_CURRENCY
+  if (!resolution?.currency) {
+    console.warn(`[translate] unresolved currency for a research payload; reporting ${UNRESOLVED_CURRENCY} with currencySource=unknown`)
+  }
   const history = rows
     .map((r) => {
       const date = str(r.date) ?? str(r.ex_dividend_date)
@@ -689,7 +706,7 @@ export function toProjections(
   quarterly: EpsQuarter[] = [],
 ): ProjectionsResult {
   const current = quote?.last_price !== undefined ? num(quote.last_price) : num(quote?.current_price)
-  const currency = str(quote?.currency) ?? "USD"
+  const currency = str(quote?.currency) ?? UNRESOLVED_CURRENCY
   return {
     currency,
     priceTarget: consensus
@@ -783,7 +800,7 @@ export function toCompare(
     netIncome: num(metrics.net_income),
     revenue: num(metrics.revenue),
     sharesOutstanding: num(pick(metrics, "shares_outstanding", "sharesOutstanding")),
-    currency: str(profile.currency) ?? "USD",
+    currency: str(profile.currency) ?? UNRESOLVED_CURRENCY,
   }
 }
 
@@ -791,7 +808,7 @@ export function toHistoricalPrice(
   symbol: string,
   date: string,
   rows: OpenstOhlcvRow[],
-  currencyFallback = "USD",
+  currencyFallback: string,
 ): S["HistoricalPrice"] {
   const target = date.slice(0, 10)
   const candidates = rows.filter((r) => r.date <= target).sort((a, b) => b.date.localeCompare(a.date))

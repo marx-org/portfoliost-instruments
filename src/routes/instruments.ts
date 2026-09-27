@@ -61,6 +61,7 @@ import {
   toNewsArticleList,
   str,
   type Row,
+  UNRESOLVED_CURRENCY,
 } from "../adapters/translate.js"
 import { curatedPairFromQuery } from "../adapters/crypto.js"
 import type { OpenstProfile, OpenstQuote, OpenstOhlcvRow, OpenstConsensus } from "../adapters/openst-types.js"
@@ -1069,8 +1070,15 @@ export function registerPt2Routes(instruments: Hono) {
           orEmpty(fetchCalendarDividends(start, end)),
         ])
         // §49.6 — the resolved instrument currency replaces the §36 profile
-        // fallback; currency is always set (resolver silence grants "USD").
-        const currency = (await resolveInstrumentCurrency(getDb(), routeSymbol)) ?? "USD"
+        // fallback; the contract requires a non-null currency.
+        // §66.4 — resolver silence used to silently grant "USD". It is now the
+        // named placeholder and the route logs it, so a research page can show
+        // an unresolved currency instead of a plausible-looking wrong one.
+        const resolvedCcy = await resolveInstrumentCurrency(getDb(), routeSymbol)
+        if (!resolvedCcy) {
+          console.warn(`[instruments] resolver silence for ${routeSymbol}; reporting the unresolved-currency placeholder`)
+        }
+        const currency = resolvedCcy ?? UNRESOLVED_CURRENCY
         return c.json(toCalendar(symbol, earningsRows as any[], dividendRows as any[], currency))
       } catch (e) {
         return upstreamErrorResponse(c, e)
@@ -1213,7 +1221,14 @@ export function registerPt2Routes(instruments: Hono) {
       const { start, end } = { start: startD.toISOString().slice(0, 10), end: date }
       try {
         const rows = await fetchOhlcvWithBondFallback(symbol, start, end)
-        return c.json(toHistoricalPrice(symbol, date, rows))
+        // §66.4 — this route used to inherit toHistoricalPrice's `= "USD"`
+        // default, so every historical price was labelled USD. Resolve the real
+        // currency (the parameter is now required, so the compiler forces this).
+        const histCcy = await resolveInstrumentCurrency(getDb(), symbol)
+        if (!histCcy) {
+          console.warn(`[instruments] resolver silence for ${symbol}; historical price reports the unresolved-currency placeholder`)
+        }
+        return c.json(toHistoricalPrice(symbol, date, rows, histCcy ?? UNRESOLVED_CURRENCY))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
