@@ -95,6 +95,22 @@ export async function getExchangeBySuffix(db: DB, suffix: string): Promise<strin
   return rows[0]?.code ?? null
 }
 
+/** The reference country an exchange operates in (WSE → "PL", TSX → "CA").
+ *
+ * §71 — this is how a venue-qualified symbol with NO listing in
+ * `ticker_reference` still resolves a currency: the venue is a known fact
+ * about where the security trades, which is not the same kind of claim as
+ * inferring a currency from some other venue's listing of the same bare
+ * ticker. See {@link resolveInstrumentCurrency}. */
+export async function getExchangeCountry(db: DB, exchangeCode: string): Promise<string | null> {
+  const rows = await db
+    .select({ countryCode: exchangeReference.countryCode })
+    .from(exchangeReference)
+    .where(sql`UPPER(${exchangeReference.exchangeCode}) = ${exchangeCode.toUpperCase()}`)
+    .limit(1)
+  return rows[0]?.countryCode ?? null
+}
+
 /** Symbol/name/alias search over the reference table. Exact ticker matches
  * rank first, then ticker prefixes, then name/alias substring hits. */
 export async function searchTickerReference(

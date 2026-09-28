@@ -7,8 +7,17 @@
  *   1. crypto pair form (BTC-USD)  → the pair's quote currency
  *   2. bond (savings-bond engine)  → PLN (obligacje prices in PLN)
  *   3. corp_bond / fund (.WA/.TFI) → PLN (biznesradar Catalyst/TFI universe)
- *   4. ticker_reference.country_code → ISO-4217 map
- *   5. everything else             → null (NOT "USD" — plan §47: never guess)
+ *   4. venue suffix + a listing for THAT venue → the listing's country
+ *   5. venue suffix, listing absent      → the VENUE's country (WSE → PL → PLN)
+ *   6. no venue hint: exact listings must agree, else null
+ *   7. anything else → null (NOT "USD" — plan §47: never guess)
+ *
+ * Every branch is either a parse (1), a market-structure rule (2, 3, 5), or an
+ * unambiguous fact read off a listing (4, 6). §71 removed the two that were not:
+ * an unfiltered cross-venue search when a venue was already known, and reading a
+ * currency off a prefix/name match. A currency is a label that MULTIPLIES a
+ * number, so a wrong one does not fail — it silently produces a plausible total,
+ * which is exactly how CRI.WA was priced in CAD.
  *
  * DB lookups degrade to ``null``, never a guessed code: the SPA takes the
  * ``currencySource`` signal ("estimated" vs "unknown") to red-flag it.
@@ -18,6 +27,7 @@ import type { DB } from "../db/index.js"
 import {
   assetTypeForSymbol,
   getExchangeBySuffix,
+  getExchangeCountry,
   normalizeAssetType,
   searchTickerReference,
   type AssetType,
@@ -129,36 +139,66 @@ export async function resolveInstrumentCurrency(
       // universe are priced in PLN.
       return "PLN"
     }
+
     const suffix = symbolSuffix(symbol)
-    const exchange = suffix ? await getExchangeBySuffix(db, suffix) : null
-    const rows = await searchTickerReference(db, symbol, 10, exchange)
-    if (!exchange) {
-      // No venue hint, so the ticker matched listings on several exchanges. For
-      // the *quote* that is §47 uncertainty — the venue decides the instrument,
-      // and silence beats guessing (plan §56; the AMD-on-4-exchanges AUD/USD
-      // collision, §54.5 follow-up).
-      //
-      // For the *currency* it is not: what matters is only whether the
-      // candidates agree. MSFT matches NASDAQ and NEO, both US, so USD is not a
-      // guess — the venue is unknown but the currency is not. The old
-      // `exchanges.size > 1 → null` rule silenced plain US large caps whenever a
-      // second listing existed anywhere (BDR, European cross-listing), which
-      // made `?currency=` 400 and left the backfill unable to value them.
-      // Genuine disagreement (AFL: ASX/AUD vs NYSE/USD; META: NASDAQ/USD vs
-      // LSE+STO/EUR) still returns null, as §47 requires.
-      const base = venueFreeSymbol(symbol)
-      const candidates = rows.filter((r) => r.ticker === base)
-      const codes = new Set(
-        candidates.map((r) => currencyForCountry(r.countryCode)).filter((c): c is string => c !== null),
-      )
-      if (candidates.length > 1) {
-        if (codes.size === 1) return [...codes][0]
-        return null
+    if (suffix) {
+      // ── venue-qualified: the suffix names WHERE it trades, so another venue's
+      // listing of the same bare ticker is not evidence about this one.
+      const exchange = await getExchangeBySuffix(db, suffix)
+      if (!exchange) {
+        // No exchange_reference row for this suffix. Before refusing, accept a
+        // listing that records the venue in the ticker itself ("SNT.WA" on WSE) —
+        // that row states its own venue, so it is evidence rather than a guess,
+        // and it keeps the resolver working when exchange data is incomplete.
+        const selfQualified = (await searchTickerReference(db, symbol, 1, null)).find(
+          (r) => r.ticker === symbol && r.countryCode,
+        )
+        return selfQualified ? currencyForCountry(selfQualified.countryCode) : null
       }
+      const base = venueFreeSymbol(symbol)
+      const rows = await searchTickerReference(db, symbol, 1, exchange)
+      // Accept the listing written either bare ("SNT", the production shape) or
+      // venue-qualified ("SNT.WA") — both denote the same security, and the
+      // exchange check below is what actually scopes it. Matching only one form
+      // turns a reference-data spelling difference into a silent null.
+      const exact = rows.find(
+        (r) => (r.ticker === base || r.ticker === symbol) && r.exchange === exchange.toUpperCase(),
+      )
+      if (exact) return currencyForCountry(exact.countryCode)
+      // §71 — the listing is missing from the reference, but the VENUE is known.
+      // Return the venue's own currency (WSE → PL → PLN) and nothing more.
+      //
+      // This branch is where CRI.WA used to be priced in Canadian dollars. The
+      // venue-qualified lookup missed (CRI has no WSE row), and the search then
+      // fell through to an UNFILTERED `ticker ILIKE 'CRI%'`, whose first exact
+      // match was CRI/TSXV/CA. Because a venue *was* resolved, the
+      // candidates-must-agree guard was skipped too, so a single arbitrary row
+      // decided the currency: 9,451 PLN became 9,451 CAD and the live headline
+      // overstated this one position by 16,190 PLN (×2.7131). The stored price
+      // bars were never affected — they arrive pre-converted to the portfolio
+      // base currency — so the two valuation paths silently disagreed by 18%.
+      return currencyForCountry(await getExchangeCountry(db, exchange))
     }
-    const row = rows[0]
-    if (row && row.countryCode) return currencyForCountry(row.countryCode)
-    return null
+
+    // ── no venue hint: the ticker alone must be unambiguous.
+    //
+    // Candidates must agree; a genuine collision (AFL: ASX/AUD vs NYSE/USD,
+    // META: NASDAQ/USD vs LSE/EUR) is silence, not a coin flip (plan §47).
+    // MSFT matching NASDAQ and NEO is not a collision — both are US, so USD is
+    // a fact about the candidates rather than a guess about the ticker.
+    const rows = await searchTickerReference(db, symbol, 10, null)
+    const base = venueFreeSymbol(symbol)
+    const candidates = rows.filter((r) => r.ticker === base)
+    if (candidates.length === 0) {
+      // §71 — no exact listing. The remaining rows are PREFIX or name/alias
+      // matches ("CRI%" also matches CRIS, CRISIL, CRIMSON…), and reading a
+      // currency off those is a guess about a different security. Refuse.
+      return null
+    }
+    const codes = new Set(
+      candidates.map((r) => currencyForCountry(r.countryCode)).filter((c): c is string => c !== null),
+    )
+    return codes.size === 1 ? [...codes][0] : null
   } catch {
     return null
   }
