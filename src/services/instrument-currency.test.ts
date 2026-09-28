@@ -19,10 +19,52 @@ describe("instrument currency (§36)", () => {
     const t = await createTestDb()
     db = t.db
     client = t.client
-    // WSE → .WA suffix so venue-qualified lookups resolve their exchange
+    // WSE → .WA suffix so venue-qualified lookups resolve their exchange.
+    // country_code is what lets a .WA symbol with no WSE listing still resolve
+    // (§71 branch 5) — the venue is a known fact even when the listing is not.
     await db
       .insert(exchangeReference)
-      .values({ exchangeCode: "WSE", canonicalName: "Warsaw Stock Exchange", yahooSuffix: "WA" })
+      .values({
+        exchangeCode: "WSE",
+        canonicalName: "Warsaw Stock Exchange",
+        yahooSuffix: "WA",
+        countryCode: "PL",
+      })
+    // TSXV, for the §71 CRI.WA shape: a bare ticker that exists in Canada but
+    // not on the Warsaw venue the symbol actually names.
+    await db
+      .insert(exchangeReference)
+      .values({
+        exchangeCode: "TSXV",
+        canonicalName: "TSX Venture Exchange",
+        yahooSuffix: "V",
+        countryCode: "CA",
+      })
+    // CRI: PROD §71 — listed in Canada, on no Warsaw row. The old resolver
+    // priced CRI.WA in CAD off this listing.
+    await db
+      .insert(tickerReference)
+      .values({
+        listingKey: "TSXV::CRI",
+        ticker: "CRI",
+        exchange: "TSXV",
+        name: "Churchill Resources Inc",
+        assetType: "Stock",
+        country: "Canada",
+        countryCode: "CA",
+      })
+    // A bare ticker that exists ONLY as a prefix of others — no exact listing.
+    await db
+      .insert(tickerReference)
+      .values({
+        listingKey: "NASDAQ::CRIMSON",
+        ticker: "CRIMSON",
+        exchange: "NASDAQ",
+        name: "Crimson Metal Engineering Company Ltd",
+        assetType: "Stock",
+        country: "United States",
+        countryCode: "US",
+      })
     // SNT on WSE — Synektik, a Polish (PLN) stock
     await db
       .insert(tickerReference)
@@ -110,6 +152,65 @@ describe("instrument currency (§36)", () => {
 
   it("venue-qualified SNT.WA resolves to the WSE row despite a cross-exchange SNT collision (§49.9 guard)", async () => {
     expect(await resolveInstrumentCurrency(db, "SNT.WA")).toBe("PLN")
+  })
+
+  // ── §71 — the currency is a multiplier, so these are the tests that matter ──
+
+  it("CRI.WA: venue known but listing missing → the VENUE's currency, never another venue's (§71)", async () => {
+    // PROD: CRI.WA (Creotech Instruments, Warsaw) has no WSE row in
+    // ticker_reference, but bare CRI is listed on TSXV (Canada). The old code
+    // fell through to an unfiltered `ILIKE 'CRI%'`, took rows[0] — TSXV/CA —
+    // and skipped the candidates-agree guard BECAUSE a venue was resolved. The
+    // position's 9,451 PLN was then multiplied by the CAD→PLN rate, overstating
+    // the live headline by 16,190 PLN.
+    expect(await resolveInstrumentCurrency(db, "CRI.WA")).toBe("PLN")
+  })
+
+  it("CRI.WA stays PLN even when the foreign listings are the only CRI rows (§71 regression)", async () => {
+    // Guards the specific failure: the answer must not depend on how many
+    // foreign listings happen to exist for the bare ticker.
+    await db
+      .insert(tickerReference)
+      .values({
+        listingKey: "NYSE::CRI",
+        ticker: "CRI",
+        exchange: "NYSE",
+        name: "Carter's Inc",
+        assetType: "Stock",
+        country: "United States",
+        countryCode: "US",
+      })
+    await db
+      .insert(tickerReference)
+      .values({
+        listingKey: "ASX::CRI",
+        ticker: "CRI",
+        exchange: "ASX",
+        name: "Critica Ltd",
+        assetType: "Stock",
+        country: "Australia",
+        countryCode: "AU",
+      })
+    expect(await resolveInstrumentCurrency(db, "CRI.WA")).toBe("PLN")
+  })
+
+  it("a suffix naming an unknown exchange → null, not a guess (§71)", async () => {
+    // No exchange_reference row carries yahoo_suffix 'QQ'. Previously the code
+    // treated "no exchange" as licence to search everywhere.
+    expect(await resolveInstrumentCurrency(db, "SNT.QQ")).toBeNull()
+  })
+
+  it("no exact listing → null, never a currency off a prefix/name match (§71)", async () => {
+    // "CRI2" has no listing; the search will surface CRIMSON (US) on the
+    // `ILIKE 'CRI%'` prefix branch. Reading USD off that would be a claim about
+    // a different security.
+    expect(await resolveInstrumentCurrency(db, "CRI2")).toBeNull()
+  })
+
+  it("the bare ticker is still ambiguous across venues (§71 keeps §56)", async () => {
+    // CRI is now on TSXV/NYSE/ASX — three countries. With no venue hint that is
+    // genuine uncertainty, not a majority vote.
+    expect(await resolveInstrumentCurrency(db, "CRI")).toBeNull()
   })
 
   it("AMD collision + provider-declared USD → provider wins (no silent wrong local)", async () => {
