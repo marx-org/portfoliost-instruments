@@ -394,9 +394,23 @@ export async function getPriceBarSeries(
   // ticker listed on several venues in different countries (AFL: NYSE+ASX,
   // META: NASDAQ+LSE+STO) made `?currency=` 400 — and since §48.2 refuses an
   // unresolvable base, one such position took its whole portfolio unvaluable.
-  // A locally *resolved* base is never overridden: §47's "never guess" stands,
-  // and the response reports which base was used.
   const declared = opts.baseCcy?.toUpperCase() ?? null
+  //
+  // §71 — DO NOT "fix" this by letting the caller win outright. Measured over
+  // PROD's 98 open symbols, the two disagree on exactly two, and in BOTH the
+  // resolver is right and the caller is corrupt:
+  //
+  //   CRI.WA  position CAD (a resolver guess that overwrote the import's PLN)
+  //           → resolver PLN
+  //   SRT.F   position GBP → resolver EUR
+  //
+  // So the resolver winning is currently what keeps the stored bar series out of
+  // CAD and GBP. Inverting it would silently reintroduce the corruption these two
+  // positions still carry, and nothing would fail — the same way nothing failed
+  // when the currency was first wrong. The precedence is defensible only because
+  // the resolver is venue-aware and the caller's value is whatever last wrote the
+  // position; that is an argument to keep hardening the resolver (§71 removed
+  // its two guesses), not an argument to hand authority to the caller.
   const baseCcy = resolvedBase ?? declared
   const target = opts.targetCcy?.toUpperCase() ?? null
   const convertTo =
