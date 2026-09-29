@@ -406,6 +406,9 @@ export function createInstrumentsRoutes() {
           const baseTicker = symbol.split(".")[0]
           if (ref && ref.ticker === baseTicker) {
             out.name = out.name ?? ref.name
+            // §61.8 — asset class for the shared identity block, from the same
+            // reference row and under the same guard as countryCode.
+            out.assetType = toInstrumentType(ref.assetType)
             out.isin = ref.isin ?? out.isin ?? null
             out.country = out.country ?? ref.country
             out.countryCode = out.countryCode ?? ref.countryCode
