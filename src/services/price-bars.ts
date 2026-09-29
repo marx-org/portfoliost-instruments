@@ -110,10 +110,28 @@ export async function queryView(
  * PK, and the ≤~2.5k-bar probe against the ~200k-row fx build side is a
  * trivial hash join (verified by EXPLAIN in the tests).
  *
- * A bar whose date has no rate row (before the fx floor, or inside a source
- * gap such as the ECB's ISK break 2008–2018) is served UNCONVERTED in the
- * base currency — no carry-forward. `fx_from` (repeated on every row) is the
- * earliest converted date in the window; null when nothing converted.
+ * §72.17 — a bar whose date has no rate row is now **absent**, not served
+ * unconverted.
+ *
+ * It used to be served unconverted, by the `else b.close` branch below, while the
+ * response declared `currency: <target>` for the whole series. That is a
+ * base-currency number wearing the target's label, and the wallets valuation grid
+ * multiplied it straight into a portfolio total. BTC-USD converted to PLN over
+ * 2022-07-14..19 returned six dates, of which two were raw USD:
+ *
+ *   closes: [98986, 99330, 21190, 20779, 106003, 108667]   (PLN declared)
+ *
+ * 0.004 BTC read 85 PLN on 2022-07-16/17 and ~400 on the days either side, which
+ * is a -78% crash and a +400% recovery in a quarter when BTC moved ~5%. The audit
+ * saw a 410% one-day jump in the Crypto series; neither number was a market move.
+ *
+ * `fxFrom` (repeated on every row) is the earliest date that converted, and is
+ * kept: it reports how much of the requested window was covered. Note the gap is
+ * not necessarily a prefix — `fx_rates` coverage holes are scattered wherever a
+ * pair is missing — so a consumer cannot infer convertibility from `fxFrom`
+ * alone. That is why the fix is here, at the producer, rather than in each
+ * caller. `convertSeries` (services/fx-convert.ts) carries the same rule for the
+ * provider-fetched /history and /price legs.
  *
  * Exported so the EXPLAIN test can pin the plan shape of the real query.
  */
@@ -130,6 +148,10 @@ export function conversionJoinSql(
   const baseRate = base === "EUR" ? sql`1.0::numeric` : sql`fb.rate`
   const convertible =
     base === "EUR" ? sql`f.rate is not null` : sql`f.rate is not null and fb.rate is not null`
+  // §72.17 — when a conversion was actually asked for, a bar that cannot be
+  // converted is dropped rather than passed through in the source currency. A
+  // same-currency series (base === target) needs no rate, so it is not filtered.
+  const hasRates = base === target ? sql`true` : convertible
   return sql`
     select b.symbol,
       b.date,
@@ -143,6 +165,7 @@ export function conversionJoinSql(
       on fb.rate_date = b.date and fb.currency = ${base}
     where b.symbol = ${symbol}
       and b.date between ${from} and ${to}
+      and (${hasRates})
     order by b.date asc, case when b.source = 'stooq' then 0 else 1 end
   `
 }
