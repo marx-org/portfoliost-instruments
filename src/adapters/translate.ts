@@ -201,6 +201,10 @@ export function toInstrumentProfile(
     ticker: symbol.toUpperCase(),
     name: str(p.name),
     country: str(pick(p as Row, "hq_country", "country")),
+    // §61.8 — the shared identity block needs an asset class; the pure
+    // translator has no reference table, so the profile route fills it (and
+    // leaves this null when the symbol is unknown there).
+    assetType: null,
     currency,
     currencySource: sourceFor(resolution, providerCcy, isBond),
     exchange: str(pick(p as Row, "stock_exchange", "exchange")),

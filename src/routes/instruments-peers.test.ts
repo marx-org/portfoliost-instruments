@@ -83,6 +83,17 @@ beforeAll(async () => {
 
 afterAll(() => close())
 
+describe("GET /:symbol/profile — instrument identity (§61.8)", () => {
+  it("fills assetType from the ticker reference, alongside countryCode", async () => {
+    mocked.fetchProfile.mockResolvedValue({ symbol: "AAPL", name: "Apple Inc", currency: "USD" })
+    const res = await req("/api/instruments/AAPL/profile")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.countryCode).toBe("US")
+    expect(body.assetType).toBe("STOCK")
+  })
+})
+
 describe("GET /:symbol/peers — instrument identity (§61.4)", () => {
   it("fills countryCode + assetType from the ticker reference", async () => {
     mocked.fetchProfile.mockImplementation(async (s: string) => ({
