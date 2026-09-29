@@ -1583,15 +1583,37 @@ describe("GET /:symbol/price-bars — ?currency= (plan §48.2)", () => {
     }
   })
 
-  it("serves bars before the fx floor unconverted and reports fxFrom", async () => {
+  it("§72.17: omits the bar before the fx floor instead of serving it unconverted", async () => {
+    // This asserted the opposite and is kept as the record of the change: the
+    // response used to begin at 2026-09-10 with a raw close of 98, under a
+    // declared currency of USD. The wallets valuation grid multiplied those into
+    // a portfolio total, so a base-currency price reached a foreign-currency
+    // total. In PROD (BTC-USD → PLN, 2022-07) that read 85 PLN on two days and
+    // ~400 either side.
     const t = await dbWithFx()
     try {
       const res = await req("/api/instruments/PKN/price-bars?from=2026-09-09&to=2026-09-19&currency=USD")
       expect(res.status).toBe(200)
       const body = await res.json()
-      expect(body.dates[0]).toBe("2026-09-10")
-      expect(body.closes[0]).toBe(98) // no fx row for 2026-09-10 → base close
+      expect(body.dates).not.toContain("2026-09-10")
+      expect(body.currency).toBe("USD")
       expect(body.fxFrom).toBe("2026-09-16")
+      // every surviving close is a converted one, never a raw base-currency price
+      expect(body.closes).not.toContain(98)
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("§72.17: a same-currency price-bars request is not filtered", async () => {
+    const t = await dbWithFx()
+    try {
+      const res = await req("/api/instruments/PKN/price-bars?from=2026-09-09&to=2026-09-19")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.dates).toContain("2026-09-10")
+      expect(body.closes).toContain(98)
     } finally {
       await t.client.close()
       dbState.db = null
