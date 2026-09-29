@@ -782,6 +782,11 @@ export function toCompare(
   return {
     symbol: (str(profile.symbol) ?? "").toUpperCase(),
     name: str(profile.name) ?? "",
+    // §61.4 — the provider carries neither, and the pure translator has no
+    // reference table. Emitted as explicit nulls so the response shape is
+    // stable and "no reference row" reads as unknown rather than absent.
+    countryCode: null,
+    assetType: null,
     price: price ?? undefined,
     marketCap: num(metrics.market_cap) ?? num(profile.market_cap),
     peRatio: num(metrics.pe_ratio),
