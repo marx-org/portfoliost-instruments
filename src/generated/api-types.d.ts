@@ -2626,6 +2626,10 @@ export interface components {
             items?: {
                 symbol: string;
                 instrumentName?: string | null;
+                /** @description The instrument's asset class, for the shared identity block (`TickerBadge`). Nullable because the research-backed `history` shape has neither this nor `country`; the portfolio route fills both from the DIVIDEND transaction row. Never guessed. */
+                assetType?: string | null;
+                /** @description 2-letter country code of the instrument (not the transaction's currency) — see `assetType`. Null when unknown. */
+                country?: string | null;
                 date: string;
                 quantity: number;
                 gross: number;
@@ -2803,6 +2807,10 @@ export interface components {
         ResearchCompare: {
             symbol?: string;
             name?: string;
+            /** @description 2-letter country code for the shared identity block (`TickerBadge`). Resolved from the provider's own ticker reference; null when the symbol is not in it — never guessed (§61.4). */
+            countryCode?: string | null;
+            /** @description Contract `InstrumentType` for the identity block. Same rule as `countryCode` — null when the ticker reference has no row. */
+            assetType?: string | null;
             price?: number;
             marketCap?: number;
             peRatio?: number;
@@ -2891,32 +2899,106 @@ export interface components {
             currency?: string;
             isPublic?: boolean;
         };
+        /**
+         * @description The dashboard headline aggregate, all amounts in `baseCurrency`.
+         *
+         *     §68 — the four headline figures, and what `totalValue` means changed:
+         *
+         *       instrumentsValue  positions only
+         *       cashValue         the cash BALANCE (not a flow)
+         *       totalValue        instrumentsValue + cashValue
+         *       totalInvested     net external cash flow (see below)
+         *
+         *     `totalValue` previously excluded cash, which made the headline disagree
+         *     with the portfolio cards by exactly the cash balance (§63.3). It now
+         *     means the whole account.
+         */
         PortfolioTotalMetrics: {
-            totalValue?: number;
-            totalInvested?: number;
+            /** @description Open-position market value only, cash excluded, converted into baseCurrency. Σ of each position's own instrument currency at its own rate — never a raw cross-currency sum. */
+            instrumentsValue: number;
+            /** @description Cash balance across all portfolios in baseCurrency (Σ per-currency balances converted). Renamed from `totalCash` in §68 — a balance, not a flow. May be negative on a margin account, and must not be clamped. */
+            cashValue: number;
+            /** @description The whole account: instrumentsValue + cashValue. CHANGED in §68 — this used to be positions-only, which is what made the headline miss cash. */
+            totalValue: number;
+            /**
+             * @description Net external cash flow in baseCurrency: DEPOSIT − WITHDRAWAL ± TRANSFER legs, each at its own historical rate
+             *     (the §62 `externalCashInvested` basis, reported by `externalCapitalBasisSource`).
+             *
+             *     Transfers are part of this definition, not excluded. The honest
+             *     consequence: a transfer between two of the user's own portfolios
+             *     RAISES one portfolio's invested figure and LOWERS the other's. The
+             *     aggregate is unaffected because the legs net to zero, but a
+             *     per-portfolio number on this basis is not "capital you put in".
+             */
+            totalInvested: number;
+            /** @description totalValue − totalInvested. Moves with §68's change to totalValue. */
             totalGainLoss?: number;
+            /** @description totalGainLoss / totalInvested. Moves with §68's change to totalValue. */
             returnPercentage?: number;
-            baseCurrency?: string;
-            portfolioBreakdown?: {
-                id?: string;
-                name?: string;
-                totalValue?: number;
-                totalInvested?: number;
+            baseCurrency: string;
+            /** @description Per-portfolio rows. §68 — each carries the same cash/instruments split, so Σ breakdown == the headline and a card can render its own split without a second request. */
+            portfolioBreakdown: {
+                id: string;
+                name: string;
+                /** @description This portfolio's open positions only, converted into baseCurrency. */
+                instrumentsValue: number;
+                /** @description This portfolio's cash balance in baseCurrency. May be negative. */
+                cashValue: number;
+                /** @description instrumentsValue + cashValue for this portfolio. */
+                totalValue: number;
+                totalInvested: number;
                 returnPercentage?: number;
                 weight?: number;
+                /** @description Open positions with no market value */
+                unpricedPositions?: number;
+                /**
+                 * Format: date-time
+                 * @description Oldest resolved price timestamp for this portfolio's positions.
+                 */
+                priceAsOf?: string | null;
+                /** @description 'quote' or 'fallback' — whether the value is a live price or a remembered one. */
+                priceSource?: string | null;
             }[];
             externalCapitalReturnPercent?: number | null;
             externalCapitalReturnAmount?: number | null;
             externalCapitalBasis?: number | null;
+            /**
+             * @description Open positions excluded from `instrumentsValue` because no market value is known (§70).
+             *     They are NOT valued at their cost basis — a cost is not a price, and a plausible
+             *     wrong number is worse than an admitted gap. Non-zero means the pricing pipeline
+             *     has not caught up (nothing used to maintain `positions.market_value` on a schedule).
+             */
+            unpricedPositions?: number;
+            /**
+             * Format: date-time
+             * @description OLDEST resolved price timestamp across the positions included in this aggregate.
+             *     The newest quote can be minutes old while the oldest is a day old, and a total built
+             *     from mixed ages is only as fresh as its stalest input — so the headline reports the
+             *     oldest. Null when no position could be priced at all.
+             */
+            priceAsOf?: string | null;
+            /**
+             * @description Dominant price provenance — 'quote' (resolved from instruments) or 'fallback'
+             *     (a stored price reused because instruments could not be reached). 'fallback' means
+             *     the figure is a remembered price, not a current one.
+             */
+            priceSource?: string | null;
             externalCapitalBasisSource?: string | null;
             externalCapitalSuppressedReason?: string | null;
             externalCapitalReturnBasisKind?: string | null;
-            /** @description Total cash across all portfolios */
-            totalCash?: number;
             /** @description Per-currency cash summary (dashboard cash card) */
             cashBreakdown?: {
                 currency: string;
                 balance: number;
+                /**
+                 * @description Share of GROSS cash exposure in this currency, 0–100, summing to 100 (§70.5).
+                 *     Deliberately NOT `balance / net`: IBKR holds +64,898 EUR against
+                 *     −45,434 USD, so the net nearly cancels and net-based weights explode to
+                 *     +648% / −398%. The signed `balance` still reports direction — the mixed
+                 *     signs are real (currency conversions the broker performs without recording
+                 *     them) — while the weight answers "how much of this account's cash is in this
+                 *     currency", which is well defined whatever the signs do.
+                 */
                 weight?: number | null;
             }[];
         };
@@ -3121,6 +3203,8 @@ export interface components {
         };
         PortfolioSnapshot: {
             allocation?: {
+                /** @description Currency of every allocation row below except byCurrency */
+                currency?: string;
                 byAsset?: {
                     name?: string;
                     value?: number;
@@ -3145,7 +3229,9 @@ export interface components {
                     name?: string;
                     value?: number;
                 }[];
+                /** @description Each row is denominated in its OWN currency, which is its `name` as an ISO-4217 code — this is the one breakdown that is not in the allocation `currency`. */
                 byCurrency?: {
+                    /** @description ISO-4217 currency code for this row. */
                     name?: string;
                     value?: number;
                 }[];
@@ -3227,13 +3313,19 @@ export interface components {
             instrumentAvgCostBasis: number;
         };
         PortfolioSummaryMetrics: {
+            /** @description The portfolio's base currency (ISO-4217). Every amount on this object is denominated in it. */
+            currency: string;
+            /** @description positionValue + cashValue (cash included */
             totalValue: number;
+            /** @description This portfolio's cash balance in `currency`. May be negative on a margin account. */
+            cashValue: number;
             totalInvested: number;
             simpleReturnPercent: number;
             investmentReturnPercent: number;
             currencyImpactPercent: number;
             cumulativeDividends: number;
             totalDividends: number;
+            /** @description Open-position value only */
             positionValue: number;
             realizedGain: number;
             costBasis: number;
@@ -3242,6 +3334,18 @@ export interface components {
             dayChangePercent: number;
             /** Format: date-time */
             dayChangeDate: string;
+            /**
+             * @description Open positions excluded from `totalValue` because no market value is known (§70).
+             *     They are NOT valued at their cost basis — a cost is not a price.
+             */
+            unpricedPositions?: number;
+            /**
+             * Format: date-time
+             * @description Oldest resolved price timestamp across this portfolio's open positions.
+             */
+            priceAsOf?: string | null;
+            /** @description 'quote' or 'fallback' — whether the value is a live price or a remembered one. */
+            priceSource?: string | null;
             externalCapitalReturnPercent?: number | null;
             externalCapitalReturnAmount?: number | null;
             externalCapitalBasis?: number | null;
@@ -3527,7 +3631,10 @@ export interface components {
             originalQuantity?: number | null;
             /** @description Pre-restatement unit price; frozen at creation */
             originalPrice?: number | null;
+            /** @description The currency the trade was PAID or SETTLED in. This is not necessarily the instrument's listing currency — a broker will sell a GBP-listed stock priced in PLN — so it must not be used as the instrument's currency. */
             currency: string;
+            /** @description The currency the instrument TRADES in, when the importer resolved it. Takes precedence over `currency` for the stored `instrumentCurrency`; `currency` is used only as a fallback. Set it whenever the source is authoritative (a crypto quote pair, a venue-qualified listing), and leave it null when the instrument's currency is genuinely unknown — the "never guess" rule applies, and a wrong listing currency is worse than a known-missing one. */
+            listingCurrency?: string | null;
             fees?: number | null;
             /** @enum {string|null} */
             feesType?: "fixed" | "pct" | null;
