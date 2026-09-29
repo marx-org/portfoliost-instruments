@@ -52,6 +52,7 @@ import {
   toDividends,
   toProjections,
   toCompare,
+  toInstrumentType,
   toHistoricalPrice,
   toSeasonality,
   toEpsSurprises,
@@ -1411,6 +1412,28 @@ export function registerPt2Routes(instruments: Hono) {
               /* optional */
             }
             return toCompare(prof, quote, metrics)
+          }),
+        )
+        // §61.4 — the shared identity block needs a country and an asset class,
+        // and the provider's compare rows carry neither. Enrich from the local
+        // ticker reference with the same `ref.ticker === baseTicker` guard the
+        // profile route uses, so a suffix-only match cannot attribute one
+        // listing's country to another. `toCompare` stays pure — the lookup
+        // is the route's job, because the reference is a local table.
+        await Promise.all(
+          items.map(async (item) => {
+            const sym = item.symbol
+            if (!sym) return
+            try {
+              const suffix = symbolSuffix(sym)
+              const venueExchange = suffix ? await getExchangeBySuffix(getDb(), suffix) : null
+              const [ref] = await searchTickerReference(getDb(), sym, 1, venueExchange)
+              if (!ref || ref.ticker !== sym.split(".")[0]) return
+              item.countryCode = ref.countryCode ?? null
+              item.assetType = toInstrumentType(ref.assetType)
+            } catch {
+              /* reference table unavailable — the row degrades to symbol + name */
+            }
           }),
         )
         return c.json({ symbol, items })
