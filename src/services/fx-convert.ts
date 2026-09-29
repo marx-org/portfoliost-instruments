@@ -30,9 +30,26 @@ export function rateTablesByDate(rows: FxRateRowLite[]): Map<string, RateTable> 
 }
 
 /**
- * Convert a parallel price array bar-by-bar. Bars without a rate row for
- * their date are kept verbatim (base currency). `fxFrom` = first date that
- * actually converted (null when nothing converted).
+ * Convert a parallel price array bar-by-bar.
+ *
+ * §72.17 — a bar whose date has no rate row is NO LONGER kept verbatim. It used
+ * to be, and the response then declared `currency: <target>` for the whole
+ * series, so the value was a number in the BASE currency wearing the TARGET's
+ * label: BTC-USD converted to PLN over 2022-02-13..21 returned
+ * `fxFrom: 2022-02-14` and left 02-13 at a raw 42,197.5156 where its neighbours
+ * were ~170,859. Callers multiplying that into a portfolio total got Crypto's
+ * one-day +410% swings — 168.79 the day after a correct ~683 is a -75% crash
+ * and a +300% recovery, neither a market move.
+ *
+ * Worse, the gaps are not a prefix: they are scattered wherever `fx_rates` has
+ * no row, so `fxFrom` cannot tell a caller which later bars are unconverted. The
+ * mask is therefore the real output, and the route drops the masked-out bars
+ * from every price array together — so the series that leaves this function is
+ * genuinely in `targetCcy` end to end, and a missing rate becomes a gap the
+ * consumer already knows how to carry forward.
+ *
+ * `fxFrom` is kept: it is the first date that converted, and callers use it to
+ * see how much of their window was covered.
  */
 export function convertSeries(
   dates: string[],
@@ -40,18 +57,16 @@ export function convertSeries(
   baseCcy: string,
   targetCcy: string,
   tables: Map<string, RateTable>,
-): { converted: number[]; fxFrom: string | null } {
+): { converted: number[]; convertedMask: boolean[]; fxFrom: string | null } {
   const out = new Array<number>(prices.length)
+  const mask = new Array<boolean>(prices.length)
   let fxFrom: string | null = null
   for (let i = 0; i < prices.length; i++) {
     const table = tables.get(dates[i])
     const c = table ? convert(prices[i], baseCcy, targetCcy, table) : undefined
-    if (c !== undefined) {
-      out[i] = c
-      if (fxFrom === null) fxFrom = dates[i]
-    } else {
-      out[i] = prices[i]
-    }
+    out[i] = c ?? prices[i]
+    mask[i] = c !== undefined
+    if (c !== undefined && fxFrom === null) fxFrom = dates[i]
   }
-  return { converted: out, fxFrom }
+  return { converted: out, convertedMask: mask, fxFrom }
 }

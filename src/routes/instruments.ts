@@ -634,12 +634,23 @@ export function createInstrumentsRoutes() {
           const cl = convertSeries(dates, base.lowPrices, baseCcy, targetCcy, tables)
           const co = convertSeries(dates, base.openPrices, baseCcy, targetCcy, tables)
           fxFrom = cc.fxFrom
+          // §72.17 — drop the bars that could not be converted, from EVERY
+          // parallel array and the timestamps, so the series really is in
+          // `targetCcy`. Keeping them (the old floor semantics) meant a base
+          // currency number was served under the target's label; see
+          // services/fx-convert.ts for the portfolio-total arithmetic it caused.
+          const keep = cc.convertedMask
+            .map((ok, i) => (ok ? i : -1))
+            .filter((i) => i >= 0)
+          const pick = (a: readonly number[]): number[] => keep.map((i) => a[i] as number)
           history = {
             ...base,
-            closePrices: cc.converted,
-            highPrices: ch.converted,
-            lowPrices: cl.converted,
-            openPrices: co.converted,
+            timestamps: keep.map((i) => base.timestamps[i] as number),
+            closePrices: pick(cc.converted),
+            highPrices: pick(ch.converted),
+            lowPrices: pick(cl.converted),
+            openPrices: pick(co.converted),
+            volumes: keep.map((i) => base.volumes[i] as number),
             currency: targetCcy,
           }
         }
