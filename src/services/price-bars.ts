@@ -227,12 +227,61 @@ export function isTransientFailure(error: unknown): boolean {
   return true
 }
 
-/** Cooldown that applies to a recorded failure. */
-export function cooldownFor(lastError: string | null | undefined): number {
-  // A recorded 404 is the only "there is nothing to fetch" signal we persist, so
-  // it is the only one that earns the hour-long breaker. Everything else — a 503
-  // from cachest's rate limiter, a 502, a timeout, a thrown fetch — is transient.
-  return lastError?.includes("HTTP 404") ? COOLDOWN_MS : TRANSIENT_COOLDOWN_MS
+/**
+ * §72.33 — the persisted outcome of a price-bar fetch, as a **classification**
+ * rather than a string to be sniffed at read time.
+ *
+ * Before this the only persisted distinction was `lastError.includes("HTTP
+ * 404")` — a substring match against free text, re-implemented at every call
+ * site. Two consequences: a 404 whose message changed stopped being recognised
+ * as permanent, and "the symbol has no series" was indistinguishable from "the
+ * symbol does not exist", which is not the same question.
+ *
+ * The statuses, and what each one means for the breaker:
+ *  - `ok` — fetched; the symbol has bars (newly written, or already stored).
+ *  - `no_data` — the fetch SUCCEEDED and upstream returned nothing. This is the
+ *    case that used to be silently `ok`: the code reached upstream, did not
+ *    throw, and had nothing to show, which is not the same as priced.
+ *  - `failed_transient` — 429/5xx/network/DB. Retrying is cheap; parking is not.
+ *  - `failed_permanent` — 404. Upstream says there is no such series; an hour of
+ *    breaker buys nothing but does no harm.
+ *  - `sanity_failed` — fetched, but the bars were refused as impossible (§63.5).
+ */
+export type FetchStatus =
+  | "ok"
+  | "no_data"
+  | "failed_transient"
+  | "failed_permanent"
+  | "sanity_failed"
+
+/** Statuses that mean "upstream answered, and the answer was nothing". */
+const PERMANENT_STATUSES = new Set<string>(["failed_permanent", "no_data"])
+
+/**
+ * §72.33 — whether a symbol has ANY price bar, from ANY source.
+ *
+ * Deliberately not `minOverflowDate`: that reads the `price_bars` overflow table
+ * only, so a symbol served entirely from stooq reads as having nothing and would
+ * be recorded `no_data` when it is in fact priced. That is the false-alarm
+ * direction, which is the one that costs trust in the table. `price_bars_all` is
+ * the union view the read path itself uses, so asking it is asking the same
+ * question the API answers.
+ */
+export async function hasAnyBars(db: DB, symbol: string): Promise<boolean> {
+  const result = await db.execute(sql`
+    select 1 as present from instruments.price_bars_all where symbol = ${symbol} limit 1
+  `)
+  // `db.execute` returns `{ rows }` under node-postgres, not a bare array — the
+  // same shape every other read in this file normalises through `rowsOf`.
+  return rowsOf<{ present: number }>(result).length > 0
+}
+
+/** Cooldown that applies to a recorded fetch outcome. */
+export function cooldownFor(status: string | null | undefined): number {
+  // `lastError.includes("HTTP 404")` used to decide this. The classification is
+  // the same fact, decided once at write time instead of re-derived from prose —
+  // and it covers `no_data`, which the substring could never express.
+  return status != null && PERMANENT_STATUSES.has(status) ? COOLDOWN_MS : TRANSIENT_COOLDOWN_MS
 }
 
 /** A one-line, bounded description of a failure for `price_bar_metadata.last_error`. */
@@ -250,8 +299,14 @@ export function describeFailure(error: unknown): string {
  * §63.5 — this covers `sanity_failed` as well as `failed`, and the distinction
  * matters: a symbol whose bars were refused for being impossible will be refused
  * again on the very next sweep, so a cooldown is what stops one bad symbol from
- * re-fetching its whole history on every pass. `describeFailure`/`lastError` is
- * what tells the two apart afterwards.
+ * re-fetching its whole history on every pass.
+ *
+ * §72.33 — the cooldown is now derived from the persisted **classification**
+ * (`cooldownFor`), not from `lastError` prose. The only reader of
+ * `price_bar_metadata` in this repo is this function; wallets and the SPA read
+ * nothing from it. So `fetchStatus` is a circuit-breaker record, NOT a quality
+ * signal, and the earlier comments here claiming "every downstream reader takes
+ * `ok` as priced" were wrong — there are none.
  */
 export function recentlyFailed(
   meta: { lastFetchedAt: Date | null; fetchStatus: string } | undefined,
@@ -536,7 +591,7 @@ export async function getPriceBarSeries(
     stale = false
   } else if (empty || lastDate !== null) {
     const meta = await readMetadata(db, symbol)
-    if (recentlyFailed(meta, now, cooldownFor(meta?.lastError))) {
+    if (recentlyFailed(meta, now, cooldownFor(meta?.fetchStatus))) {
       stale = true
     } else {
       // D81 — route the gap fill by asset class (ticker_reference.asset_type,
@@ -564,17 +619,20 @@ export async function getPriceBarSeries(
         // caller passed in — otherwise it is untestable and, in a replayed window,
         // nonsense.
         // §63.5 — a refused extreme jump is NOT `ok`: the fetch half-succeeded
-        // (some bars may have landed) but the series is not trustworthy, and
-        // `fetchStatus: 'ok'` is what every downstream reader takes as "priced".
-        // A new `sanity_failed` status keeps "could not fetch" and "fetched
-        // something impossible" distinguishable.
+        // (some bars may have landed) but the series is not trustworthy.
         //
-        // That is a DIFFERENT axis from §72.33's, and this comment used to claim
-        // it covered it. It does not. §72.33 asks for "upstream profile 404" to
-        // be separable from "no price series", because `TOR` is recorded exactly
-        // like the 8 unpriceable bonds despite the stooq fallback serving it
-        // 3,034 bars. Every non-ok path through the shared `catch` below still
-        // writes `fetchStatus: 'failed'`, and nothing persists which kind it was.
+        // §72.33 — and `ok` is not the only thing that needed saying out loud. It
+        // used to be written whenever the fetch did not throw, so "upstream
+        // answered with nothing" was recorded as priced. `hadNewBars` was already
+        // computed (for the split-boundary check) and simply not consulted here.
+        // A symbol that has bars in `price_bars` but nothing new to add is `ok`;
+        // one with no bars at all is `no_data`, and gets the hour-long breaker
+        // rather than being re-probed every sweep.
+        //
+        // This comment used to claim `sanity_failed` covered §72.33 too. It does
+        // not — that splits fetched-but-impossible from could-not-fetch, which is
+        // a different axis. §72.33 is fetched-but-empty vs does-not-exist, and
+        // that is what `no_data` vs `failed_permanent` is.
         const sanityFailures = report.rejected.filter((r) => r.splitFactor === null)
         if (sanityFailures.length > 0) {
           const first = sanityFailures[0]
@@ -589,12 +647,21 @@ export async function getPriceBarSeries(
               set: { lastFetchedAt: now, fetchStatus: "sanity_failed", lastError },
             })
         } else {
+          // §72.33 — `no_data` when the symbol has nothing to price with at all.
+          // The condition is "has bars from ANY source", not "has overflow bars":
+          // a stooq-only symbol is priced, and recording it as `no_data` would be
+          // a false alarm on every stooq-backed symbol in the fleet.
+          const priced = hadRowsBefore || hadNewBars || (await hasAnyBars(db, symbol))
+          const status: FetchStatus = priced ? "ok" : "no_data"
+          const lastError = priced
+            ? null
+            : "upstream returned no bars and none are stored (§72.33: fetched, but nothing to price)"
           await db
             .insert(priceBarMetadata)
-            .values({ symbol, lastFetchedAt: now, fetchStatus: "ok", lastError: null })
+            .values({ symbol, lastFetchedAt: now, fetchStatus: status, lastError })
             .onConflictDoUpdate({
               target: priceBarMetadata.symbol,
-              set: { lastFetchedAt: now, fetchStatus: "ok", lastError: null },
+              set: { lastFetchedAt: now, fetchStatus: status, lastError },
             })
         }
         if (!hadRowsBefore && hadNewBars && (assetType === "stock" || assetType === "etf")) {
@@ -609,20 +676,28 @@ export async function getPriceBarSeries(
         // from it: a 404 keeps the hour-long breaker, a 503 (cachest's rate
         // limiter, which never reached the provider) only parks the symbol for
         // minutes. The bare `catch` used to make both indistinguishable.
+        //
+        // §72.33 — the permanence is decided HERE, once, and persisted as a
+        // classification. It used to be re-derived at every read from a substring
+        // of the message text, which meant a reworded 404 silently became
+        // transient and a symbol that does not exist got retried every few
+        // minutes for the rest of the day.
+        const status: FetchStatus = isTransientFailure(e) ? "failed_transient" : "failed_permanent"
+        const lastError = describeFailure(e)
         await db
           .insert(priceBarMetadata)
           .values({
             symbol,
             lastFetchedAt: now,
-            fetchStatus: "failed",
-            lastError: describeFailure(e),
+            fetchStatus: status,
+            lastError,
           })
           .onConflictDoUpdate({
             target: priceBarMetadata.symbol,
             set: {
               lastFetchedAt: now,
-              fetchStatus: "failed",
-              lastError: describeFailure(e),
+              fetchStatus: status,
+              lastError,
             },
           })
         stale = true
