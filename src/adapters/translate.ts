@@ -1052,7 +1052,22 @@ export function toNewsArticleItem(
   fallbackTicker?: string,
 ): Record<string, unknown> {
   const publishedAt = row.publishedAt.toISOString()
-  const ticker = row.symbols[0] ?? fallbackTicker
+  // The REQUESTED ticker, not `symbols[0]`. `news_articles.symbols` is a text[]
+  // because one article can cover several companies, and `getNewsForTicker`
+  // filters with `arrayContains(symbols, [ticker])` — so every row we return is
+  // guaranteed to contain the ticker that was asked for. `symbols[0]` is just
+  // whichever company happened to be listed first.
+  //
+  // This was a real PROD bug, and it was invisible from the data: the portfolio
+  // news tab asks for each held symbol in turn, gets back articles that contain
+  // it, and then labels every one of them with `symbols[0]`. For a portfolio
+  // holding NVDA that meant cards captioned MSFT / AAPL / META — names the
+  // portfolio does not own. TickerBadge then enriched from open positions, found
+  // no match, and degraded to a bare symbol: 37 of 50 cards, which read as
+  // "mostly missing data" and got blamed on the badge's enrichment source. The
+  // badge was fine. `PortfolioNewsTab.vue`'s comment that an unheld ticker is
+  // "rare" was measuring its own bug.
+  const ticker = fallbackTicker ?? row.symbols[0]
   return {
     id: row.url,
     type: "article",

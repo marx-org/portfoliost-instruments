@@ -628,6 +628,25 @@ describe("toNewsArticleItem / toNewsArticleList", () => {
     expect(item.ticker).toBe("AAPL")
   })
 
+  // §61.11 PROD finding. `getNewsForTicker` filters with
+  // `arrayContains(symbols, [ticker])`, so the requested ticker is always one of
+  // the row's symbols — and it is the one the user actually holds. `symbols[0]`
+  // is whichever company the provider listed first, which for a multi-company
+  // article is a different holding entirely. That mismatch is what made 37/50
+  // portfolio news cards render as a bare ticker.
+  it("labels a multi-symbol article with the REQUESTED ticker, not symbols[0]", () => {
+    const multi = { ...row, symbols: ["MSFT", "NVDA"] }
+    expect(toNewsArticleItem(multi, "NVDA").ticker).toBe("NVDA")
+    expect(toNewsArticleItem(multi, "MSFT").ticker).toBe("MSFT")
+    // Same row, two different requests → two different captions, both correct.
+    expect(toNewsArticleItem(multi, "NVDA").ticker).not.toBe("MSFT")
+  })
+
+  it("still uses symbols[0] when the caller asked for no ticker (recent news)", () => {
+    expect(toNewsArticleItem({ ...row, symbols: ["MSFT", "NVDA"] }).ticker).toBe("MSFT")
+    expect(toNewsArticleItem(row).ticker).toBe("AAPL")
+  })
+
   it("builds a single-page NewsArticleList with null cursors", () => {
     const out = toNewsArticleList([row, { ...row, url: "https://example.com/2" }], "AAPL")
     expect(out.data).toHaveLength(2)
