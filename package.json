@@ -17,6 +17,8 @@
     "fx:sync:dev": "tsx src/scripts/fx-sync.ts",
     "fx:backfill": "node dist/scripts/fx-backfill.js",
     "fx:backfill:dev": "tsx src/scripts/fx-backfill.ts",
+    "bars:prune": "node dist/scripts/prune-orphan-bars.js",
+    "bars:prune:dev": "tsx src/scripts/prune-orphan-bars.ts",
     "gen:openapi": "tsx src/gen-openapi.ts",
     "gen:types": "openapi-typescript node_modules/@marx2/contracts/openapi.yaml -o src/generated/api-types.d.ts"
   },
