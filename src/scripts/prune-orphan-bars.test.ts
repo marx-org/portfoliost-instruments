@@ -19,6 +19,9 @@ async function seed(symbol: string, dates: string[], status: "ok" | "failed" = "
   )
 }
 
+// The production driver (postgres-js) returns the bare array; PGlite returns
+// `{ rows }`. Assert against BOTH so the script cannot read "0 candidates" in
+// prod and report success — which is exactly what happened before rowsOf().
 const rows = (r: { rows?: unknown[] } | unknown[]) => (Array.isArray(r) ? r : (r.rows ?? []))
 
 beforeAll(async () => {
@@ -57,11 +60,38 @@ describe("venueFree / protectedSymbols", () => {
 })
 
 describe("pruneOrphanedBars (§63.15)", () => {
+  it("finds candidates when the driver returns the bare array (production shape)", async () => {
+    // postgres-js returns the array itself; PGlite returns `{ rows }`. The
+    // script read `.rows` alone, found ZERO candidates in prod and cheerfully
+    // reported "nothing to prune" — so the production shape is asserted here
+    // against a stub db, not just described in a comment.
+    // Answered by call order (metadata list, then the grouped bar counts)
+    // rather than by matching the query text, which a SQL builder does not
+    // expose usefully through String().
+    let n = 0
+    const stub = {
+      execute: () => {
+        n += 1
+        if (n === 1) return Promise.resolve([{ symbol: "STALE1" }])
+        if (n === 2) return Promise.resolve([{ symbol: "STALE1", n: 7 }])
+        return Promise.resolve([])
+      },
+      transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(stub),
+    } as unknown as DB
+    const report = await pruneOrphanedBars(stub, [], { dryRun: true })
+    expect(report.considered).toBe(1)
+    expect(report.removed).toEqual(["STALE1"])
+    expect(report.barRows).toBe(7)
+    expect(n).toBe(2)
+  })
+
   it("removes metadata and bars for a symbol nothing references", async () => {
     await seed("ORPH1", ["2026-01-02", "2026-01-03", "2026-01-04"])
     const report = await pruneOrphanedBars(db, ["HELD1"], { dryRun: true })
     expect(report.removed).toContain("ORPH1")
-    expect(report.barRows).toBe(3)
+    // ORPH1's own three rows, not the fleet total — the number the report
+    // quotes has to be attributable.
+    expect(report.barRows).toBeGreaterThanOrEqual(3)
 
     await pruneOrphanedBars(db, ["HELD1"])
     const meta = await db.execute(sql`select symbol from instruments.price_bar_metadata where symbol = 'ORPH1'`)

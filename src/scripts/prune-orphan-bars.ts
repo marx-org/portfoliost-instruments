@@ -64,6 +64,17 @@ export function venueFree(symbol: string): string {
   return symbol.trim().split(".")[0].toUpperCase()
 }
 
+/**
+ * `db.execute` returns `{ rows }` under PGlite (the test database) and the bare
+ * array under postgres-js (production). Reading `.rows` alone made the script
+ * find **zero** candidates in prod and cheerfully report "nothing to prune" —
+ * a fixture/prod divergence that the unit tests could not have caught, because
+ * they only ever saw one of the two shapes.
+ */
+function rowsOf<T>(r: { rows?: T[] } | T[]): T[] {
+  return Array.isArray(r) ? r : (r.rows ?? [])
+}
+
 export async function pruneOrphanedBars(
   db: DB,
   referenced: Iterable<string>,
@@ -73,7 +84,7 @@ export async function pruneOrphanedBars(
   const dryRun = opts.dryRun ?? false
 
   const metaRows = await db.execute(sql`select symbol from instruments.price_bar_metadata`)
-  const candidates = (metaRows.rows as Array<{ symbol: string }> | undefined) ?? []
+  const candidates = rowsOf<{ symbol: string }>(metaRows)
   const report: PruneReport = { considered: candidates.length, removed: [], barRows: 0, kept: [] }
 
   // Bars can exist for a symbol with no metadata row (metadata is upserted on
@@ -82,7 +93,7 @@ export async function pruneOrphanedBars(
     sql`select symbol, count(*)::int as n from instruments.price_bars group by symbol`,
   )
   const barCounts = new Map<string, number>()
-  for (const r of (barOnlyRows.rows as Array<{ symbol: string; n: number }> | undefined) ?? []) {
+  for (const r of rowsOf<{ symbol: string; n: number }>(barOnlyRows)) {
     barCounts.set(venueFree(r.symbol), r.n)
   }
   for (const { symbol } of candidates) {
