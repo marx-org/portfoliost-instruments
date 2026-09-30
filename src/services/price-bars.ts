@@ -567,7 +567,14 @@ export async function getPriceBarSeries(
         // (some bars may have landed) but the series is not trustworthy, and
         // `fetchStatus: 'ok'` is what every downstream reader takes as "priced".
         // A new `sanity_failed` status keeps "could not fetch" and "fetched
-        // something impossible" distinguishable, which §72.33 asks for too.
+        // something impossible" distinguishable.
+        //
+        // That is a DIFFERENT axis from §72.33's, and this comment used to claim
+        // it covered it. It does not. §72.33 asks for "upstream profile 404" to
+        // be separable from "no price series", because `TOR` is recorded exactly
+        // like the 8 unpriceable bonds despite the stooq fallback serving it
+        // 3,034 bars. Every non-ok path through the shared `catch` below still
+        // writes `fetchStatus: 'failed'`, and nothing persists which kind it was.
         const sanityFailures = report.rejected.filter((r) => r.splitFactor === null)
         if (sanityFailures.length > 0) {
           const first = sanityFailures[0]
