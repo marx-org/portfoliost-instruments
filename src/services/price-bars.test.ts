@@ -200,7 +200,9 @@ describe("price-bars (H3) service", () => {
     mockFetchOhlcv.mockRejectedValue(new UpstreamError("http://cachest/ohlcv/AMZN", 503))
     await getPriceBarSeries(db, "AMZN", "2026-06-01", "2026-07-10", new Date("2026-07-10T12:00:00Z"))
     const [meta] = await db.select().from(priceBarMetadata).where(eq(priceBarMetadata.symbol, "AMZN"))
-    expect(meta.fetchStatus).toBe("failed")
+    // §72.33 — permanence is persisted as a classification, so this no longer has
+    // to be inferred from the message text.
+    expect(meta.fetchStatus).toBe("failed_transient")
     // cachest's rate limiter answers 503 without ever calling the provider, so the
     // status is the only thing that distinguishes "we lost a race" from "no data"
     expect(meta.lastError).toContain("HTTP 503")
@@ -242,9 +244,44 @@ describe("price-bars (H3) service", () => {
     expect(isTransientFailure(new Error("fetch failed"))).toBe(true)
     expect(isTransientFailure(new SyntaxError("Unexpected token"))).toBe(true)
     expect(isTransientFailure(new UpstreamError("u", 404))).toBe(false)
-    expect(cooldownFor("HTTP 404 upstream 404 for u")).toBe(COOLDOWN_MS)
-    expect(cooldownFor("HTTP 503 upstream 503 for u")).toBe(TRANSIENT_COOLDOWN_MS)
+    // §72.33 — the cooldown is derived from the persisted CLASSIFICATION, not
+    // from the message text. These three used to be strings; passing prose here
+    // now yields the transient cooldown, which is the point: the fact is decided
+    // once at write time instead of re-parsed at every read.
+    expect(cooldownFor("failed_permanent")).toBe(COOLDOWN_MS)
+    expect(cooldownFor("no_data")).toBe(COOLDOWN_MS)
+    expect(cooldownFor("failed_transient")).toBe(TRANSIENT_COOLDOWN_MS)
+    expect(cooldownFor("sanity_failed")).toBe(TRANSIENT_COOLDOWN_MS)
+    expect(cooldownFor("HTTP 404 upstream 404 for u")).toBe(TRANSIENT_COOLDOWN_MS)
     expect(cooldownFor(null)).toBe(TRANSIENT_COOLDOWN_MS)
+  })
+
+  it("§72.33: a fetched-but-empty symbol is `no_data`, not `ok`", async () => {
+    // The bug this closes: `ok` was written whenever the fetch did not throw, so
+    // "upstream answered with nothing" was recorded as priced. `hadNewBars` was
+    // already computed for the split-boundary check and never consulted here.
+    // Nothing is seeded into stooq and upstream returns [] — the symbol has
+    // nothing to price with, which is not the same as priced.
+    mockFetchOhlcv.mockResolvedValue([])
+    await getPriceBarSeries(db, "EMPTY", "2026-06-01", "2026-07-10", new Date("2026-07-10T12:00:00Z"))
+    const [meta] = await db.select().from(priceBarMetadata).where(eq(priceBarMetadata.symbol, "EMPTY"))
+    expect(meta.fetchStatus).toBe("no_data")
+    // …and it earns the hour-long breaker, so the sweep stops re-probing it.
+    const later = await getPriceBarSeries(db, "EMPTY", "2026-06-01", "2026-07-10", new Date("2026-07-10T12:30:00Z"))
+    expect(later.stale).toBe(true)
+    expect(mockFetchOhlcv).toHaveBeenCalledTimes(1)
+  })
+
+  it("§72.33: a symbol with stored bars and nothing NEW upstream is still `ok`", async () => {
+    // The other half, and the one that would have regressed: `no_data` must mean
+    // "nothing to price with", not "nothing new to fetch". A symbol already in
+    // `price_bars` is priced, and saying otherwise would be a new false alarm.
+    await seedStooq(db, "AMZN2", [["2026-06-01", "180.00000000"]])
+    mockFetchOhlcv.mockResolvedValue([])
+    await getPriceBarSeries(db, "AMZN2", "2026-06-01", "2026-07-10", new Date("2026-07-10T12:00:00Z"))
+    const [meta] = await db.select().from(priceBarMetadata).where(eq(priceBarMetadata.symbol, "AMZN2"))
+    expect(meta.fetchStatus).toBe("ok")
+    expect(meta.lastError).toBeNull()
   })
 
   it("bounds and formats last_error", () => {
