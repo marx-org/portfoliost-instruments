@@ -82,20 +82,43 @@ export const priceBars = instrumentsSchema.table(
  * fetch failure the read endpoint serves stale data for an hour before
  * retrying upstream, instead of hammering openst on every request.
  *
- * §63.9.2 — `lastError` exists because `fetchStatus` alone cannot say *why* a
- * fetch failed, and the two reasons need opposite handling: a 404 means the
- * symbol has no upstream history and retrying is pointless for an hour, while a
- * 429/502/503/504 (notably cachest's own rate-limit 503, which is returned
+ * §63.9.2 — `lastError` exists because the failure status alone could not say
+ * *why* a fetch failed, and the two reasons need opposite handling: a 404 means
+ * the symbol has no upstream history and retrying is pointless for an hour, while
+ * a 429/502/503/504 (notably cachest's own rate-limit 503, which is returned
  * without the upstream ever being called) is transient and must be retried in
- * minutes. Without the status code both looked identical, and one lost race in a
- * 175-symbol sweep parked a symbol for the rest of the day.
+ * minutes. Without the status code both looked identical, and one lost race in
+ * a 175-symbol sweep parked a symbol for the rest of the day.
+ *
+ * §72.33 — that reasoning is now carried by `fetchStatus` itself, which is a
+ * classification rather than a flat `ok`/`failed`:
+ *   `ok`               fetched; the symbol has bars
+ *   `no_data`          fetched, upstream returned nothing, nothing is stored
+ *   `failed_transient` 429/5xx/network/DB — retry in minutes
+ *   `failed_permanent` 404 — nothing to fetch upstream
+ *   `sanity_failed`    fetched, bars refused as impossible (§63.5)
+ *
+ * `lastError` is kept for the human-readable message and is NO LONGER the thing
+ * the cooldown is derived from — it used to be, by substring match, which meant
+ * a reworded 404 became transient. Cooldown now reads `fetchStatus`.
+ *
+ * **This table has no reader outside this repo.** The only consumer is
+ * `recentlyFailed` in `services/price-bars.ts`; wallets and the SPA read nothing
+ * from it. So `fetchStatus` is a circuit-breaker record, not a quality signal,
+ * and an earlier version of this comment claiming `ok` is "what every downstream
+ * reader takes as priced" was simply wrong. A *reporting* consumer would have to
+ * be built for `no_data` vs `failed_permanent` to be worth anything to a person.
  */
 export const priceBarMetadata = instrumentsSchema.table("price_bar_metadata", {
   symbol: text("symbol").primaryKey(),
   lastFetchedAt: timestamp("last_fetched_at", { withTimezone: true }),
-  fetchStatus: text("fetch_status").notNull().default("ok"), // 'ok' | 'failed'
-  /** Upstream status + message behind a non-'ok' `fetchStatus`, truncated. NULL when
-   * the last fetch succeeded. */
+  /** §72.33 — a classification, not `ok`|`failed`. See the note above; the values
+   * are `ok` | `no_data` | `failed_transient` | `failed_permanent` |
+   * `sanity_failed`, and the cooldown is read off this column. */
+  fetchStatus: text("fetch_status").notNull().default("ok"),
+  /** Upstream status + message behind a non-`ok` `fetchStatus`, truncated. NULL when
+   * the last fetch succeeded or was legitimately empty. Human-readable only —
+   * nothing derives behaviour from its text any more. */
   lastError: text("last_error"),
 })
 
