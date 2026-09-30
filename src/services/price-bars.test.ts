@@ -7,6 +7,7 @@ import { LOCAL_PRICE_BARS_SETUP_SQL } from "../db/price-bars.js"
 import {
   backgroundUpsertBars,
   checkSplitBoundary,
+  classifyJump,
   cooldownFor,
   describeFailure,
   getPriceBarSeries,
@@ -16,6 +17,7 @@ import {
   normalizeAssetType,
   ohlcvToClose,
   lookupAssetType,
+  upsertOverflowBars,
   queryView,
   recentlyFailed,
   stooqTickerFor,
@@ -110,6 +112,9 @@ describe("price-bars (H3) service", () => {
     expect(recentlyFailed(oldFail, now)).toBe(false)
     expect(recentlyFailed(ok, now)).toBe(false)
     expect(recentlyFailed(undefined, now)).toBe(false)
+    // §63.5 — a refused-for-being-impossible fetch must also cool down, or the
+    // next sweep re-fetches the whole history and refuses it again.
+    expect(recentlyFailed({ lastFetchedAt: new Date("2026-07-10T11:30:00Z"), fetchStatus: "sanity_failed" }, now)).toBe(true)
   })
 
   it("getPriceBarSeries returns fresh series with stale=false when last date is recent", async () => {
@@ -625,5 +630,117 @@ describe("D81 — asset-class routing in price-bars", () => {
     expect(mockFetchOhlcv).toHaveBeenCalledWith("PLXQ", expect.any(String), expect.any(String))
     expect(mockFetchCryptoOhlcv).not.toHaveBeenCalled()
     expect(mockFetchBondOhlcv).not.toHaveBeenCalled()
+  })
+})
+
+describe("classifyJump — the §63.5 extreme-jump guard", () => {
+  it("passes an ordinary move through untouched", () => {
+    expect(classifyJump(100, 101.5)).toBeNull()
+    expect(classifyJump(100, 94)).toBeNull()
+    expect(classifyJump(100, 250)).toBeNull() // +150% is a real, if wild, day
+  })
+
+  it("flags the 100x pence overflow that valued a portfolio at 4.5M", () => {
+    const jump = classifyJump(8.2, 820)
+    expect(jump).not.toBeNull()
+    expect(jump!.ratio).toBeCloseTo(100, 4)
+    expect(jump!.splitFactor).toBeNull()
+  })
+
+  it("flags a 10x DROP as well as a 10x rise", () => {
+    // 100 -> 10 is exactly the boundary, so it must be flagged…
+    expect(classifyJump(100, 10)?.ratio).toBeCloseTo(0.1, 6)
+    // …and so must 100 -> 8, which is 0.08x.
+    expect(classifyJump(100, 8)?.ratio).toBeCloseTo(0.08, 6)
+  })
+
+  it("classifies a known split factor as a split, not a defect", () => {
+    // 100 -> 1000 is a 10:1 REVERSE split; 100 -> 10 is a 1:10 forward split.
+    expect(classifyJump(100, 1000)!.splitFactor).toBe(10)
+    expect(classifyJump(100, 10)!.splitFactor).toBe(0.1)
+    // A 1:4 split is a 4x move, INSIDE the guard's band — the guard never sees
+    // it, which is the point of setting the threshold at 10x rather than 2x.
+    expect(classifyJump(400, 100)).toBeNull()
+  })
+
+  it("has no opinion without a previous close to compare against", () => {
+    expect(classifyJump(null, 820)).toBeNull()
+    expect(classifyJump(undefined, 820)).toBeNull()
+    expect(classifyJump(0, 820)).toBeNull()
+    expect(classifyJump(-5, 820)).toBeNull()
+    expect(classifyJump(NaN, 820)).toBeNull()
+  })
+
+  it("has no opinion about a non-positive incoming close", () => {
+    expect(classifyJump(100, 0)).toBeNull()
+    expect(classifyJump(100, -1)).toBeNull()
+  })
+})
+
+describe("upsertOverflowBars — refuses an impossible bar instead of writing it (§63.5)", () => {
+  let db: DB
+  let client: Awaited<ReturnType<typeof createTestDb>>["client"]
+
+  beforeAll(async () => {
+    const t = await createTestDb()
+    db = t.db
+    client = t.client
+    for (const stmt of LOCAL_PRICE_BARS_SETUP_SQL) {
+      await db.execute(sql.raw(stmt))
+    }
+  })
+
+  afterAll(async () => {
+    await client.close()
+  })
+
+  const rowsOf = <T>(r: { rows?: T[] } | T[]): T[] => (Array.isArray(r) ? r : (r.rows ?? []))
+
+  it("writes a plausible series and reports the count", async () => {
+    const report = await upsertOverflowBars(db, "GUARD1", [
+      { date: "2026-01-02", close: "100.00000000" },
+      { date: "2026-01-03", close: "101.50000000" },
+    ])
+    expect(report).toEqual({ written: 2, rejected: [] })
+    const rows = await db.execute(sql`select close from instruments.price_bars where symbol = 'GUARD1' order by date`)
+    expect(rowsOf<{ close: string }>(rows).map((r) => r.close)).toEqual(["100.00000000", "101.50000000"])
+  })
+
+  it("refuses the 100x bar, keeps the good ones, and says so", async () => {
+    await upsertOverflowBars(db, "GUARD2", [{ date: "2026-01-02", close: "8.20000000" }])
+    const report = await upsertOverflowBars(db, "GUARD2", [
+      { date: "2026-01-03", close: "820.00000000" }, // the §63.5 defect
+      { date: "2026-01-04", close: "8.40000000" },
+    ])
+    expect(report.written).toBe(1)
+    expect(report.rejected).toHaveLength(1)
+    expect(report.rejected[0]).toMatchObject({ date: "2026-01-03", prevClose: 8.2, splitFactor: null })
+    expect(report.rejected[0].ratio).toBeCloseTo(100, 4)
+
+    // The bad bar is NOT in the table. A refused bar is a gap, which the
+    // existing gap detection reports; a written one is a 100x valuation.
+    const rows = rowsOf<{ date: string; close: string }>(
+      await db.execute(sql`select date, close from instruments.price_bars where symbol = 'GUARD2' order by date`),
+    )
+    expect(rows.map((r) => r.close)).toEqual(["8.20000000", "8.40000000"])
+  })
+
+  it("lets a real split through — the guard must not eat corporate actions", async () => {
+    await upsertOverflowBars(db, "GUARD3", [{ date: "2026-01-02", close: "100.00000000" }])
+    // 1:10 forward split. Written, and NOT reported as a defect — refusing it
+    // would delete real history, which is a worse failure than the one the
+    // guard exists to prevent.
+    const report = await upsertOverflowBars(db, "GUARD3", [{ date: "2026-01-05", close: "10.00000000" }])
+    expect(report.written).toBe(1)
+    expect(report.rejected).toEqual([])
+    const rows = rowsOf<{ close: string }>(
+      await db.execute(sql`select close from instruments.price_bars where symbol = 'GUARD3' order by date`),
+    )
+    expect(rows.map((r) => r.close)).toEqual(["100.00000000", "10.00000000"])
+  })
+
+  it("has no opinion on the first write for a symbol", async () => {
+    const report = await upsertOverflowBars(db, "GUARD4", [{ date: "2026-01-02", close: "820.00000000" }])
+    expect(report).toEqual({ written: 1, rejected: [] })
   })
 })

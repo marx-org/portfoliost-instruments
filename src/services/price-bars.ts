@@ -244,26 +244,105 @@ export function describeFailure(error: unknown): string {
   return raw.length > MAX_ERROR_CHARS ? `${raw.slice(0, MAX_ERROR_CHARS - 1)}…` : raw
 }
 
-/** Whether an earlier failed fetch should keep us from hitting upstream again. */
+/**
+ * Whether an earlier non-`ok` fetch should keep us from hitting upstream again.
+ *
+ * §63.5 — this covers `sanity_failed` as well as `failed`, and the distinction
+ * matters: a symbol whose bars were refused for being impossible will be refused
+ * again on the very next sweep, so a cooldown is what stops one bad symbol from
+ * re-fetching its whole history on every pass. `describeFailure`/`lastError` is
+ * what tells the two apart afterwards.
+ */
 export function recentlyFailed(
   meta: { lastFetchedAt: Date | null; fetchStatus: string } | undefined,
   now = new Date(),
   cooldownMs = COOLDOWN_MS,
 ): boolean {
-  if (!meta || meta.fetchStatus !== "failed" || !meta.lastFetchedAt) return false
+  if (!meta || meta.fetchStatus === "ok" || !meta.fetchStatus || !meta.lastFetchedAt) return false
   return now.getTime() - meta.lastFetchedAt.getTime() < cooldownMs
+}
+
+/**
+ * §63.5 — a bar whose close is this far from the last stored close is not a
+ * market move. The 100x LSE-pence overflow (§63.5's RCA) was written through
+ * this very function and valued a portfolio at 4.5M; 10x is already +900% in a
+ * single day, which no listed instrument does.
+ */
+export const EXTREME_JUMP_RATIO = 10
+
+export interface ExtremeJump {
+  date: string
+  prevClose: number
+  close: number
+  ratio: number
+  /** A known split factor (2, 10, …) — a real corporate action, not a defect. */
+  splitFactor: number | null
+}
+
+/**
+ * Classify one incoming bar against the last stored close. `null` means the bar
+ * is plausible and should be written.
+ */
+export function classifyJump(
+  prevClose: number | null | undefined,
+  close: number,
+): ExtremeJump | null {
+  const prev = Number(prevClose)
+  if (!Number.isFinite(prev) || prev <= 0) return null
+  if (!Number.isFinite(close) || close <= 0) return null
+  const ratio = close / prev
+  if (ratio > 1 / EXTREME_JUMP_RATIO && ratio < EXTREME_JUMP_RATIO) return null
+  // Only the 1:10 / 1:20 forwards and 10:1 / 20:1 reverses can land inside
+  // this band — every other factor is under 10x, which is exactly why the
+  // threshold is 10x and not 2x. Those four are real corporate actions, so they
+  // are reported as splits and written; `checkSplitBoundary` records them.
+  return { date: "", prevClose: prev, close, ratio, splitFactor: matchSplitFactor(ratio) }
+}
+
+export interface OverflowWriteReport {
+  written: number
+  /** Bars refused because they jump from the last stored close (§63.5). */
+  rejected: ExtremeJump[]
 }
 
 /**
  * Upsert fetched daily bars into `price_bars` (overflow). `close` is stored as
  * a scaled string (numeric(28,8)).
+ *
+ * §63.5 — an extreme jump against the last stored close is **refused and
+ * reported**, not written. A refused bar becomes a gap, which the existing
+ * gap-detection already surfaces as a partial sum; a written one silently
+ * becomes a 100x valuation. Splits are passed through and recorded separately
+ * by `checkSplitBoundary`, so a real 10:1 reverse split is not mistaken for
+ * the defect this guards against.
  */
 export async function upsertOverflowBars(
   db: DB,
   symbol: string,
   bars: Array<{ date: string; close: string }>,
-): Promise<void> {
+): Promise<OverflowWriteReport> {
+  const lastRows = rowsOf<{ close: string }>(
+    await db.execute(sql`
+      select close from instruments.price_bars
+      where symbol = ${symbol}
+      order by date desc limit 1
+    `),
+  )
+  let prevClose = lastRows[0]?.close != null ? Number(lastRows[0].close) : null
+  const rejected: ExtremeJump[] = []
+  let written = 0
   for (const b of bars) {
+    const close = Number(b.close)
+    const jump = classifyJump(prevClose, close)
+    if (jump) {
+      // A known split factor is a corporate action, not a defect: write it and
+      // let `checkSplitBoundary` record the discontinuity. Only a jump with no
+      // split explanation is refused.
+      if (jump.splitFactor === null) {
+        rejected.push({ ...jump, date: b.date })
+        continue
+      }
+    }
     await db
       .insert(priceBars)
       .values({ symbol, date: b.date, close: b.close, source: "openst" })
@@ -271,7 +350,10 @@ export async function upsertOverflowBars(
         target: [priceBars.symbol, priceBars.date],
         set: { close: sql`excluded.close`, source: sql`excluded.source` },
       })
+    prevClose = close
+    written++
   }
+  return { written, rejected }
 }
 
 /** Earliest overflow write date for a symbol (NULL if none yet). */
@@ -471,17 +553,43 @@ export async function getPriceBarSeries(
           .map(ohlcvToClose)
           .filter((b): b is { date: string; close: string } => b !== null && !have.has(b.date))
         const hadNewBars = bars.length > 0
-        await upsertOverflowBars(db, symbol, bars)
+        const report = await upsertOverflowBars(db, symbol, bars)
+        for (const r of report.rejected) {
+          console.warn(
+            `[price-bars] ${symbol} ${r.date}: close ${r.close} is ${r.ratio.toFixed(2)}x the last stored close ${r.prevClose}` +
+              `${r.splitFactor ? ` (looks like a ${r.splitFactor}x split — not written)` : " — refused, §63.5"}`,
+          )
+        }
         // `now` (not now()) so the breaker is measured against the same clock the
         // caller passed in — otherwise it is untestable and, in a replayed window,
         // nonsense.
-        await db
-          .insert(priceBarMetadata)
-          .values({ symbol, lastFetchedAt: now, fetchStatus: "ok", lastError: null })
-          .onConflictDoUpdate({
-            target: priceBarMetadata.symbol,
-            set: { lastFetchedAt: now, fetchStatus: "ok", lastError: null },
-          })
+        // §63.5 — a refused extreme jump is NOT `ok`: the fetch half-succeeded
+        // (some bars may have landed) but the series is not trustworthy, and
+        // `fetchStatus: 'ok'` is what every downstream reader takes as "priced".
+        // A new `sanity_failed` status keeps "could not fetch" and "fetched
+        // something impossible" distinguishable, which §72.33 asks for too.
+        const sanityFailures = report.rejected.filter((r) => r.splitFactor === null)
+        if (sanityFailures.length > 0) {
+          const first = sanityFailures[0]
+          const lastError =
+            `sanity: close ${first.close} is ${first.ratio.toFixed(2)}x the last stored close ${first.prevClose} ` +
+            `on ${first.date} (${sanityFailures.length} bar(s) refused, §63.5)`
+          await db
+            .insert(priceBarMetadata)
+            .values({ symbol, lastFetchedAt: now, fetchStatus: "sanity_failed", lastError })
+            .onConflictDoUpdate({
+              target: priceBarMetadata.symbol,
+              set: { lastFetchedAt: now, fetchStatus: "sanity_failed", lastError },
+            })
+        } else {
+          await db
+            .insert(priceBarMetadata)
+            .values({ symbol, lastFetchedAt: now, fetchStatus: "ok", lastError: null })
+            .onConflictDoUpdate({
+              target: priceBarMetadata.symbol,
+              set: { lastFetchedAt: now, fetchStatus: "ok", lastError: null },
+            })
+        }
         if (!hadRowsBefore && hadNewBars && (assetType === "stock" || assetType === "etf")) {
           await checkSplitBoundary(db, symbol, stooqTicker).catch(() => undefined)
         }
@@ -562,5 +670,14 @@ export function backgroundUpsertBars(
     }))
     .filter((b) => /^\d{4}-\d{2}-\d{2}$/.test(b.date) && Number.isFinite(Number(b.close)))
   if (bars.length === 0) return
-  void upsertOverflowBars(db, symbol, bars).catch(() => undefined)
+  void upsertOverflowBars(db, symbol, bars)
+    .then((report) => {
+      for (const r of report.rejected) {
+        console.warn(
+          `[price-bars] ${symbol} ${r.date}: close ${r.close} is ${r.ratio.toFixed(2)}x the last stored close ${r.prevClose}` +
+            `${r.splitFactor ? ` (looks like a ${r.splitFactor}x split — not written; checkSplitBoundary records it)` : " — refused, §63.5"}`,
+        )
+      }
+    })
+    .catch(() => undefined)
 }
