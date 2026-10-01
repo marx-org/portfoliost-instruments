@@ -488,6 +488,28 @@ export function toBondSearchResponse(rows: Array<Record<string, unknown>>): S["I
   return { count: Math.min(results.length, SEARCH_RESULT_LIMIT), results: results.slice(0, SEARCH_RESULT_LIMIT) }
 }
 
+/** Fund-category search leg (§78): analizy.pl categories typed "FUND".
+ *
+ * Structurally identical to the bond leg, and for the same reason it exists:
+ * savings bonds are absent from `ticker_reference` and are searchable only via
+ * this kind of provider call. Fund categories are the mirror case — they *are*
+ * synced into the table, but a category whose row the refresh has not caught up
+ * with yet would otherwise be unfindable, so the leg is additive rather than
+ * authoritative. `source` distinguishes the origin for the UI. */
+export function toFundSearchResponse(rows: Array<Record<string, unknown>>): S["InstrumentSearchResponse"] {
+  const results = rows.map(
+    (r): S["SearchResult"] => ({
+      symbol: str(r.symbol),
+      name: str(r.name),
+      type: "FUND",
+      exchange: "PL",
+      countryCode: "PL",
+      source: "ANALIZY",
+    }),
+  )
+  return { count: Math.min(results.length, SEARCH_RESULT_LIMIT), results: results.slice(0, SEARCH_RESULT_LIMIT) }
+}
+
 /** Merge per-tier search legs into one response, de-duplicating by symbol.
  * Equity/listed instruments win over crypto rows when a symbol collides. */
 export function mergeSearchResults(

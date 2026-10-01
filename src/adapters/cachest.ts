@@ -49,6 +49,18 @@ export function fetchOhlcv(
   return fetchJson(`${BASE_URL}/ohlcv/${encodeURIComponent(symbol)}?${q}`)
 }
 
+/** Search fund categories by code or name (§78). Returns [] rather than throwing
+ * on 404 — a miss is an answer, and the caller merges this leg additively. */
+export function fetchFundSearch(query: string): Promise<Array<Record<string, unknown>>> {
+  const rows: Array<Record<string, unknown>> = []
+  return fetchJson<Array<Record<string, unknown>>>(
+    `${BASE_URL}/fund/search/${encodeURIComponent(query)}`,
+  ).catch((e) => {
+    if (e instanceof UpstreamError && e.status === 404) return rows
+    throw e
+  })
+}
+
 export function fetchFundCategoryHistory(
   code: string,
   start: string,
