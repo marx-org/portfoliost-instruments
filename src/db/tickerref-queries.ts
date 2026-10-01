@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm"
 import type { DB } from "./index.js"
 import { exchangeReference, tickerReference } from "./schema.js"
-import { isFundCategory, isSavingsBond, venueFreeSymbol } from "../adapters/symbol.js"
+import { isSavingsBond, venueFreeSymbol } from "../adapters/symbol.js"
 
 /** Canonical asset-class set for price-bars (D81) and quote (34) dispatch. */
 export type AssetType = "stock" | "etf" | "fund" | "crypto" | "bond" | "corp_bond"
@@ -53,14 +53,9 @@ export function referenceTickerKeys(symbol: string): string[] {
  */
 export async function assetTypeForSymbol(db: DB, symbol: string): Promise<string | null> {
   // Savings bonds are never in ticker_reference (imported separately by the
-  // openst bond job) but must route to the obligacje bond tier, not degrade to
+  // openst bond job) but must route to the obligajes bond tier, not degrade to
   // stock and pay the equity provider walk (plan §37.1, OOM storm 2026-09-20).
   if (isSavingsBond(symbol)) return "bond"
-  // Fund-category codes (ING01W) are in no reference table either — they are the
-  // provider's own keys — but unlike a savings bond they must route to the fund
-  // tier, not degrade to stock and pay the equity provider walk (plan §72.39).
-  // Membership-gated; see isFundCategory for why no shape test is safe.
-  if (isFundCategory(symbol)) return "fund"
   const keys = referenceTickerKeys(symbol)
   if (keys.length === 0) return null
   // Cross-exchange tickers collide (BTC is an ASX stock AND a crypto pair):
@@ -114,6 +109,36 @@ export async function getExchangeCountry(db: DB, exchangeCode: string): Promise<
     .where(sql`UPPER(${exchangeReference.exchangeCode}) = ${exchangeCode.toUpperCase()}`)
     .limit(1)
   return rows[0]?.countryCode ?? null
+}
+
+/**
+ * Venue code that marks a `ticker_reference` row as an analizy.pl fund category
+ * (plan §78). The catalogue sync writes `ANALIZY::{CODE}` rows; this constant is
+ * what the price tier reads, so the venue column carries routing meaning rather
+ * than being decorative.
+ */
+export const FUND_CATEGORY_VENUE = "ANALIZY"
+
+/**
+ * Resolve a symbol's price tier from `ticker_reference.exchange` (plan §78).
+ *
+ * Replaces the hardcoded code list §72.39 step 5 shipped: the reference table
+ * already answers "is this a provider category key?", and duplicating that answer
+ * in routing code was a second source of truth free to drift from the catalogue.
+ * An unknown symbol is `standard` — the pre-existing behaviour.
+ */
+export async function priceTierForSymbol(
+  db: DB,
+  symbol: string,
+): Promise<"standard" | "fund_category"> {
+  const keys = referenceTickerKeys(symbol)
+  if (keys.length === 0) return "standard"
+  const rows = await db
+    .select({ exchange: tickerReference.exchange })
+    .from(tickerReference)
+    .where(sql`${tickerReference.ticker} in (${sql.join(keys.map((k) => sql`${k}`), sql`, `)})`)
+    .limit(1)
+  return rows[0]?.exchange === FUND_CATEGORY_VENUE ? "fund_category" : "standard"
 }
 
 /** Symbol/name/alias search over the reference table. Exact ticker matches

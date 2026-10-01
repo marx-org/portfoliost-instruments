@@ -13,6 +13,7 @@ import { priceBarMetadata, priceBars, splitCandidates } from "../db/schema.js"
 import {
   assetTypeForSymbol,
   normalizeAssetType,
+  priceTierForSymbol,
   type AssetType,
 } from "../db/tickerref-queries.js"
 import {
@@ -22,7 +23,7 @@ import {
   fetchFundCategoryHistory,
   UpstreamError,
 } from "../adapters/cachest.js"
-import { isFundCategory, providerSymbol, venueFreeSymbol } from "../adapters/symbol.js"
+import { providerSymbol, venueFreeSymbol } from "../adapters/symbol.js"
 import { resolveInstrumentCurrency } from "./instrument-currency.js"
 
 // D81/34 — the asset-class helpers live in db/tickerref-queries.ts (shared
@@ -502,6 +503,21 @@ export function stooqTickerFor(symbol: string): string {
 }
 
 /**
+ * Which upstream serves a symbol's prices.
+ *
+ *   `fund_category` → /fund/history/{code}      (analizy.pl, e.g. ING01W)
+ *   `standard`     → everything else
+ *
+ * Read from `ticker_reference.exchange` rather than from a list of known codes.
+ * §72.39 step 5 shipped a hardcoded `FUND_CATEGORY_CODES` set here and §78
+ * removed it: the decision belongs to the reference table, so the routing code
+ * carries no provider knowledge at all. That matters because `upstreamFor` is
+ * pure and cannot query the database itself — the caller resolves the tier (see
+ * `priceTierForSymbol`) and passes it down.
+ */
+export type PriceBarTier = "standard" | "fund_category"
+
+/**
  * D81 — resolve the cachest OHLCV upstream for an asset class.
  *
  *   crypto    → /crypto/ohlcv/{pair}        (pair kept as-is, e.g. BTC-USD)
@@ -509,6 +525,12 @@ export function stooqTickerFor(symbol: string): string {
  *   corp_bond → /ohlcv/{symbol}             (biznesradar Catalyst, e.g. BST0327.WA)
  *   fund      → /ohlcv/{symbol}             (biznesradar TFI, e.g. NNEP25.TFI)
  *   stock/etf → /ohlcv/{symbol}             (equity tier, .US stripped for OpenBB)
+ *
+ * `tier = "fund_category"` overrides the fund row: the symbol is the provider's
+ * own `(fund, category)` key, which biznesradar does not serve. `.TFI` symbols
+ * keep the biznesradar route unchanged — NNEP65 reproduces 34 of 66 trades to the
+ * cent there, and NNEP30's first trade sits 17 days inside ING82's window, so
+ * diverting it could silently lose a bar.
  *
  * Only `stock`/`etf` ride the stooq-overflow split path (see getPriceBarSeries);
  * the other classes never touch stooq and write their series straight to overflow.
@@ -518,6 +540,7 @@ export function upstreamFor(
   symbol: string,
   start: string,
   end: string,
+  tier: PriceBarTier = "standard",
 ): Promise<Array<Record<string, unknown>>> {
   switch (assetType) {
     case "crypto":
@@ -527,14 +550,7 @@ export function upstreamFor(
     case "corp_bond":
       return fetchOhlcv(symbol, start, end)
     case "fund":
-      // Two different sources behind one asset class (plan §72.39 step 2).
-      //
-      // A `.TFI` symbol is the fund's *default* category and biznesradar serves
-      // it correctly — NNEP65 reproduces 34 of 66 trades to the cent — so it
-      // keeps the existing route untouched. Only the provider's own category
-      // codes (ING01W) go to analizy.pl, which is the only feed that carries the
-      // category the broker actually executes against.
-      return isFundCategory(symbol)
+      return tier === "fund_category"
         ? fetchFundCategoryHistory(symbol, start, end)
         : fetchOhlcv(symbol, start, end)
     case "stock":
@@ -615,10 +631,15 @@ export async function getPriceBarSeries(
       // is unchanged). stooqTicker is only meaningful for the stock/etf
       // split-boundary check; the other classes write straight to overflow.
       const assetType = normalizeAssetType(await lookupAssetType(db, symbol))
+      // The tier comes from the reference table's venue column (plan §78), so
+      // `upstreamFor` stays pure and carries no provider knowledge. A category
+      // code is the provider's own (fund, category) key — biznesradar does not
+      // serve it, and the equity walk would return 200 with zero bars.
+      const tier = await priceTierForSymbol(db, symbol)
       const stooqTicker = stooqTickerFor(symbol) // keep .US for stooq boundary check
       const hadRowsBefore = (await minOverflowDate(db, symbol)) !== null
       try {
-        const raw = (await upstreamFor(assetType, symbol, lastDate ?? "1900-01-01", to)) ?? []
+        const raw = (await upstreamFor(assetType, symbol, lastDate ?? "1900-01-01", to, tier)) ?? []
         const have = new Set(rows.map((r) => r.date))
         const bars = raw
           .map(ohlcvToClose)

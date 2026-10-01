@@ -27,6 +27,7 @@ import {
   fetchSearch,
   fetchCryptoSearch,
   fetchBondSearch,
+  fetchFundSearch,
   fetchBondProfile,
   fetchBondOhlcv,
   fetchDividendHistory,
@@ -47,6 +48,7 @@ import {
   toBondSearchResponse,
   toReferenceSearchResponse,
   mergeSearchResults,
+  toFundSearchResponse,
   toFundamentals,
   toCalendar,
   toDividends,
@@ -112,6 +114,19 @@ async function cryptoSearchLeg(q: string): Promise<components["schemas"]["Search
     ]
   }
   return results
+}
+
+/** Fund-category search leg (§78): analytic categories from the catalogue
+ * snapshot openst serves. A 404 means "no category matches" — never a 502 — and
+ * an upstream failure degrades to empty so the reference-table results, which
+ * already carry the same rows once the catalogue has synced, still render. */
+async function fundSearchLeg(q: string): Promise<components["schemas"]["SearchResult"][]> {
+  try {
+    const rows = (await fetchFundSearch(venueFreeSymbol(q))) ?? []
+    return toFundSearchResponse(rows).results ?? []
+  } catch {
+    return []
+  }
 }
 
 /** Bond search leg (D79): savings-bond emissions from the openbb_obligacje
@@ -291,7 +306,12 @@ export function createInstrumentsRoutes() {
             // tier's name-match flood under the 50-result cap. Bonds are
             // additive too (D79) — ROD/EDO emissions from the obligacje
             // catalogue always surface alongside the reference rows.
-            mergeSearchResults(await cryptoSearchLeg(q), await bondSearchLeg(q), toReferenceSearchResponse(rows).results ?? []),
+            mergeSearchResults(
+              await cryptoSearchLeg(q),
+              await bondSearchLeg(q),
+              await fundSearchLeg(q),
+              toReferenceSearchResponse(rows).results ?? [],
+            ),
           )
         }
       } catch {
@@ -299,8 +319,13 @@ export function createInstrumentsRoutes() {
       }
 
       try {
-        const [eqRows, cryptoRows, bondRows] = await Promise.all([equitySearchLeg(q), cryptoSearchLeg(q), bondSearchLeg(q)])
-        return c.json(mergeSearchResults(cryptoRows, bondRows, eqRows))
+        const [eqRows, cryptoRows, bondRows, fundRows] = await Promise.all([
+          equitySearchLeg(q),
+          cryptoSearchLeg(q),
+          bondSearchLeg(q),
+          fundSearchLeg(q),
+        ])
+        return c.json(mergeSearchResults(cryptoRows, fundRows, bondRows, eqRows))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }

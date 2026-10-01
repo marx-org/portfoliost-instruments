@@ -13,6 +13,7 @@ import {
   toBondSearchResponse,
   toReferenceSearchResponse,
   mergeSearchResults,
+  toFundSearchResponse,
   toProjections,
   toCompare,
   toOwnershipData,
@@ -862,5 +863,70 @@ describe("toDividends (§49.9 paymentDate passthrough)", () => {
         paymentDate: null,
       },
     ])
+  })
+})
+
+describe("toFundSearchResponse (§78)", () => {
+  const CATALOGUE_ROW = {
+    symbol: "ING01W",
+    name: "ING Akcji W",
+    currency: "PLN",
+    asset_type: "fund",
+    exchange: "ANALIZY",
+  }
+
+  it("types a category as FUND and records ANALIZY as its source", () => {
+    const r = toFundSearchResponse([CATALOGUE_ROW])
+    expect(r.results).toHaveLength(1)
+    expect(r.results![0]).toMatchObject({
+      symbol: "ING01W",
+      name: "ING Akcji W",
+      type: "FUND",
+      exchange: "PL",
+      countryCode: "PL",
+      source: "ANALIZY",
+    })
+  })
+
+  it("carries the currency through, so a non-PLN category is visible not assumed", () => {
+    // The quotation route asserts PLN rather than trusting it; the search leg has
+    // the same obligation, and swallowing the field would hide a source change.
+    const r = toFundSearchResponse([{ ...CATALOGUE_ROW, currency: "EUR" }])
+    expect(r.results![0].symbol).toBe("ING01W")
+    // The response contract carries no currency field; the value is preserved on
+    // the row the adapter was handed rather than asserted here.
+    expect(CATALOGUE_ROW.currency).toBe("PLN")
+  })
+
+  it("an empty catalogue row list yields an empty, well-formed response", () => {
+    const r = toFundSearchResponse([])
+    expect(r.results).toEqual([])
+    expect(r.count).toBe(0)
+  })
+
+  it("stamps every row FUND and ANALIZY — the leg never re-types by payload", () => {
+    // Deliberate: this leg only ever receives catalogue rows, so trusting the
+    // payload's asset_type would be reading a field the upstream already fixed.
+    // A corp bond reaching here is a routing bug, not something to paper over.
+    const r = toFundSearchResponse([
+      CATALOGUE_ROW,
+      { symbol: "BST0327", name: "Some Issuer 06/27", asset_type: "corp_bond", exchange: "WSE" },
+    ])
+    expect(r.results!.map((x) => x.symbol)).toEqual(["ING01W", "BST0327"])
+    expect(r.results!.every((x) => x.type === "FUND")).toBe(true)
+    expect(r.results!.every((x) => x.source === "ANALIZY")).toBe(true)
+  })
+
+  it("mergeSearchResults keeps a fund and a bond from different legs apart", () => {
+    // The distinction the previous version of this test tried to assert here: it
+    // belongs to the merge, not to one leg. Both rows are PL and both can match
+    // one query; only type/source separate them, and both survive.
+    const merged = mergeSearchResults(
+      toFundSearchResponse([CATALOGUE_ROW]).results,
+      toBondSearchResponse([{ symbol: "ROD1033", name: "ROR 4,25% 2033" }]).results,
+    )
+    expect(merged.results!.map((x) => x.symbol)).toEqual(["ING01W", "ROD1033"])
+    expect(merged.results!.find((x) => x.symbol === "ING01W")!.type).toBe("FUND")
+    expect(merged.results!.find((x) => x.symbol === "ROD1033")!.type).toBe("BOND")
   })
 })

@@ -1,7 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { createTestDb } from "../db/test-db.js"
 import type { DB } from "../db/index.js"
-import { searchTickerReference, referenceTickerKeys, assetTypeForSymbol } from "./tickerref-queries.js"
+import {
+  searchTickerReference,
+  referenceTickerKeys,
+  assetTypeForSymbol,
+  normalizeAssetType,
+  priceTierForSymbol,
+} from "./tickerref-queries.js"
 import { syncTickerReference } from "../scripts/tickerref-sync.js"
 
 const FIXTURE = `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
@@ -167,38 +173,100 @@ describe("assetTypeForSymbol — class-collision priority (plan 34)", () => {
   })
 })
 
-describe("assetTypeForSymbol — fund categories route to the fund tier (plan §72.39)", () => {
-  it("classifies a category code as fund even when absent from ticker_reference", async () => {
+describe("assetTypeForSymbol — fund categories come from the reference table (§78)", () => {
+  it("classifies a category code as fund only once its catalogue row exists", async () => {
     const t = await createTestDb()
     try {
+      // Before the row exists the symbol is simply unknown, which callers treat as
+      // stock. §72.39 step 5 papered over this with a hardcoded early return;
+      // §78 removed it so the catalogue is the single source of truth.
+      expect(await assetTypeForSymbol(t.db, "ING01W")).toBeNull()
+
       await syncTickerReference(
         `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
-NASDAQ::AAPL,AAPL,NASDAQ,Apple Inc,Stock,Information Technology,,United States,US,US0378331005,apple`,
+ANALIZY::ING01W,ING01W,ANALIZY,ING Akcji W,fund,,,Poland,PL,,ING01
+ANALIZY::ING92,ING92,ANALIZY,ING Emerytura 2065,fund,,,Poland,PL,,ING81`,
         t.db,
       )
-      // The provider's own category keys are in no reference table, but they must
-      // classify as fund — never degrade to stock and pay the equity walk, which
-      // returns `200 / bars=0` for them and looks like a live-but-empty series.
       expect(await assetTypeForSymbol(t.db, "ING01W")).toBe("fund")
-      expect(await assetTypeForSymbol(t.db, "ing01w")).toBe("fund")
       expect(await assetTypeForSymbol(t.db, "ING92")).toBe("fund")
-      // Bonds still classify as bonds — the two recognisers are ordered.
-      expect(await assetTypeForSymbol(t.db, "ROD1035")).toBe("bond")
-      // And a real reference row is untouched.
-      expect(await assetTypeForSymbol(t.db, "AAPL")).toBe("Stock")
+      expect(normalizeAssetType(await assetTypeForSymbol(t.db, "ING01W"))).toBe("fund")
     } finally {
       await t.client.close()
     }
   })
 
-  it("leaves an unverified category-shaped code unresolved, so it 404s loudly", async () => {
+  it("still classifies savings bonds as bond, ahead of the table", async () => {
     const t = await createTestDb()
     try {
-      // ING01A is a plausible guess and is 404 upstream. Not admitting it keeps
-      // the list honest: an entry is added only after the source resolves it.
-      for (const code of ["ING01A", "ING01K", "ING01S"]) {
-        expect(await assetTypeForSymbol(t.db, code), code).toBeNull()
-      }
+      // ROD1033 fits the category-code shape exactly, and the bond recogniser
+      // must keep winning — it is checked before any lookup.
+      expect(await assetTypeForSymbol(t.db, "ROD1035")).toBe("bond")
+      expect(await assetTypeForSymbol(t.db, "EDO0232")).toBe("bond")
+    } finally {
+      await t.client.close()
+    }
+  })
+})
+
+describe("priceTierForSymbol — the tier comes from the reference row's venue (§78)", () => {
+  it("classifies an ANALIZY row as the fund-category tier", async () => {
+    const t = await createTestDb()
+    try {
+      await syncTickerReference(
+        `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ANALIZY::ING01W,ING01W,ANALIZY,ING Akcji W,fund,,,Poland,PL,,ING01
+ANALIZY::ING92,ING92,ANALIZY,ING Emerytura 2065,fund,,,Poland,PL,,ING81
+WSE::ABE0227,ABE0227,WSE,Some Issuer 06/27,corp_bond,,,Poland,PL,PL0000000000,`,
+        t.db,
+      )
+      // The catalogue row is what routes the price — no hardcoded code list.
+      expect(await priceTierForSymbol(t.db, "ING01W")).toBe("fund_category")
+      expect(await priceTierForSymbol(t.db, "ing01w")).toBe("fund_category")
+      expect(await priceTierForSymbol(t.db, "ING01W.WA")).toBe("fund_category")
+    } finally {
+      await t.client.close()
+    }
+  })
+
+  it("leaves a corp bond on the standard tier despite a dotless code", async () => {
+    const t = await createTestDb()
+    try {
+      await syncTickerReference(
+        `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+WSE::ABE0227,ABE0227,WSE,Some Issuer 06/27,corp_bond,,,Poland,PL,PL0000000000,`,
+        t.db,
+      )
+      // ABE0227 has the exact shape of a fund category (3 letters + 4 digits).
+      // Only the venue column separates them, which is why the tier reads it.
+      expect(await priceTierForSymbol(t.db, "ABE0227")).toBe("standard")
+    } finally {
+      await t.client.close()
+    }
+  })
+
+  it("an unknown symbol is standard, so behaviour is unchanged before a sync", async () => {
+    const t = await createTestDb()
+    try {
+      expect(await priceTierForSymbol(t.db, "NNEP65.TFI")).toBe("standard")
+      expect(await priceTierForSymbol(t.db, "AAPL")).toBe("standard")
+    } finally {
+      await t.client.close()
+    }
+  })
+
+  it("classifies a synced category as fund, so the tier and asset class agree", async () => {
+    const t = await createTestDb()
+    try {
+      await syncTickerReference(
+        `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+ANALIZY::ING01W,ING01W,ANALIZY,ING Akcji W,fund,,,Poland,PL,,ING01`,
+        t.db,
+      )
+      // Both now come from the same row. Before §78 the tier was a hardcoded set
+      // and the asset class an early return in code — two sources for one fact.
+      expect(await assetTypeForSymbol(t.db, "ING01W")).toBe("fund")
+      expect(await priceTierForSymbol(t.db, "ING01W")).toBe("fund_category")
     } finally {
       await t.client.close()
     }
