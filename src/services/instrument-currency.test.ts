@@ -340,3 +340,114 @@ describe("instrument currency (§36)", () => {
     })
   })
 })
+
+/**
+ * §72.4 — the cross-listed-ticker defect.
+ *
+ * PROD, 2026-10-01. `GET /api/instruments/MFC` returned
+ *
+ *     exchange = NYQ   currency = CAD   bar@2022-11-21 = 17.29
+ *
+ * while the stored transaction is `price 17.50, currency USD` — what Manulife
+ * actually traded at on the NYSE that day. **The exchange was right and the
+ * currency was the issuer's home listing**, so every consumer trusting the
+ * declared currency converted a correct number into a wrong one. The price-audit
+ * flagged 21 cross-currency symbols on exactly this, and comparing those trades
+ * WITHOUT conversion reconciles 18 of them to under 3%.
+ *
+ * The mechanism: a venue-free ticker on a cross-listed company makes the
+ * candidates-must-agree guard return `null` — correct, with no venue named there
+ * is no honest answer — and then `resolveCurrency`'s fallback took the
+ * provider's declaration, which is the **primary** listing's currency. The guard
+ * was working. The fallback was what lied.
+ *
+ * The fix is a hint: the caller usually knows which venue the bars came from, and
+ * a venue is a fact rather than a guess. **Note what is deliberately NOT asserted
+ * here** — that a hintless `MFC` resolves to USD. It cannot, and it must not: two
+ * listings genuinely disagree, so a guess would be exactly the failure §47 forbids.
+ */
+describe("§72.4: a known venue must beat the provider's primary-listing currency", () => {
+  let db: DB
+  let client: Awaited<ReturnType<typeof createTestDb>>["client"]
+
+  beforeAll(async () => {
+    const t = await createTestDb()
+    db = t.db
+    client = t.client
+    // NYQ/NMS are the venues PROD's bars actually came from; TSX is the home
+    // listing the provider was declaring.
+    for (const [code, cc, name] of [
+      ["NYQ", "US", "New York Stock Exchange"],
+      ["NMS", "US", "Nasdaq"],
+      ["TSX", "CA", "Toronto Stock Exchange"],
+    ] as const) {
+      await db
+        .insert(exchangeReference)
+        .values({ exchangeCode: code, canonicalName: name, countryCode: cc })
+        .onConflictDoNothing()
+    }
+    for (const [exchange, cc, country] of [
+      ["NYQ", "US", "United States"],
+      ["TSX", "CA", "Canada"],
+    ] as const) {
+      await db
+        .insert(tickerReference)
+        .values({
+          listingKey: `${exchange}::MFC`,
+          ticker: "MFC",
+          exchange,
+          name: "Manulife Financial Corporation",
+          assetType: "Stock",
+          country,
+          countryCode: cc,
+        })
+        .onConflictDoNothing()
+    }
+  })
+
+  afterAll(async () => {
+    await client?.close()
+  })
+
+  it("without a venue, MFC stays silent — the guard is correct and must survive", async () => {
+    expect(await resolveInstrumentCurrency(db, "MFC")).toBeNull()
+  })
+
+  it("without a venue the provider is still all we have", async () => {
+    // This is the documented fallback, not a bug in itself. It is what PROD got,
+    // and it is wrong only because the caller could have said more.
+    const r = await resolveCurrency(db, "MFC", "CAD")
+    expect(r.currency).toBe("CAD")
+    expect(r.currencySource).toBe("provider")
+  })
+
+  it("a NYQ hint resolves MFC to USD, overriding the provider's CAD", async () => {
+    // THE regression test. PROD served CAD for an NYQ instrument.
+    const r = await resolveCurrency(db, "MFC", "CAD", "NYQ")
+    expect(r.currency).toBe("USD")
+  })
+
+  it("a TSX hint resolves MFC to CAD — the hint is followed, not hardcoded to USD", async () => {
+    // Guards against 'fixing' this by always preferring the US listing, which
+    // would just move the lie to the other side of the same problem.
+    expect((await resolveCurrency(db, "MFC", "CAD", "TSX")).currency).toBe("CAD")
+  })
+
+  it("a venue answer is local, so it is not labelled a provider declaration", async () => {
+    // `currencySource: "provider"` tells a consumer the upstream said so. That is
+    // the false confidence this defect rode in on.
+    expect((await resolveCurrency(db, "MFC", "CAD", "NYQ")).currencySource).not.toBe("provider")
+  })
+
+  it("an unmappable venue falls through instead of inventing a currency", async () => {
+    const r = await resolveCurrency(db, "MFC", "CAD", "ZZZZ")
+    expect(r.currency).toBe("CAD")
+    expect(r.currencySource).toBe("provider")
+  })
+
+  it("a hint does not override a crypto pair's quote leg", async () => {
+    // BTC-USD is denominated by its quote leg whatever venue is claimed; the hint
+    // is deliberately consulted after the pair test.
+    expect(await resolveInstrumentCurrency(db, "BTC-USD", "NYQ")).toBe("USD")
+  })
+})
