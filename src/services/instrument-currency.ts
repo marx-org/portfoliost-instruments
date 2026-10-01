@@ -127,12 +127,48 @@ export function cryptoPairCurrency(symbol: string): string | null {
 export async function resolveInstrumentCurrency(
   db: DB | null,
   routeSymbol: string,
+  /**
+   * §72.4 — the venue the bars were actually fetched from, when the CALLER knows
+   * it. Optional and unused by every existing caller, so nothing changes until a
+   * route is wired to pass it.
+   *
+   * **Why this exists.** A venue-free ticker on a cross-listed company
+   * (`MFC` on NYSE→USD *and* TSX→CAD) makes the candidates-must-agree guard
+   * return `null`, which is correct — with no venue named there is no honest
+   * answer. The damage was done after that: `resolveCurrency`'s fallback took
+   * the provider's declaration, and a provider declares the issuer's **primary**
+   * listing. PROD served `currency: CAD` for an instrument whose
+   * `exchange` was `NYQ` and whose bar was a USD number (17.29 against a stored
+   * trade of 17.50 USD), so every consumer trusting the declared currency
+   * converted a correct number into a wrong one. 21 symbols in the price-audit,
+   * 18 of which reconcile to under 3% with no conversion at all.
+   *
+   * A hint is a **fact about which listing the data came from**, not a guess, so
+   * it outranks both the ambiguity guard and the provider — consistent with §47.4,
+   * where local resolution already wins over a provider mismatch.
+   */
+  exchangeHint?: string | null,
 ): Promise<string | null> {
   const symbol = routeSymbol.toUpperCase()
   const pairCcy = cryptoPairCurrency(symbol)
   if (pairCcy) return pairCcy
   if (!db) return null
   try {
+    // §72.4 — a known venue is a FACT, so it is consulted before anything that
+    // would have to guess. Deliberately AFTER the crypto pair test (BTC-USD is
+    // denominated by its quote leg regardless of any venue) and before the bond /
+    // fund PLN shortcut, which is about instrument CLASS not venue.
+    //
+    // Placed before the ambiguity guard, not after: for a cross-listed ticker the
+    // guard returns null, and returning null is what let the provider's
+    // home-market currency in. A hint is strictly more information than the guard
+    // has, so it has to be able to answer where the guard cannot.
+    if (exchangeHint) {
+      const byVenue = currencyForCountry(await getExchangeCountry(db, exchangeHint))
+      if (byVenue) return byVenue
+      // An exchange we cannot map to a country is not an answer — fall through
+      // rather than invent one.
+    }
     const assetType: AssetType = normalizeAssetType(await assetTypeForSymbol(db, symbol))
     if (assetType === "bond" || assetType === "corp_bond" || assetType === "fund") {
       // Savings bonds (obligacje engine) and the biznesradar Catalyst/TFI
@@ -230,9 +266,20 @@ export async function resolveCurrency(
   db: DB | null,
   routeSymbol: string,
   providerCurrency: string | null | undefined,
+  /**
+   * §72.4 — the venue the underlying data came from, when known. Threaded to
+   * `resolveInstrumentCurrency`; see its docstring for the defect this closes.
+   *
+   * A venue answer is LOCAL resolution, so it reports `currencySource:
+   * "estimated"` even when it disagrees with the provider — §47.4 already ranks
+   * local above a provider mismatch, and calling it `"provider"` would tell a
+   * consumer the upstream said so, which is the false confidence that let this
+   * reach PROD.
+   */
+  exchangeHint?: string | null,
 ): Promise<CurrencyResolution> {
   const provider = normalizeProviderDeclaration(providerCurrency)
-  const local = await resolveInstrumentCurrency(db, routeSymbol)
+  const local = await resolveInstrumentCurrency(db, routeSymbol, exchangeHint)
   if (provider) {
     if (provider === local) return { currency: provider, currencySource: "provider" }
     if (local) return { currency: local, currencySource: "estimated" }
