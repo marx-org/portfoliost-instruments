@@ -166,3 +166,41 @@ describe("assetTypeForSymbol — class-collision priority (plan 34)", () => {
     }
   })
 })
+
+describe("assetTypeForSymbol — fund categories route to the fund tier (plan §72.39)", () => {
+  it("classifies a category code as fund even when absent from ticker_reference", async () => {
+    const t = await createTestDb()
+    try {
+      await syncTickerReference(
+        `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+NASDAQ::AAPL,AAPL,NASDAQ,Apple Inc,Stock,Information Technology,,United States,US,US0378331005,apple`,
+        t.db,
+      )
+      // The provider's own category keys are in no reference table, but they must
+      // classify as fund — never degrade to stock and pay the equity walk, which
+      // returns `200 / bars=0` for them and looks like a live-but-empty series.
+      expect(await assetTypeForSymbol(t.db, "ING01W")).toBe("fund")
+      expect(await assetTypeForSymbol(t.db, "ing01w")).toBe("fund")
+      expect(await assetTypeForSymbol(t.db, "ING92")).toBe("fund")
+      // Bonds still classify as bonds — the two recognisers are ordered.
+      expect(await assetTypeForSymbol(t.db, "ROD1035")).toBe("bond")
+      // And a real reference row is untouched.
+      expect(await assetTypeForSymbol(t.db, "AAPL")).toBe("Stock")
+    } finally {
+      await t.client.close()
+    }
+  })
+
+  it("leaves an unverified category-shaped code unresolved, so it 404s loudly", async () => {
+    const t = await createTestDb()
+    try {
+      // ING01A is a plausible guess and is 404 upstream. Not admitting it keeps
+      // the list honest: an entry is added only after the source resolves it.
+      for (const code of ["ING01A", "ING01K", "ING01S"]) {
+        expect(await assetTypeForSymbol(t.db, code), code).toBeNull()
+      }
+    } finally {
+      await t.client.close()
+    }
+  })
+})

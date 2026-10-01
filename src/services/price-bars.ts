@@ -15,8 +15,14 @@ import {
   normalizeAssetType,
   type AssetType,
 } from "../db/tickerref-queries.js"
-import { fetchOhlcv, fetchBondOhlcv, fetchCryptoOhlcv, UpstreamError } from "../adapters/cachest.js"
-import { providerSymbol, venueFreeSymbol } from "../adapters/symbol.js"
+import {
+  fetchOhlcv,
+  fetchBondOhlcv,
+  fetchCryptoOhlcv,
+  fetchFundCategoryHistory,
+  UpstreamError,
+} from "../adapters/cachest.js"
+import { isFundCategory, providerSymbol, venueFreeSymbol } from "../adapters/symbol.js"
 import { resolveInstrumentCurrency } from "./instrument-currency.js"
 
 // D81/34 — the asset-class helpers live in db/tickerref-queries.ts (shared
@@ -519,8 +525,18 @@ export function upstreamFor(
     case "bond":
       return fetchBondOhlcv(venueFreeSymbol(symbol), start, end)
     case "corp_bond":
-    case "fund":
       return fetchOhlcv(symbol, start, end)
+    case "fund":
+      // Two different sources behind one asset class (plan §72.39 step 2).
+      //
+      // A `.TFI` symbol is the fund's *default* category and biznesradar serves
+      // it correctly — NNEP65 reproduces 34 of 66 trades to the cent — so it
+      // keeps the existing route untouched. Only the provider's own category
+      // codes (ING01W) go to analizy.pl, which is the only feed that carries the
+      // category the broker actually executes against.
+      return isFundCategory(symbol)
+        ? fetchFundCategoryHistory(symbol, start, end)
+        : fetchOhlcv(symbol, start, end)
     case "stock":
     case "etf":
     default:

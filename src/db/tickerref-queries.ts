@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm"
 import type { DB } from "./index.js"
 import { exchangeReference, tickerReference } from "./schema.js"
-import { isSavingsBond, venueFreeSymbol } from "../adapters/symbol.js"
+import { isFundCategory, isSavingsBond, venueFreeSymbol } from "../adapters/symbol.js"
 
 /** Canonical asset-class set for price-bars (D81) and quote (34) dispatch. */
 export type AssetType = "stock" | "etf" | "fund" | "crypto" | "bond" | "corp_bond"
@@ -56,6 +56,11 @@ export async function assetTypeForSymbol(db: DB, symbol: string): Promise<string
   // openst bond job) but must route to the obligacje bond tier, not degrade to
   // stock and pay the equity provider walk (plan §37.1, OOM storm 2026-09-20).
   if (isSavingsBond(symbol)) return "bond"
+  // Fund-category codes (ING01W) are in no reference table either — they are the
+  // provider's own keys — but unlike a savings bond they must route to the fund
+  // tier, not degrade to stock and pay the equity provider walk (plan §72.39).
+  // Membership-gated; see isFundCategory for why no shape test is safe.
+  if (isFundCategory(symbol)) return "fund"
   const keys = referenceTickerKeys(symbol)
   if (keys.length === 0) return null
   // Cross-exchange tickers collide (BTC is an ASX stock AND a crypto pair):

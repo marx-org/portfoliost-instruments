@@ -31,13 +31,21 @@ vi.mock("../adapters/cachest.js", async (importOriginal) => ({
   fetchOhlcv: vi.fn(),
   fetchBondOhlcv: vi.fn(),
   fetchCryptoOhlcv: vi.fn(),
+  fetchFundCategoryHistory: vi.fn(),
 }))
 
-import { fetchOhlcv, fetchBondOhlcv, fetchCryptoOhlcv, UpstreamError } from "../adapters/cachest.js"
+import {
+  fetchOhlcv,
+  fetchBondOhlcv,
+  fetchCryptoOhlcv,
+  fetchFundCategoryHistory,
+  UpstreamError,
+} from "../adapters/cachest.js"
 
 const mockFetchOhlcv = vi.mocked(fetchOhlcv)
 const mockFetchBondOhlcv = vi.mocked(fetchBondOhlcv)
 const mockFetchCryptoOhlcv = vi.mocked(fetchCryptoOhlcv)
+const mockFetchFundCategoryHistory = vi.mocked(fetchFundCategoryHistory)
 
 async function seedStooq(db: DB, symbol: string, rows: Array<[string, string]>) {
   for (const [date, close] of rows) {
@@ -575,6 +583,45 @@ describe("D81 — asset-class routing in price-bars", () => {
     vi.clearAllMocks()
     await upstreamFor("fund", "NNEP25.TFI", "2026-01-01", "2026-01-31")
     expect(mockFetchOhlcv).toHaveBeenCalledWith("NNEP25.TFI", "2026-01-01", "2026-01-31")
+  })
+
+  // --- fund categories vs .TFI funds (plan §72.39 step 2, stage 5) ----------
+  //
+  // Same asset class, two sources. A `.TFI` symbol is the fund's default
+  // category and biznesradar serves it correctly (NNEP65 reproduces 34 of 66
+  // trades to the cent), so it must NOT be diverted. Only the provider's own
+  // category codes reach analizy.pl.
+
+  it("upstreamFor sends a .TFI fund to the existing biznesradar route, not the category route", async () => {
+    mockFetchOhlcv.mockResolvedValue([])
+    for (const tfi of ["INGAKC.TFI", "INGOBL.TFI", "NNEP25.TFI", "NNEP30.TFI", "NNEP60.TFI", "NNEP65.TFI"]) {
+      vi.clearAllMocks()
+      await upstreamFor("fund", tfi, "2026-01-01", "2026-01-31")
+      expect(mockFetchOhlcv, tfi).toHaveBeenCalledWith(tfi, "2026-01-01", "2026-01-31")
+      expect(mockFetchFundCategoryHistory, tfi).not.toHaveBeenCalled()
+    }
+  })
+
+  it("upstreamFor sends a fund-category code to the analizy.pl route", async () => {
+    mockFetchFundCategoryHistory.mockResolvedValue([])
+    for (const code of ["ING01W", "ING01", "ING04", "ING81", "ING92"]) {
+      vi.clearAllMocks()
+      await upstreamFor("fund", code, "2026-01-01", "2026-01-31")
+      expect(mockFetchFundCategoryHistory, code).toHaveBeenCalledWith(code, "2026-01-01", "2026-01-31")
+      expect(mockFetchOhlcv, code).not.toHaveBeenCalled()
+    }
+  })
+
+  it("upstreamFor never diverts a corp bond, whose codes are dotless like a category", async () => {
+    // All 941 corp_bond rows in PROD ticker_reference are dotless (ABE0227), so
+    // a shape-based recogniser would capture every one of them.
+    mockFetchOhlcv.mockResolvedValue([])
+    for (const bond of ["BST0327.WA", "ABE0227"]) {
+      vi.clearAllMocks()
+      await upstreamFor("corp_bond", bond, "2026-01-01", "2026-01-31")
+      expect(mockFetchOhlcv, bond).toHaveBeenCalled()
+      expect(mockFetchFundCategoryHistory, bond).not.toHaveBeenCalled()
+    }
   })
 
   it("upstreamFor routes stock/etf through the equity OHLCV path (.US stripped)", async () => {
