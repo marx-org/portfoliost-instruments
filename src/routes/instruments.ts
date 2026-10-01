@@ -6,7 +6,7 @@ import { convert } from "@marx2/contracts/fx"
 import { serviceOrUserMiddleware } from "../auth.js"
 import { getDb, type DB } from "../db/index.js"
 import { fxWindow, latestFxRates } from "../db/fx-rates.js"
-import { getPriceBarSeries, backgroundUpsertBars, queryView } from "../services/price-bars.js"
+import { getPriceBarSeries, backgroundUpsertBars, queryView, unconvertedDatesForWindow } from "../services/price-bars.js"
 import { resolveCurrency, resolveInstrumentCurrency } from "../services/instrument-currency.js"
 import { TRACKED_CURRENCIES } from "../services/fx-import.js"
 import { convertSeries, rateTablesByDate } from "../services/fx-convert.js"
@@ -650,6 +650,15 @@ export function createInstrumentsRoutes() {
         // in the base currency (floor semantics, no carry-forward).
         let history = base
         let fxFrom: string | null = null
+        // §72.10 — the dates §72.17 DROPPED, so a caller can tell a short series
+        // from a truncated one instead of inferring it. `fxFrom` alone cannot
+        // express this: the gaps are scattered as well as prefixed, so the first
+        // converted row says nothing about the rest.
+        //
+        // Absent (not `[]`) when no conversion was asked for, per the contract:
+        // "no conversion applied" and "conversion applied, nothing dropped" are
+        // different facts and collapsing them would make a caller guess.
+        let unconvertedDates: string[] | undefined
         const targetCcy = target.value
         const baseCcy = resolution.currency
         const tables =
@@ -663,6 +672,7 @@ export function createInstrumentsRoutes() {
           const cl = convertSeries(dates, base.lowPrices, baseCcy, targetCcy, tables)
           const co = convertSeries(dates, base.openPrices, baseCcy, targetCcy, tables)
           fxFrom = cc.fxFrom
+          unconvertedDates = cc.convertedMask.flatMap((ok, i) => (ok ? [] : [dates[i] as string]))
           // §72.17 — drop the bars that could not be converted, from EVERY
           // parallel array and the timestamps, so the series really is in
           // `targetCcy`. Keeping them (the old floor semantics) meant a base
@@ -730,6 +740,7 @@ export function createInstrumentsRoutes() {
           symbol,
           baseCurrency: resolution.currency,
           fxFrom,
+          ...(unconvertedDates ? { unconvertedDates } : {}),
           ...(compare ? { compare } : {}),
         })
       } catch (e) {
@@ -917,6 +928,27 @@ export function createInstrumentsRoutes() {
         targetCcy: target.value,
         baseCcy: declaredBase,
       })
+      // §72.10 — same declaration as /price-history: absent when no conversion was
+      // requested, present (possibly empty) when one was. This route converts in
+      // SQL and the query filters the unconvertible rows out, so the dropped
+      // dates have to be asked for separately.
+      //
+      // The base is `series.baseCurrency`, NOT `declaredBase`. `declaredBase` is
+      // only the `?baseCurrency=` override and is null on the ordinary path where
+      // the instrument's own currency resolves locally — the service converts
+      // against the resolved base in that case, so asking about `declaredBase`
+      // here would have reported nothing on exactly the requests that converted.
+      let unconvertedDates: string[] | undefined
+      if (target.value && series.baseCurrency && target.value.toUpperCase() !== series.baseCurrency.toUpperCase()) {
+        unconvertedDates = await unconvertedDatesForWindow(
+          getDb(),
+          symbol,
+          from,
+          to,
+          series.baseCurrency,
+          target.value,
+        )
+      }
       return c.json({
         symbol: series.symbol,
         timeframe: "daily",
@@ -924,6 +956,7 @@ export function createInstrumentsRoutes() {
         currency: series.currency,
         baseCurrency: series.baseCurrency,
         fxFrom: series.fxFrom,
+        ...(unconvertedDates ? { unconvertedDates } : {}),
         dates: series.dates,
         closes: series.closes,
       })

@@ -192,6 +192,49 @@ export async function queryViewAs(
   }))
 }
 
+/**
+ * §72.10 — the bar dates in `[from, to]` that `conversionJoinSql` **dropped**
+ * because no FX rate existed for the pair.
+ *
+ * A separate query rather than a flag column on the main one, because the main
+ * query filters the unconvertible rows out (`and (hasRates)`) — so it cannot
+ * report what it removed. Adding the flag to it and filtering in TS would mean
+ * shipping and mapping every dropped row through the route to learn a count,
+ * which is strictly more work for the same answer.
+ *
+ * Only ever called when a conversion was actually requested, so the common
+ * same-currency read pays nothing for it.
+ */
+export async function unconvertedDatesForWindow(
+  db: DB,
+  symbol: string,
+  from: string,
+  to: string,
+  baseCcy: string,
+  targetCcy: string,
+): Promise<string[]> {
+  const base = baseCcy.toUpperCase()
+  const target = targetCcy.toUpperCase()
+  // Same-currency needs no rate, so nothing is ever dropped — and `convertible`
+  // would be meaningless here (it is the "no rate row" predicate).
+  if (base === target) return []
+  const convertible =
+    base === "EUR" ? sql`f.rate is not null` : sql`f.rate is not null and fb.rate is not null`
+  const result = await db.execute(sql`
+    select b.date
+    from instruments.price_bars_all b
+    left join instruments.fx_rates f
+      on f.rate_date = b.date and f.currency = ${target}
+    left join instruments.fx_rates fb
+      on fb.rate_date = b.date and fb.currency = ${base}
+    where b.symbol = ${symbol}
+      and b.date between ${from} and ${to}
+      and not (${convertible})
+    order by b.date asc
+  `)
+  return rowsOf<{ date: string }>(result).map((r) => String(r.date))
+}
+
 /** Last date present for a symbol across the whole view (for gap detection). */
 export async function lastDateForSymbol(db: DB, symbol: string): Promise<string | null> {
   const result = await db.execute(sql`

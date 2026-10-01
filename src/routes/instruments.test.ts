@@ -1606,8 +1606,73 @@ describe("GET /:symbol/price-bars — ?currency= (plan §48.2)", () => {
     }
   })
 
-  it("§72.17: a same-currency price-bars request is not filtered", async () => {
+  /**
+   * §72.10 — say what was dropped instead of making the caller infer it.
+   *
+   * `fxFrom` cannot carry this on its own: §72.17's holes are **scattered** as
+   * well as prefixed, so the first converted date says nothing about the rest. The
+   * fixture already has the prefixed case (2026-09-10, no fx_rates rows), which is
+   * the one `fxFrom` happens to express — so the scattered assertion below is the
+   * one that actually tests the field.
+   */
+  it("§72.10: reports the dates it dropped, and is absent when no conversion was asked for", async () => {
     const t = await dbWithFx()
+    try {
+      // A prefix hole: 2026-09-10 has a bar but no fx_rates rows.
+      const res = await req("/api/instruments/PKN/price-bars?from=2026-09-09&to=2026-09-19&currency=USD")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.unconvertedDates).toEqual(["2026-09-10"])
+      // and it agrees with what was actually dropped, not just with fxFrom
+      expect(body.dates).not.toContain("2026-09-10")
+
+      // A conversion that dropped nothing: present and EMPTY, which is a
+      // different fact from "no conversion applied" and must not collapse into it.
+      const clean = await req("/api/instruments/PKN/price-bars?from=2026-09-16&to=2026-09-19&currency=USD")
+      const cleanBody = await clean.json()
+      expect(cleanBody.unconvertedDates).toEqual([])
+
+      // No ?currency= at all: ABSENT, so a caller can tell "did not convert" from
+      // "converted and lost nothing". `toBeUndefined`, not `toEqual([])`.
+      const plain = await req("/api/instruments/PKN/price-bars?from=2026-09-09&to=2026-09-19")
+      expect((await plain.json()).unconvertedDates).toBeUndefined()
+
+      // Same-currency: also absent — nothing was dropped because nothing converted.
+      const same = await req("/api/instruments/PKN/price-bars?from=2026-09-09&to=2026-09-19&currency=PLN")
+      expect((await same.json()).unconvertedDates).toBeUndefined()
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("§72.10: a SCATTERED hole is reported, which fxFrom alone cannot express", async () => {
+    // The case the field exists for. fxFrom is the first converted date, so a hole
+    // in the middle of the series is invisible to it — a caller would read a short
+    // series as a sparse one and carry the last value forward across a gap that was
+    // never priced.
+    const t = await dbWithFx()
+    try {
+      const { sql } = await import("drizzle-orm")
+      // A bar on 2026-09-17b's day with both fx legs removed for 2026-09-19 only.
+      await t.db.execute(sql.raw(`
+        DELETE FROM instruments.fx_rates WHERE rate_date = '2026-09-19';
+      `))
+      const res = await req("/api/instruments/PKN/price-bars?from=2026-09-16&to=2026-09-19&currency=USD")
+      const body = await res.json()
+      expect(body.unconvertedDates).toEqual(["2026-09-19"])
+      // fxFrom is still the FIRST converted date, unchanged — the two fields are
+      // genuinely different questions and neither subsumes the other.
+      expect(body.fxFrom).toBe("2026-09-16")
+      expect(body.dates).not.toContain("2026-09-19")
+      expect(body.dates).toContain("2026-09-18")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("§72.17: a same-currency price-bars request is not filtered", async () => {    const t = await dbWithFx()
     try {
       const res = await req("/api/instruments/PKN/price-bars?from=2026-09-09&to=2026-09-19")
       expect(res.status).toBe(200)
@@ -1691,7 +1756,7 @@ describe("GET /:symbol/history — ?currency= (plan §48.2)", () => {
     dbState.db = t.db
     await syncTickerReference(
       `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
- WSE::PKN,PKN,WSE,PKN Orlen,Stock,Energy,,Poland,PL,PLPKNO0000070294,`,
+WSE::PKN,PKN,WSE,PKN Orlen,Stock,Energy,,Poland,PL,PLPKNO0000070294,`,
       t.db,
     )
     mocked.fetchOhlcv.mockResolvedValue([
@@ -1705,6 +1770,57 @@ describe("GET /:symbol/history — ?currency= (plan §48.2)", () => {
       expect(body.currency).toBe("PLN")
       expect(body.baseCurrency).toBe("PLN")
       expect(body.fxFrom).toBeNull()
+      // §72.10 — no conversion applied, so the field is ABSENT rather than [].
+      // Collapsing the two would make a caller unable to tell "never converted"
+      // from "converted and lost nothing".
+      expect(body.unconvertedDates).toBeUndefined()
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  /**
+   * §72.10 on /history — the same declaration as /price-bars, asserted on the route
+   * that has `convertedMask` directly in hand rather than re-querying for it.
+   */
+  it("§72.10: /history reports the dates it dropped, and empty when it dropped none", async () => {
+    const { sql } = await import("drizzle-orm")
+    const { createTestDb } = await import("../db/test-db.js")
+    const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const { LOCAL_PRICE_BARS_SETUP_SQL } = await import("../db/price-bars.js")
+    const t = await createTestDb()
+    dbState.db = t.db
+    for (const stmt of LOCAL_PRICE_BARS_SETUP_SQL) await t.db.execute(sql.raw(stmt))
+    await syncTickerReference(
+      `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
+WSE::PKN,PKN,WSE,PKN Orlen,Stock,Energy,,Poland,PL,PLPKNO0000070294,`,
+      t.db,
+    )
+    // Rates for the 16th and 18th only, so the 17th is a SCATTERED hole in the
+    // middle of the series — the shape fxFrom cannot express.
+    await t.db.execute(sql.raw(`
+      INSERT INTO instruments.fx_rates (rate_date, currency, rate, source) VALUES
+        ('2026-09-16', 'PLN', 4.0000000000, 'ecb'),
+        ('2026-09-16', 'USD', 4.3000000000, 'ecb'),
+        ('2026-09-18', 'PLN', 4.2000000000, 'ecb'),
+        ('2026-09-18', 'USD', 4.0000000000, 'ecb');
+    `))
+    mocked.fetchOhlcv.mockResolvedValue([
+      { date: "2026-09-16", open: 99, high: 101, low: 98, close: 100, volume: 10 },
+      { date: "2026-09-17", open: 101, high: 103, low: 100, close: 102, volume: 11 },
+      { date: "2026-09-18", open: 100, high: 102, low: 99, close: 101, volume: 12 },
+    ])
+    try {
+      const res = await req("/api/instruments/PKN/history?resolution=daily&currency=USD")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.unconvertedDates).toEqual(["2026-09-17"])
+      // fxFrom is the FIRST converted date and is unaffected by a later hole
+      expect(body.fxFrom).toBe("2026-09-16")
+      // and the dropped bar really is gone from the returned series
+      expect(body.closePrices).toHaveLength(2)
+      expect(body.closePrices).not.toContain(102)
     } finally {
       await t.client.close()
       dbState.db = null
