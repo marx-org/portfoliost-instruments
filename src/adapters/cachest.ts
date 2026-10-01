@@ -49,6 +49,19 @@ export function fetchOhlcv(
   return fetchJson(`${BASE_URL}/ohlcv/${encodeURIComponent(symbol)}?${q}`)
 }
 
+export function fetchFundCategoryHistory(
+  code: string,
+  start: string,
+  end: string,
+): Promise<Array<Record<string, unknown>>> {
+  // `code` is the provider's own category code (ING01W), not a .TFI symbol.
+  // A code upstream does not know is a 404, which fetchJson turns into an
+  // UpstreamError — deliberately not an empty array, so "cannot serve" stays
+  // distinguishable from "no history in window" (plan §72.39 step 2, stage 5).
+  const q = new URLSearchParams({ start, end })
+  return fetchJson(`${BASE_URL}/fund/history/${encodeURIComponent(code)}?${q}`)
+}
+
 export function fetchCryptoOhlcv(
   pair: string,
   start: string,
