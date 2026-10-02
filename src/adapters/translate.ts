@@ -541,10 +541,27 @@ function growth(current: number | undefined, previous: number | undefined): numb
   return Math.round(((current - previous) / Math.abs(previous)) * 100 * 100) / 100
 }
 
+/** What the three statements are denominated in, and where each came from (§79.2).
+ *
+ *  `providerDeclared` is the currency the provider rows themselves carry
+ *  (`reported_currency`), and only when ALL THREE statements declare the SAME one
+ *  — a table whose income is in EUR and whose balance sheet is in USD has no
+ *  single currency, and claiming one would be the exact defect this fixes. */
+export interface FundamentalsProvenance {
+  currency: string | null
+  currencySource: S["CurrencySource"]
+  sources: {
+    incomeStatement: string | null
+    balanceSheet: string | null
+    cashFlow: string | null
+  }
+}
+
 export function toFundamentals(
   income: Row[],
   balance: Row[],
   cash: Row[],
+  provenance?: FundamentalsProvenance,
 ): S["FundamentalsData"] {
   const year = (r: Row): number | undefined => {
     const fy = num(pick(r, "fiscal_year", "calendar_year"))
@@ -714,20 +731,45 @@ export function toFundamentals(
       pick(row, "operating_cash_flow", "cash_flow_from_operating_activities", "net_cash_from_operating_activities"),
     )
 
+  /** §79.1b — diluted shares by fiscal year, taken from the income statement.
+   *
+   *  A YEAR join, never a positional one. The three statements arrive from three
+   *  independent provider calls with independent period coverage, so
+   *  `income[i]` and `cash[i]` are not guaranteed to be the same fiscal year —
+   *  measured 2026-10-02: SAP.DE serves 4 income rows and 5 cash rows. A
+   *  positional zip would pair FY2024's cash flow with FY2025's share count
+   *  and nothing downstream could tell, because both rows would still carry a
+   *  plausible year. */
+  const sharesByYear = new Map<number, number>()
+  for (const row of incomeStatement) {
+    if (row.year !== undefined && row.dilutedSharesOutstanding !== undefined) {
+      sharesByYear.set(row.year, row.dilutedSharesOutstanding)
+    }
+  }
+
   const cashFlow = cash.map((r, i) => {
     const op = opOf(r)
     const capexRaw = num(pick(r, "capital_expenditure", "capex"))
     const fcf = fcfOf(r)
     const prevOp = opOf(cash[i + 1] ?? {})
     const prevFcf = fcfOf(cash[i + 1] ?? {})
+    const fy = year(r)
+    const shares = fy !== undefined ? sharesByYear.get(fy) : undefined
     return {
-      year: year(r),
+      year: fy,
       cashFlowFromOperatingActivities: op,
       cashFlowFromFinancingActivities: num(pick(r, "financing_cash_flow", "net_cash_from_financing_activities")),
       cashFlowFromInvestingActivities: num(pick(r, "investing_cash_flow", "net_cash_from_investing_activities")),
       freeCashFlow: fcf,
       freeCashFlowGrowth: growth(fcf, prevFcf),
       cashFlowFromOperatingActivitiesGrowth: growth(op, prevOp),
+      // §79.1b — this column was declared in the contract and rendered by the
+      // tab, and the mapper never emitted it, so against the real openst/cachest
+      // stack it was permanently —. Guarded on a non-zero share count: an
+      // undefined or zero denominator yields undefined, never NaN or Infinity,
+      // because a blank cell is recoverable and NaN renders as "NaN".
+      freeCashFlowPerShare:
+        fcf !== undefined && shares !== undefined && shares !== 0 ? round(fcf / shares) : undefined,
       capitalExpenditures: capexRaw,
       depreciation: num(pick(r, "depreciation_and_amortization", "depreciation")),
       // yfinance's names: AAPL reports `common_dividends_paid`, the EU listings
@@ -748,12 +790,41 @@ export function toFundamentals(
     }
   })
 
-  return { financialHighlights: { incomeStatement, balanceSheet, cashFlow } }
+  // §79.2 — provenance is emitted alongside the numbers rather than inferred by
+  // the reader. `undefined` (no provenance resolved) omits all three fields,
+  // which is the contract's own answer for "we do not know".
+  return {
+    ...(provenance
+      ? {
+          currency: provenance.currency,
+          currencySource: provenance.currencySource,
+          sources: provenance.sources,
+        }
+      : {}),
+    financialHighlights: { incomeStatement, balanceSheet, cashFlow },
+  }
 }
 
 function quarterFromDate(date: string): number {
   const month = Number(date.slice(5, 7))
   return month >= 1 && month <= 12 ? Math.floor((month - 1) / 3) + 1 : 0
+}
+
+/** The currency every statement row in this walk declares, if they all agree.
+ *
+ *  §79.2 — `reported_currency` is FMP's declaration; the yfinance passthrough
+ *  carries none (measured 2026-10-02: present on the AAPL row, absent on both
+ *  SAP.DE and PKO.WA). A statement with no declaration is not evidence against
+ *  the others, it is just silent, so only a real DISAGREEMENT suppresses the
+ *  currency; otherwise the caller falls through to the local resolver. */
+export function declaredStatementCurrency(rows: Row[]): string | null {
+  const declared = new Set<string>()
+  for (const r of rows) {
+    const c = str(pick(r, "reported_currency"))
+    if (c) declared.add(c.toUpperCase())
+    if (declared.size > 1) return null
+  }
+  return declared.size === 1 ? [...declared][0] : null
 }
 
 export function toCalendar(

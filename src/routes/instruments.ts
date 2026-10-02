@@ -35,7 +35,7 @@ import {
   fetchMda,
   fetchInsiderTrading,
 } from "../adapters/cachest.js"
-import { UpstreamError } from "../adapters/cachest.js"
+import { UpstreamError, type FundamentalsStatement } from "../adapters/cachest.js"
 import {
   toInstrumentDetail,
   toInstrumentProfile,
@@ -50,6 +50,8 @@ import {
   mergeSearchResults,
   toFundSearchResponse,
   toFundamentals,
+  declaredStatementCurrency,
+  type FundamentalsProvenance,
   toCalendar,
   toDividends,
   toProjections,
@@ -1064,6 +1066,53 @@ export function createNewsRoutes() {
 
 // The route factories below are appended via createInstrumentsRoutes extension:
 export function registerPt2Routes(instruments: Hono) {
+  /**
+   * §79.2 — what the three statements are denominated in, and which provider
+   * answered each. Both are facts the reader cannot recover: the statements come
+   * from three independent provider walks, and the tab used to render all of them
+   * through `formatCompact` with no currency at all, so a GPW name in PLN and a
+   * US name in USD were indistinguishable on screen.
+   *
+   * Agreement is required ACROSS all three statements, not within one. A table
+   * whose income statement is in EUR and whose balance sheet is in USD has no
+   * single currency, and claiming one would be the defect this fixes, so a
+   * disagreement drops the provider declaration entirely and lets the local
+   * resolver answer — which reports `estimated`, not `provider`, because no
+   * upstream said so. That distinction is the whole value of the field.
+   *
+   * The venue hint is the symbol's own suffix (`SAP.DE` → XETRA → DE → EUR).
+   * It is a fact about where the security trades rather than a guess, so it
+   * outranks the cross-listing ambiguity guard exactly as §72.4 requires, and it
+   * is what lets a venue-qualified symbol with no `ticker_reference` listing
+   * resolve at all (§71).
+   */
+  async function fundamentalsProvenance(
+    routeSymbol: string,
+    income: FundamentalsStatement,
+    balance: FundamentalsStatement,
+    cash: FundamentalsStatement,
+  ): Promise<FundamentalsProvenance> {
+    const sources = {
+      incomeStatement: income.provider,
+      balanceSheet: balance.provider,
+      cashFlow: cash.provider,
+    }
+    const declared = new Set<string>()
+    for (const statement of [income, balance, cash]) {
+      const c = declaredStatementCurrency(statement.rows)
+      if (c) declared.add(c)
+    }
+    const providerCurrency = declared.size === 1 ? [...declared][0] : null
+    const suffix = symbolSuffix(routeSymbol)
+    const venueExchange = suffix ? await getExchangeBySuffix(getDb(), suffix) : null
+    const resolution = await resolveCurrency(getDb(), routeSymbol, providerCurrency, venueExchange)
+    return {
+      currency: resolution.currency,
+      currencySource: resolution.currencySource,
+      sources,
+    }
+  }
+
   instruments.get(
     "/:symbol/fundamentals",
     openApi({
@@ -1080,7 +1129,8 @@ export function registerPt2Routes(instruments: Hono) {
       },
     }),
     async (c) => {
-      const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
+      const routeSymbol = c.req.param("symbol").toUpperCase()
+      const symbol = providerSymbol(routeSymbol)
       if (isSavingsBond(symbol)) {
         // Plan §37.2 — no financial statements exist for a savings-bond
         // emission; answer without probing the equity tier (§37).
@@ -1092,7 +1142,9 @@ export function registerPt2Routes(instruments: Hono) {
           fetchFundamentals(symbol, "balance", "annual"),
           fetchFundamentals(symbol, "cash", "annual"),
         ])
-        return c.json(toFundamentals(income as any[], balance as any[], cash as any[]))
+        return c.json(
+          toFundamentals(income.rows, balance.rows, cash.rows, await fundamentalsProvenance(routeSymbol, income, balance, cash)),
+        )
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
@@ -1227,7 +1279,7 @@ export function registerPt2Routes(instruments: Hono) {
         // quarters (analyst forward estimates are FMP-premium).
         let quarterly: any[] = []
         try {
-          quarterly = (await fetchFundamentals(symbol, "income", "quarter")) as any[]
+          quarterly = (await fetchFundamentals(symbol, "income", "quarter")).rows as any[]
         } catch {
           quarterly = []
         }
@@ -1355,7 +1407,7 @@ export function registerPt2Routes(instruments: Hono) {
       const quartersParam = Number(c.req.query("quarters"))
       const quarters = [5, 8, 12].includes(quartersParam) ? quartersParam : 8
       try {
-        const rows = await fetchFundamentals(symbol, "income", "quarter")
+        const rows = (await fetchFundamentals(symbol, "income", "quarter")).rows
         const all = toEpsSurprises(symbol, rows)
         return c.json({ ...all, quarterly: (all.quarterly as unknown[]).slice(-quarters) })
       } catch (e) {
@@ -1379,7 +1431,7 @@ export function registerPt2Routes(instruments: Hono) {
     async (c) => {
       const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
-        const rows = await fetchFundamentals(symbol, "income", "quarter")
+        const rows = (await fetchFundamentals(symbol, "income", "quarter")).rows
         let filings: Array<Record<string, unknown>> | null = null
         try {
           filings = await fetchFilings(symbol)

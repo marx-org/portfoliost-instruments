@@ -22,6 +22,7 @@ import {
   toCalendar,
   toDividends,
   toFundamentals,
+  declaredStatementCurrency,
 } from "./translate.js"
 import type { OpenstOhlcvRow, OpenstProfile, OpenstQuote } from "./openst-types.js"
 import type { CurrencyResolution } from "../services/instrument-currency.js"
@@ -1376,6 +1377,145 @@ describe("toFundamentals §79.3 — the cash-flow mapper, audited on the same fi
       cashFlowFromInvestingActivities: -14287000000,
       capitalExpenditures: -1354000000,
       depreciation: 1641000000,
+    })
+  })
+})
+
+describe("toFundamentals §79.1b — freeCashFlowPerShare", () => {
+  // The column was declared in the contract and rendered by the tab, and the
+  // cash-flow mapper never emitted it, so against the real openst/cachest stack
+  // it was permanently —. The mock seed carried a value, which is how the gap
+  // survived (§79.1b drops it from the seed).
+  const incomeAt = (fy: number, shares?: number): Row => ({
+    ...SAP_INCOME,
+    period_ending: `${fy}-12-31`,
+    ...(shares === undefined ? {} : { weighted_average_diluted_shares_outstanding: shares }),
+  })
+  const cashAt = (fy: number, fcf?: number): Row => ({
+    ...SAP_CASH,
+    period_ending: `${fy}-12-31`,
+    ...(fcf === undefined ? {} : { free_cash_flow: fcf }),
+  })
+  const perShare = (income: Row[], cash: Row[]) =>
+    toFundamentals(income, [], cash).financialHighlights.cashFlow!.map((r) => r.freeCashFlowPerShare)
+
+  it("divides free cash flow by the same year's diluted share count", () => {
+    // SAP.DE FY2025: 8,417,000,000 / 1,175,000,000.
+    expect(perShare([incomeAt(2025)], [cashAt(2025)])).toEqual([7.16])
+    // AAPL FY2025: 98,767,000,000 / 15,004,697,000.
+    expect(
+      perShare(
+        [{ ...AAPL_INCOME, weighted_average_diluted_shares_outstanding: 15004697000 }],
+        [AAPL_CASH],
+      ),
+    ).toEqual([6.58])
+    // PKO.WA FY2025: 10,498,000,000 / 1,250,000,000.
+    expect(perShare([incomeAt(2025, 1250000000)], [{ ...PKO_CASH }])).toEqual([8.4])
+  })
+
+  it("joins on fiscal year, never on position", () => {
+    // The three statements come from three independent provider calls with
+    // independent period coverage. SAP.DE serves 4 income rows and 5 cash rows,
+    // so income[1] and cash[1] are not the same year — a positional zip would
+    // pair FY2023's cash flow with FY2025's share count and produce a number
+    // that looks fine. 2024 has no income row here, so it must stay blank.
+    expect(perShare([incomeAt(2025), incomeAt(2023)], [cashAt(2025), cashAt(2024), cashAt(2023)])).toEqual([
+      7.16,
+      undefined,
+      7.16,
+    ])
+  })
+
+  it("is undefined — never NaN — when a leg is missing or the share count is zero", () => {
+    // A cash row with no income row at all for its year (SAP's 2021 below).
+    expect(perShare([incomeAt(2025)], [cashAt(2025), cashAt(2021)])).toEqual([7.16, undefined])
+    // The income row exists but carries no share count.
+    expect(perShare([incomeAt(2025, 0)], [cashAt(2025)])[0]).not.toBe(0)
+    expect(perShare([incomeAt(2025)], [cashAt(2025)])[0]).toBe(7.16)
+    // Zero shares is the case that would otherwise be Infinity.
+    expect(perShare([incomeAt(2025, 0)], [cashAt(2025)])).toEqual([undefined])
+    // No free cash flow at all.
+    const noFcf = { ...SAP_CASH, period_ending: "2025-12-31" }
+    delete (noFcf as Record<string, unknown>).free_cash_flow
+    delete (noFcf as Record<string, unknown>).operating_cash_flow
+    delete (noFcf as Record<string, unknown>).capital_expenditure
+    expect(perShare([incomeAt(2025)], [noFcf])).toEqual([undefined])
+    // A year the income statement cannot key on.
+    expect(perShare([{ ...SAP_INCOME, period_ending: "" }], [cashAt(2025)])).toEqual([undefined])
+  })
+
+  it("a negative year pair is a real answer, not a guard trip", () => {
+    expect(perShare([incomeAt(2024, 1000000000)], [{ ...cashAt(2024), free_cash_flow: -500000000 }])).toEqual([
+      -0.5,
+    ])
+  })
+})
+
+describe("toFundamentals §79.2 — declared currency and provenance", () => {
+  const prov = {
+    currency: "USD",
+    currencySource: "provider" as const,
+    sources: { incomeStatement: "fmp", balanceSheet: "yfinance", cashFlow: "fmp" },
+  }
+
+  it("emits the three fields alongside the numbers", () => {
+    const r = toFundamentals([SAP_INCOME], [SAP_BALANCE], [SAP_CASH], prov)
+    expect(r.currency).toBe("USD")
+    expect(r.currencySource).toBe("provider")
+    expect(r.sources).toEqual(prov.sources)
+    expect(r.financialHighlights.incomeStatement![0]!.revenue).toBe(36800000000)
+  })
+
+  it("omits all three when no provenance was resolved", () => {
+    // The contract's own answer for "we do not know" is absence, not a guess.
+    const r = toFundamentals([SAP_INCOME], [SAP_BALANCE], [SAP_CASH])
+    expect(r.currency).toBeUndefined()
+    expect(r.currencySource).toBeUndefined()
+    expect(r.sources).toBeUndefined()
+    expect(r.financialHighlights.balanceSheet![0]!.totalAssets).toBe(70362000000)
+  })
+
+  it("carries a null currency and a provider source without inventing one", () => {
+    const r = toFundamentals([SAP_INCOME], [SAP_BALANCE], [SAP_CASH], {
+      currency: null,
+      currencySource: "unknown",
+      sources: { incomeStatement: null, balanceSheet: null, cashFlow: "yfinance" },
+    })
+    expect(r.currency).toBeNull()
+    expect(r.currencySource).toBe("unknown")
+    expect(r.sources!.cashFlow).toBe("yfinance")
+  })
+
+  describe("declaredStatementCurrency", () => {
+    it("reads the one currency every row agrees on", () => {
+      expect(declaredStatementCurrency([AAPL_INCOME, AAPL_INCOME])).toBe("USD")
+    })
+
+    it("is case-insensitive, because two spellings of one currency still agree", () => {
+      expect(declaredStatementCurrency([{ reported_currency: "usd" }, { reported_currency: "USD" }])).toBe(
+        "USD",
+      )
+    })
+
+    it("returns null when the rows disagree", () => {
+      expect(
+        declaredStatementCurrency([{ reported_currency: "EUR" }, { reported_currency: "USD" }]),
+      ).toBeNull()
+    })
+
+    it("returns null when nobody declares one — silence is not agreement", () => {
+      expect(declaredStatementCurrency([SAP_INCOME, SAP_BALANCE])).toBeNull()
+      expect(declaredStatementCurrency([])).toBeNull()
+    })
+
+    it("returns null rather than picking whichever row happened to be first", () => {
+      expect(
+        declaredStatementCurrency([
+          { reported_currency: "EUR" },
+          { reported_currency: "USD" },
+          { reported_currency: "EUR" },
+        ]),
+      ).toBeNull()
     })
   })
 })
