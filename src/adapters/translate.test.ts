@@ -21,9 +21,11 @@ import {
   toNewsArticleList,
   toCalendar,
   toDividends,
+  toFundamentals,
 } from "./translate.js"
 import type { OpenstOhlcvRow, OpenstProfile, OpenstQuote } from "./openst-types.js"
 import type { CurrencyResolution } from "../services/instrument-currency.js"
+import type { Row } from "./translate.js"
 
 const fmpProfile = {
   symbol: "AAPL",
@@ -928,5 +930,452 @@ describe("toFundSearchResponse (§78)", () => {
     expect(merged.results!.map((x) => x.symbol)).toEqual(["ING01W", "ROD1033"])
     expect(merged.results!.find((x) => x.symbol === "ING01W")!.type).toBe("FUND")
     expect(merged.results!.find((x) => x.symbol === "ROD1033")!.type).toBe("BOND")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// §79.3 — provider key vocabularies in toFundamentals
+//
+// The fixtures below are the FIRST rows of real responses captured 2026-10-02
+// from openst on the live stack, `statement=<x>&period=annual`, trimmed to the
+// keys the mapper reads. They are not hand-written shapes: the whole point of
+// §79.3 is that the mapper was written against a naming it never sees in
+// production, so the fixtures have to be the naming that arrives.
+//
+//   AAPL   → openbb's FMP model (carries cik / accepted_date / fiscal_year —
+//            FMP is the only provider in the chain that normalises anything)
+//   SAP.DE → openbb's yfinance passthrough. openbb's yfinance models declare
+//   PKO.WA   only fiscal_period / fiscal_year / period_ending, so every line item
+//            below is a passthrough extra whose name follows yfinance.
+//
+// FMP returns 402 on all three statement endpoints for a non-US symbol (§79.4),
+// so the yfinance naming is the only European source there is — not a fallback
+// waiting for a better provider.
+// ---------------------------------------------------------------------------
+
+const AAPL_INCOME = {
+  fiscal_year: 2025,
+  fiscal_period: "FY",
+  period_ending: "2025-09-27",
+  symbol: "AAPL",
+  cik: "0000320193",
+  accepted_date: "2025-10-31 06:01:26",
+  filing_date: "2025-10-31",
+  reported_currency: "USD",
+  revenue: 416161000000,
+  ebit: 132729000000,
+  total_operating_income: 133050000000,
+  bottom_line_net_income: 112010000000,
+  consolidated_net_income: 112010000000,
+  diluted_earnings_per_share: 7.46,
+  basic_earnings_per_share: 7.49,
+  weighted_average_diluted_shares_outstanding: 15004697000,
+  weighted_average_basic_shares_outstanding: 14948500000,
+  ebitda: 144427000000,
+  total_pre_tax_income: 132729000000,
+}
+
+const AAPL_BALANCE = {
+  fiscal_year: 2025,
+  fiscal_period: "FY",
+  period_ending: "2025-09-27",
+  total_assets: 359241000000,
+  total_liabilities: 285508000000,
+  total_common_equity: 73733000000,
+  total_equity_non_controlling_interests: 73733000000,
+  minority_interest: 0,
+  cash_and_cash_equivalents: 35934000000,
+  cash_and_short_term_investments: 54697000000,
+  short_term_investments: 18763000000,
+  total_debt: 112377000000,
+  long_term_debt: 78328000000,
+  net_debt: 76443000000,
+  total_current_assets: 147957000000,
+  total_current_liabilities: 165631000000,
+  retained_earnings: -14264000000,
+}
+
+const AAPL_CASH = {
+  period_ending: "2025-09-27",
+  operating_cash_flow: 111482000000,
+  net_cash_from_operating_activities: 111482000000,
+  capital_expenditure: -12715000000,
+  free_cash_flow: 98767000000,
+  net_cash_from_financing_activities: -120686000000,
+  net_cash_from_investing_activities: 15195000000,
+  depreciation_and_amortization: 11698000000,
+  common_dividends_paid: -15421000000,
+  net_dividends_paid: -15421000000,
+}
+
+const SAP_INCOME = {
+  period_ending: "2025-12-31",
+  total_revenue: 36800000000.0,
+  operating_revenue: 36800000000.0,
+  ebit: 10762000000.0,
+  operating_income: 9620000000.0,
+  net_income: 7161000000.0,
+  diluted_earnings_per_share: 6.1,
+  basic_earnings_per_share: 6.14,
+  weighted_average_diluted_shares_outstanding: 1175000000.0,
+  weighted_average_basic_shares_outstanding: 1166000000.0,
+  ebitda: 12073000000.0,
+  total_pre_tax_income: 10270000000.0,
+  operating_expense: 17194000000.0,
+  total_expenses: 27180000000.0,
+}
+
+const SAP_BALANCE = {
+  period_ending: "2025-12-31",
+  total_assets: 70362000000.0,
+  total_liabilities_net_minority_interest: 25288000000.0,
+  total_common_equity: 44586000000.0,
+  common_stock_equity: 44586000000.0,
+  total_equity_non_controlling_interests: 45074000000.0,
+  minority_interest: 488000000.0,
+  cash_and_cash_equivalents: 8220000000.0,
+  cash_financial: 3910000000.0,
+  cash_equivalents: 4310000000.0,
+  cash_cash_equivalents_and_short_term_investments: 9772000000.0,
+  short_term_investments: 1552000000.0,
+  total_debt: 7476000000.0,
+  long_term_debt: 4194000000.0,
+  net_debt: null,
+  working_capital: 2840000000.0,
+  total_current_assets: 20256000000.0,
+  current_liabilities: 17416000000.0,
+  retained_earnings: 47345000000.0,
+}
+
+const SAP_CASH = {
+  period_ending: "2025-12-31",
+  operating_cash_flow: 9156000000.0,
+  capital_expenditure: -739000000.0,
+  free_cash_flow: 8417000000.0,
+  financing_cash_flow: -8745000000.0,
+  investing_cash_flow: -965000000.0,
+  depreciation_and_amortization: 1311000000.0,
+  cash_dividends_paid: -2743000000.0,
+  common_stock_dividend_paid: -2743000000.0,
+}
+
+const PKO_INCOME = {
+  period_ending: "2025-12-31",
+  total_revenue: 31050000000.0,
+  operating_revenue: 31050000000.0,
+  net_income: 10682000000.0,
+  diluted_earnings_per_share: 8.55,
+  basic_earnings_per_share: 8.55,
+  weighted_average_diluted_shares_outstanding: 1250000000.0,
+  weighted_average_basic_shares_outstanding: 1250000000.0,
+  total_pre_tax_income: 13848000000.0,
+  operating_expense: 11404000000.0,
+}
+
+const PKO_BALANCE = {
+  period_ending: "2025-12-31",
+  total_assets: 583079000000.0,
+  total_liabilities_net_minority_interest: 524576000000.0,
+  total_common_equity: 58514000000.0,
+  common_stock_equity: 58514000000.0,
+  total_equity_non_controlling_interests: 58503000000.0,
+  minority_interest: -11000000.0,
+  cash_and_cash_equivalents: 24070000000.0,
+  cash_financial: 4108000000.0,
+  cash_equivalents: 39000000.0,
+  total_debt: 38091000000.0,
+  net_debt: 12878000000.0,
+  retained_earnings: 21903000000.0,
+}
+
+const PKO_CASH = {
+  period_ending: "2025-12-31",
+  operating_cash_flow: 11852000000.0,
+  capital_expenditure: -1354000000.0,
+  free_cash_flow: 10498000000.0,
+  financing_cash_flow: -8880000000.0,
+  investing_cash_flow: -14287000000.0,
+  depreciation_and_amortization: 1641000000.0,
+  depreciation: 1641000000.0,
+  cash_dividends_paid: -6850000000.0,
+  common_stock_dividend_paid: -6850000000.0,
+}
+
+const bs = (balance: Row) => toFundamentals([], [balance], []).financialHighlights.balanceSheet![0]!
+const is = (income: Row) => toFundamentals([income], [], []).financialHighlights.incomeStatement![0]!
+const cf = (cash: Row) => toFundamentals([], [], [cash]).financialHighlights.cashFlow![0]!
+
+describe("toFundamentals §79.3 — the same eight balance columns from either naming", () => {
+  const EIGHT = [
+    "totalAssets",
+    "totalLiabilities",
+    "shareholdersEquity",
+    "cash",
+    "cashAndShortTermInvestments",
+    "workingCapital",
+    "retainedEarnings",
+    "totalDebt",
+  ] as const
+
+  it("populates all eight from the FMP/US naming (AAPL FY2025)", () => {
+    const row = bs(AAPL_BALANCE)
+    expect(EIGHT.filter((k) => row[k] !== undefined)).toEqual([...EIGHT])
+    expect(row).toMatchObject({
+      year: 2025,
+      totalAssets: 359241000000,
+      totalLiabilities: 285508000000,
+      shareholdersEquity: 73733000000,
+      cash: 35934000000,
+      cashAndShortTermInvestments: 54697000000,
+      workingCapital: -17674000000,
+      retainedEarnings: -14264000000,
+      totalDebt: 112377000000,
+      netDebt: 76443000000,
+      debtEquityRatio: 1.52,
+    })
+  })
+
+  it("populates all eight from the yfinance/EU naming (SAP.DE FY2025)", () => {
+    // Before §79.3 this row produced totalLiabilities, shareholdersEquity, cash,
+    // cashAndShortTermInvestments and workingCapital as undefined — five of ten
+    // columns blank, plus debtEquityRatio derived from the blank equity.
+    const row = bs(SAP_BALANCE)
+    expect(EIGHT.filter((k) => row[k] !== undefined)).toEqual([...EIGHT])
+    expect(row).toMatchObject({
+      year: 2025,
+      totalAssets: 70362000000,
+      totalLiabilities: 25288000000,
+      shareholdersEquity: 44586000000,
+      cash: 8220000000,
+      cashAndShortTermInvestments: 9772000000,
+      workingCapital: 2840000000,
+      retainedEarnings: 47345000000,
+      totalDebt: 7476000000,
+      debtEquityRatio: 0.17,
+    })
+    // SAP's own net_debt key arrives null — a provider gap, not a naming one, so
+    // it stays blank rather than being back-filled from total debt minus cash.
+    expect(row.netDebt).toBeUndefined()
+  })
+
+  it("debtEquityRatio is populated for every EU name it can be", () => {
+    // The derived column is what makes the bug visible in the UI, and it was
+    // empty for every non-US symbol before this section.
+    expect(bs(SAP_BALANCE).debtEquityRatio).toBe(0.17)
+    expect(bs(PKO_BALANCE).debtEquityRatio).toBe(0.65)
+    expect(bs(AAPL_BALANCE).debtEquityRatio).toBe(1.52)
+  })
+
+  it("shareholdersEquity excludes non-controlling interests, as FMP's does", () => {
+    // FMP's `shareholders_equity` excludes NCI, so the EU candidates are ordered
+    // to exclude them too. Taking yfinance's NCI-inclusive `total_equity`
+    // instead would make debtEquityRatio mean something different on an EU row
+    // than on a US one — same column, two definitions, nothing on screen to say so.
+    const sap = bs(SAP_BALANCE)
+    expect(sap.shareholdersEquity).toBe(
+      SAP_BALANCE.total_equity_non_controlling_interests - SAP_BALANCE.minority_interest,
+    )
+    expect(sap.shareholdersEquity).not.toBe(SAP_BALANCE.total_equity_non_controlling_interests)
+
+    const pko = bs(PKO_BALANCE)
+    // PKO's minority interest is negative, so common equity is the larger figure.
+    expect(pko.shareholdersEquity).toBe(
+      PKO_BALANCE.total_equity_non_controlling_interests - PKO_BALANCE.minority_interest,
+    )
+    expect(pko.shareholdersEquity).toBeGreaterThan(PKO_BALANCE.total_equity_non_controlling_interests)
+  })
+
+  it("prefers total_liabilities_net_minority_interest when a row carries both", () => {
+    // The two keys are not interchangeable: the explicit name says whether
+    // minority interest is inside the figure, and it is the one that reconciles
+    // with total_assets (SAP: 70,362 − 45,074 = 25,288).
+    const row = bs({ ...SAP_BALANCE, total_liabilities: 12345 })
+    expect(row.totalLiabilities).toBe(25288000000)
+    expect(row.totalAssets! - row.totalLiabilities!).toBe(row.totalAssets! - 25288000000)
+  })
+
+  it("reads yfinance's combined cash line, not its narrower sub-lines", () => {
+    // `cash_equivalents` (4,310) is only part of SAP's cash (8,220) and
+    // `cash_financial` (3,910) is neither cash nor cash-plus-investments, so
+    // neither may be allowed to win over the exact match.
+    const sap = bs(SAP_BALANCE)
+    expect(sap.cash).toBe(8220000000)
+    expect(sap.cashAndShortTermInvestments).toBe(9772000000)
+    // The provider's own combined line: 8,220 cash + 1,552 short-term investments.
+    expect(sap.cashAndShortTermInvestments).toBe(sap.cash! + SAP_BALANCE.short_term_investments)
+  })
+
+  it("workingCapital is blank for PKO.WA because the provider has no current lines", () => {
+    // Deliberate. PKO carries neither total_current_assets nor
+    // total_current_liabilities nor current_assets nor current_liabilities, so a
+    // number here would have to be invented — and a wrong working-capital figure
+    // is worse than a blank cell (§79.2 is about exactly that).
+    const row = bs(PKO_BALANCE)
+    expect(row.workingCapital).toBeUndefined()
+    expect(row.totalAssets).toBe(583079000000)
+    expect(row.shareholdersEquity).toBe(58514000000)
+  })
+
+  it("computes workingCapital from whichever current pair the provider supplies", () => {
+    // SAP supplies total_current_assets but only a bare `current_liabilities`
+    // (20256 − 17416 = 2840, the same figure its own working_capital key carries).
+    expect(bs({ ...SAP_BALANCE, working_capital: null }).workingCapital).toBe(2840000000)
+    expect(
+      bs({
+        working_capital: undefined,
+        current_assets: 100,
+        current_liabilities: 140,
+      }).workingCapital,
+    ).toBe(-40)
+    // Half a pair is not a number.
+    expect(bs({ working_capital: undefined, total_current_assets: 100 }).workingCapital).toBeUndefined()
+    expect(
+      bs({
+        working_capital: undefined,
+        total_current_assets: 100,
+        total_current_liabilities: 165631000000,
+      }).workingCapital,
+    ).toBe(100 - 165631000000)
+  })
+})
+
+describe("toFundamentals §79.3 — the income mapper, audited on the same fixtures", () => {
+  it("reads yfinance's revenue name, which also unblocks netIncomeMargin", () => {
+    // `revenue` is absent on every yfinance row — it is `total_revenue` /
+    // `operating_revenue` there. Because netIncomeMargin divides by it, that one
+    // wrong key also emptied the margin column.
+    const sap = is(SAP_INCOME)
+    expect(sap.revenue).toBe(36800000000)
+    expect(sap.netIncome).toBe(7161000000)
+    expect(sap.netIncomeMargin).toBe(19.46)
+    const pko = is(PKO_INCOME)
+    expect(pko.revenue).toBe(31050000000)
+    expect(pko.netIncomeMargin).toBe(34.4)
+  })
+
+  it("netIncomeGrowth follows the same pick() as netIncome, on both namings", () => {
+    // The old line read `r.net_income` directly while netIncome read a pick(), so
+    // growth was computed from a key AAPL does not have and was blank for it.
+    const fmp = toFundamentals(
+      [
+        { ...AAPL_INCOME, fiscal_year: 2024 },
+        { ...AAPL_INCOME, fiscal_year: 2023, bottom_line_net_income: 96995000000, consolidated_net_income: 96995000000 },
+      ],
+      [],
+      [],
+    ).financialHighlights.incomeStatement
+    expect(fmp![0].netIncomeGrowth).toBe(15.48)
+    expect(fmp![0].netIncome).toBe(112010000000)
+
+    const eu = toFundamentals(
+      [
+        { ...SAP_INCOME, period_ending: "2024-12-31", net_income: 8261000000 },
+        { ...SAP_INCOME, period_ending: "2023-12-31", net_income: 7368000000 },
+      ],
+      [],
+      [],
+    ).financialHighlights.incomeStatement
+    expect(eu![0].netIncomeGrowth).toBe(12.12)
+  })
+
+  it("reads yfinance's diluted share count, the only one it emits", () => {
+    // Empty for every symbol before, on both namings — which is what left
+    // freeCashFlowPerShare with no denominator (§79.1).
+    expect(is(SAP_INCOME).dilutedSharesOutstanding).toBe(1175000000)
+    expect(is(PKO_INCOME).dilutedSharesOutstanding).toBe(1250000000)
+    expect(is(AAPL_INCOME).dilutedSharesOutstanding).toBe(15004697000)
+  })
+
+  it("leaves ebit and ebitda blank for PKO.WA — the provider has neither line", () => {
+    // PKO's row carries revenue, net income and pre-tax income but no EBIT and no
+    // EBITDA, and no other provider in the chain is plan-entitled to the EU
+    // statements (§79.4). Deriving EBIT as revenue − operating expense would be a
+    // different operation than reading a reported figure.
+    const pko = is(PKO_INCOME)
+    expect(pko.ebit).toBeUndefined()
+    expect(pko.ebitda).toBeUndefined()
+    expect(pko.revenue).toBe(31050000000)
+    expect(pko.earningsPerShare).toBe(8.55)
+    expect(is(SAP_INCOME).ebit).toBe(10762000000)
+    expect(is(AAPL_INCOME).ebit).toBe(132729000000)
+  })
+})
+
+describe("toFundamentals §79.3 — the cash-flow mapper, audited on the same fixtures", () => {
+  it("freeCashFlow is the provider's figure, not a subtraction that added capex back", () => {
+    // Every provider in the chain reports capex as a NEGATIVE outflow, so the old
+    // `operating − capitalExpenditure` inflated it: AAPL FY2025 came out at
+    // 124,197 against a true 98,767 — 26% overstated on the one symbol anybody
+    // would sanity-check by hand.
+    expect(cf(AAPL_CASH).freeCashFlow).toBe(98767000000)
+    expect(cf(SAP_CASH).freeCashFlow).toBe(8417000000)
+    expect(cf(PKO_CASH).freeCashFlow).toBe(10498000000)
+  })
+
+  it("the fallback subtraction reproduces the provider's own free_cash_flow", () => {
+    // Drop the reported value and the corrected subtraction must land on it
+    // exactly — that is what proves the sign, not a guess about it.
+    for (const [row, reported] of [
+      [AAPL_CASH, 98767000000],
+      [SAP_CASH, 8417000000],
+      [PKO_CASH, 10498000000],
+    ] as const) {
+      const { free_cash_flow: _dropped, ...rest } = row as Record<string, unknown>
+      expect(cf(rest).freeCashFlow).toBe(reported)
+    }
+  })
+
+  it("subtracts capex as an outflow whichever sign a provider reports it in", () => {
+    const base = { operating_cash_flow: 100 }
+    expect(cf({ ...base, capital_expenditure: -30 }).freeCashFlow).toBe(70)
+    expect(cf({ ...base, capital_expenditure: 30 }).freeCashFlow).toBe(70)
+    // One of the two legs missing is not a number.
+    expect(cf({ ...base, capital_expenditure: -30 }).freeCashFlow).toBe(70)
+    expect(cf(base).freeCashFlow).toBeUndefined()
+  })
+
+  it("freeCashFlowGrowth follows the corrected figure", () => {
+    const rows = toFundamentals(
+      [],
+      [],
+      [
+        { ...AAPL_CASH, period_ending: "2025-09-27", free_cash_flow: 98767000000 },
+        { ...AAPL_CASH, period_ending: "2024-09-28", free_cash_flow: 99765000000 },
+      ],
+    ).financialHighlights.cashFlow
+    expect(rows![0].freeCashFlowGrowth).toBe(-1)
+  })
+
+  it("reads yfinance's dividend key, which differs per listing", () => {
+    // AAPL reports `common_dividends_paid`; the EU listings report
+    // `cash_dividends_paid` / `common_stock_dividend_paid`. Both are negative
+    // outflows and pass through unsign-flipped, like capitalExpenditures.
+    expect(cf(AAPL_CASH).dividendPayment).toBe(-15421000000)
+    expect(cf(SAP_CASH).dividendPayment).toBe(-2743000000)
+    expect(cf(PKO_CASH).dividendPayment).toBe(-6850000000)
+  })
+
+  it("keeps the operating, financing and investing lines on both namings", () => {
+    expect(cf(AAPL_CASH)).toMatchObject({
+      cashFlowFromOperatingActivities: 111482000000,
+      cashFlowFromFinancingActivities: -120686000000,
+      cashFlowFromInvestingActivities: 15195000000,
+      capitalExpenditures: -12715000000,
+      depreciation: 11698000000,
+    })
+    expect(cf(SAP_CASH)).toMatchObject({
+      cashFlowFromOperatingActivities: 9156000000,
+      cashFlowFromFinancingActivities: -8745000000,
+      cashFlowFromInvestingActivities: -965000000,
+      capitalExpenditures: -739000000,
+      depreciation: 1311000000,
+    })
+    expect(cf(PKO_CASH)).toMatchObject({
+      cashFlowFromOperatingActivities: 11852000000,
+      cashFlowFromFinancingActivities: -8880000000,
+      cashFlowFromInvestingActivities: -14287000000,
+      capitalExpenditures: -1354000000,
+      depreciation: 1641000000,
+    })
   })
 })

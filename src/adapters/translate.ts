@@ -553,54 +553,173 @@ export function toFundamentals(
     return pe ? Number(pe.slice(0, 4)) || undefined : undefined
   }
 
-  const incomeStatement = income.map((r, i) => ({
-    year: year(r),
-    revenue: num(r.revenue),
-    ebit: num(pick(r, "ebit", "operating_income")),
-    netIncome: num(pick(r, "net_income", "bottom_line_net_income")),
-    netIncomeGrowth: growth(num(r.net_income), num(income[i + 1]?.net_income)),
-    netIncomeMargin:
-      num(r.net_income) !== undefined && num(r.revenue)
-        ? Math.round((num(r.net_income)! / num(r.revenue)!) * 10000) / 100
-        : undefined,
-    earningsPerShare: num(pick(r, "diluted_earnings_per_share", "basic_earnings_per_share", "eps")),
-    earningsPerShareGrowth: growth(
-      num(pick(r, "diluted_earnings_per_share", "eps")),
-      num(pick(income[i + 1] ?? {}, "diluted_earnings_per_share", "eps")),
-    ),
-    dilutedSharesOutstanding: num(pick(r, "diluted_average_shares", "weighted_average_shares_diluted")),
-    ebitda: num(r.ebitda),
-  }))
+// -- §79.3 provider key vocabularies ------------------------------------
+  //
+  // There is no fixed statement schema to map onto. openbb's FMP models declare
+  // typed fields, so FMP emits the same snake_case keys for every symbol, but
+  // openbb's yfinance models declare only fiscal_period / fiscal_year /
+  // period_ending — every line item is a passthrough extra whose name follows
+  // yfinance, and that naming differs per listing. Measured 2026-10-02 against
+  // openst on the live stack (statement=<x>&period=annual): AAPL, SAP.DE and
+  // PKO.WA were ALL served by the yfinance passthrough, not FMP — FMP returns
+  // 402 on every statement endpoint for a non-US symbol (§79.4). So the
+  // candidates below are not an EU-only fallback; they are the main path.
+  //
+  // Two of them are NOT interchangeable and the order encodes which one wins,
+  // because the column would otherwise mean different things per provider:
+  //
+  // - `totalLiabilities` prefers `total_liabilities_net_minority_interest`,
+  //   because yfinance's bare `total_liabilities` is the excluding-minority
+  //   figure on some listings and the including figure on others. The explicit
+  //   name says which it is, and it is the one that reconciles with
+  //   `total_assets` (SAP: 70,362 − 45,074 = 25,288).
+  // - `shareholdersEquity` keeps FMP's semantics across every provider: FMP's
+  //   `shareholders_equity` EXCLUDES non-controlling interests, so the EU
+  //   candidates are ordered to exclude them too (`total_common_equity`,
+  //   `common_stock_equity`) with the NCI-inclusive `total_equity` last
+  //   (SAP: 45,074 − 488 = 44,586). Taking `total_equity` would silently change
+  //   what `debtEquityRatio` means between a US row and an EU row.
+  const netIncomeOf = (row: Row): number | undefined =>
+    num(pick(row, "net_income", "bottom_line_net_income"))
+  const revenueOf = (row: Row): number | undefined =>
+    num(pick(row, "revenue", "total_revenue", "operating_revenue"))
 
-  const balanceSheet = balance.map((r) => ({
-    year: year(r),
-    totalAssets: num(r.total_assets),
-    totalLiabilities: num(r.total_liabilities),
-    shareholdersEquity: num(pick(r, "shareholders_equity", "total_equity")),
-    cash: num(pick(r, "cash_and_equivalents", "cash_n_equivalents", "cash_and_short_term_investments")),
-    cashAndShortTermInvestments: num(
-      pick(r, "cash_and_short_term_investments", "cash_and_equivalents"),
-    ),
-    totalDebt: num(pick(r, "total_debt", "long_term_debt")),
-    netDebt: num(r.net_debt),
-    workingCapital:
-      num(r.total_current_assets) !== undefined && num(r.total_current_liabilities) !== undefined
-        ? num(r.total_current_assets)! - num(r.total_current_liabilities)!
-        : undefined,
-    retainedEarnings: num(r.retained_earnings),
-    debtEquityRatio:
-      num(pick(r, "total_debt")) !== undefined && num(r.shareholders_equity)
-        ? Math.round((num(r.total_debt)! / num(r.shareholders_equity)!) * 100) / 100
-        : undefined,
-  }))
+  const incomeStatement = income.map((r, i) => {
+    const revenue = revenueOf(r)
+    const netIncome = netIncomeOf(r)
+    return {
+      year: year(r),
+      revenue,
+      // PKO.WA carries no EBIT or operating-income line on any provider, so this
+      // stays blank there. Deriving it from revenue − operating expense would be
+      // a different operation than reading a reported figure; §79.2 is about not
+      // presenting numbers whose basis is unknown.
+      ebit: num(pick(r, "ebit", "operating_income")),
+      netIncome,
+      netIncomeGrowth: growth(netIncome, netIncomeOf(income[i + 1] ?? {})),
+      netIncomeMargin:
+        netIncome !== undefined && revenue
+          ? Math.round((netIncome / revenue) * 10000) / 100
+          : undefined,
+      earningsPerShare: num(pick(r, "diluted_earnings_per_share", "basic_earnings_per_share", "eps")),
+      earningsPerShareGrowth: growth(
+        num(pick(r, "diluted_earnings_per_share", "eps")),
+        num(pick(income[i + 1] ?? {}, "diluted_earnings_per_share", "eps")),
+      ),
+      // `weighted_average_diluted_shares_outstanding` is yfinance's name and the
+      // only one it emits; the FMP names are kept as fallbacks. This was empty
+      // for every symbol before, which is what left freeCashFlowPerShare (§79.1)
+      // with no denominator.
+      dilutedSharesOutstanding: num(
+        pick(
+          r,
+          "weighted_average_diluted_shares_outstanding",
+          "diluted_average_shares",
+          "weighted_average_shares_diluted",
+        ),
+      ),
+      // Same for EBITDA: PKO.WA has no EBITDA line (only `normalized_income`),
+      // so this one is a genuine provider gap, left blank on purpose.
+      ebitda: num(r.ebitda),
+    }
+  })
+
+  const balanceSheet = balance.map((r) => {
+    const totalDebt = num(pick(r, "total_debt", "long_term_debt"))
+    const shareholdersEquity = num(
+      pick(
+        r,
+        "shareholders_equity",
+        "stockholders_equity",
+        "total_common_equity",
+        "common_stock_equity",
+        "total_equity",
+      ),
+    )
+    const currentAssets = num(pick(r, "total_current_assets", "current_assets"))
+    const currentLiabilities = num(pick(r, "total_current_liabilities", "current_liabilities"))
+    return {
+      year: year(r),
+      totalAssets: num(r.total_assets),
+      totalLiabilities: num(pick(r, "total_liabilities_net_minority_interest", "total_liabilities")),
+      shareholdersEquity,
+      // yfinance's "Cash And Cash Equivalents" is `cash_and_cash_equivalents`.
+      // `cash_equivalents` is only the equivalents sub-line (SAP: 4,310 of
+      // 8,220) and `cash_financial` is the wider aggregate (SAP: 3,910 — not
+      // cash plus investments either), so both sit below the exact match.
+      cash: num(
+        pick(
+          r,
+          "cash_and_equivalents",
+          "cash_n_equivalents",
+          "cash_and_cash_equivalents",
+          "cash_financial",
+          "cash_equivalents",
+        ),
+      ),
+      // `cash_cash_equivalents_and_short_term_investments` is yfinance's combined
+      // line and is the one that reconciles (SAP: 8,220 + 1,552 = 9,772). The
+      // plain-cash fallbacks stay because a lower bound beats a blank, and are
+      // what an FMP row that omits the combined line already got.
+      cashAndShortTermInvestments: num(
+        pick(
+          r,
+          "cash_and_short_term_investments",
+          "cash_cash_equivalents_and_short_term_investments",
+          "cash_and_equivalents",
+          "cash_and_cash_equivalents",
+        ),
+      ),
+      totalDebt,
+      netDebt: num(r.net_debt),
+      // A provider-reported figure beats a subtraction, and where neither exists
+      // the cell is deliberately blank: PKO.WA has no current-asset and no
+      // current-liability line on any provider, so a number here would have to
+      // be invented. A wrong working-capital figure is worse than a blank.
+      workingCapital:
+        num(pick(r, "working_capital")) ??
+        (currentAssets !== undefined && currentLiabilities !== undefined
+          ? currentAssets - currentLiabilities
+          : undefined),
+      retainedEarnings: num(r.retained_earnings),
+      debtEquityRatio:
+        totalDebt !== undefined && shareholdersEquity
+          ? Math.round((totalDebt / shareholdersEquity) * 100) / 100
+          : undefined,
+    }
+  })
+
+  /** Free cash flow, as the provider reports it where it reports it.
+   *
+   *  §79.3 — the old `operating − capitalExpenditure` was a SIGN ERROR, not a
+   *  naming gap: every provider in the chain reports capex as a negative
+   *  outflow, so the subtraction added it back. AAPL FY2025 came out at
+   *  124,197 against a true 98,767 — 26% overstated, on the one symbol whose
+   *  numbers anyone checks. Verified 2026-10-02 that `operating − |capex|`
+   *  reproduces the provider's own `free_cash_flow` exactly for all three
+   *  symbols measured (AAPL 98,767 · SAP.DE 8,417 · PKO.WA 10,498), so the
+   *  provider value is preferred and the corrected subtraction is the fallback
+   *  for a provider that omits it. */
+  const fcfOf = (row: Row): number | undefined => {
+    const reported = num(pick(row, "free_cash_flow"))
+    if (reported !== undefined) return reported
+    const op = num(
+      pick(row, "operating_cash_flow", "cash_flow_from_operating_activities", "net_cash_from_operating_activities"),
+    )
+    const capex = num(pick(row, "capital_expenditure", "capex"))
+    return op !== undefined && capex !== undefined ? op - Math.abs(capex) : undefined
+  }
+  const opOf = (row: Row): number | undefined =>
+    num(
+      pick(row, "operating_cash_flow", "cash_flow_from_operating_activities", "net_cash_from_operating_activities"),
+    )
 
   const cashFlow = cash.map((r, i) => {
-    const op = num(pick(r, "operating_cash_flow", "cash_flow_from_operating_activities", "net_cash_from_operating_activities"))
+    const op = opOf(r)
     const capexRaw = num(pick(r, "capital_expenditure", "capex"))
-    const fcf = op !== undefined && capexRaw !== undefined ? op - capexRaw : undefined
-    const prevOp = num(pick(cash[i + 1] ?? {}, "operating_cash_flow", "net_cash_from_operating_activities"))
-    const prevCapex = num(pick(cash[i + 1] ?? {}, "capital_expenditure"))
-    const prevFcf = prevOp !== undefined && prevCapex !== undefined ? prevOp - prevCapex : undefined
+    const fcf = fcfOf(r)
+    const prevOp = opOf(cash[i + 1] ?? {})
+    const prevFcf = fcfOf(cash[i + 1] ?? {})
     return {
       year: year(r),
       cashFlowFromOperatingActivities: op,
@@ -611,7 +730,21 @@ export function toFundamentals(
       cashFlowFromOperatingActivitiesGrowth: growth(op, prevOp),
       capitalExpenditures: capexRaw,
       depreciation: num(pick(r, "depreciation_and_amortization", "depreciation")),
-      dividendPayment: num(pick(r, "dividends_paid", "dividend_payment")),
+      // yfinance's names: AAPL reports `common_dividends_paid`, the EU listings
+      // `cash_dividends_paid` / `common_stock_dividend_paid` (SAP and PKO both
+      // carry the latter two as the same figure). All are negative outflows and
+      // are passed through unsign-flipped, like capitalExpenditures.
+      dividendPayment: num(
+        pick(
+          r,
+          "dividends_paid",
+          "dividend_payment",
+          "common_dividends_paid",
+          "cash_dividends_paid",
+          "common_stock_dividend_paid",
+          "net_dividends_paid",
+        ),
+      ),
     }
   })
 
