@@ -2595,6 +2595,37 @@ export interface components {
             results?: components["schemas"]["SearchResult"][];
         };
         FundamentalsData: {
+            /**
+             * @description ISO-4217 the three statements below are denominated in, or null when
+             *     they do not agree on one (plan §79.2).
+             *
+             *     The three statements are three independent provider walks, so a
+             *     single instrument can answer with income from one provider and a
+             *     balance sheet from another, in different currencies and units. That
+             *     used to be invisible: every value rendered through `formatCompact`
+             *     with no currency symbol, so a GPW name in PLN and a US name in USD
+             *     were indistinguishable on screen. Null rather than a guess — see
+             *     `currencySource` and `sources`.
+             */
+            currency?: string | null;
+            /**
+             * @description How `currency` was determined (plan §79.2). `provider` only when the
+             *     providers themselves agreed on one declaration; `estimated` when it
+             *     came from the local symbol/exchange resolver (plan §71); `unknown`
+             *     when the statements disagree or nothing declares one.
+             */
+            currencySource?: components["schemas"]["CurrencySource"];
+            /**
+             * @description Which upstream provider satisfied each statement walk (plan §79.2).
+             *     Null per field when the answer did not survive the hop — notably
+             *     when openst or cachest served a body cached before this field
+             *     existed.
+             */
+            sources?: {
+                incomeStatement?: string | null;
+                balanceSheet?: string | null;
+                cashFlow?: string | null;
+            };
             financialHighlights: {
                 incomeStatement?: {
                     year?: number;
@@ -3235,6 +3266,8 @@ export interface components {
                     date?: string;
                     value?: number;
                     invested?: number | null;
+                    unpricedValue?: number;
+                    carriedValue?: number;
                     cumulativeTwr?: number;
                     cumulativeMwr?: number;
                     cumulativeSimple?: number;
@@ -3259,6 +3292,10 @@ export interface components {
             gapSymbols?: string[] | null;
             /** @description gapSymbols still held on the window's last day. Non-empty ⇒ the latest stored value excludes them. Empty while `gapSymbols` is non-empty ⇒ the history is a partial sum but the current value is complete, and the UI must say that instead of "value is short". */
             heldGapSymbols?: string[] | null;
+            /** @description symbol → number of held days with no returned bar, across the backfill window. Non-empty ⇒ the stored history has coverage steps that are not market moves, and the UI should say so rather than let a step read as a real return. Empty/absent ⇒ no such holes. Overlaps `gapSymbols` freely: a symbol may be listed in both, and means something different by each. */
+            fxCoverageHoles?: {
+                [key: string]: number;
+            } | null;
         };
         PortfolioSnapshot: {
             allocation?: {
@@ -3724,6 +3761,27 @@ export interface components {
                 message?: string;
             }[];
             syncRun?: components["schemas"]["SyncRun"];
+            /**
+             * @description Portfolios whose history this import changed, each with the number of
+             *     rows inserted into it. Empty/absent when the batch inserted nothing.
+             *     This is the set a full re-backfill was queued for, so it is also the
+             *     set to look at when a chart looks stale after an import.
+             */
+            affectedPortfolios?: {
+                /** Format: uuid */
+                portfolioId: string;
+                /** @description Portfolio name at import time — an operator reading a log wants the name */
+                name?: string | null;
+                /** @description Rows INSERTED into this portfolio by this batch. */
+                rowCount: number;
+            }[];
+            /**
+             * @description Whether a re-backfill was enqueued. Distinguishes "nothing changed, so
+             *     nothing to rebuild" (false) from "rebuild queued but the queue is
+             *     backed up" — which the caller can then read off
+             *     `portfolio_backfill_metadata` instead of guessing from a log line.
+             */
+            backfillQueued?: boolean;
         };
         SyncRun: {
             id: number;

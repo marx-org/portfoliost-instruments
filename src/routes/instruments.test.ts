@@ -54,6 +54,11 @@ function req(path: string) {
 
 const mocked = vi.mocked(cachest, true)
 
+/** §79.2 — the statement envelope openst now answers with. */
+function statement(provider: string | null, rows: Array<Record<string, unknown>>) {
+  return { provider, rows }
+}
+
 beforeEach(() => {
   mocked.fetchProfile.mockReset()
   mocked.fetchQuote.mockReset()
@@ -808,16 +813,16 @@ describe("pt2 routes", () => {
   describe("GET /:symbol/fundamentals", () => {
     it("assembles financial highlights from the three statements", async () => {
       mocked.fetchFundamentals
-        .mockResolvedValueOnce([
-          { fiscal_year: 2024, period_ending: "2024-09-28 00:00:00", revenue: 100, net_income: 20, diluted_earnings_per_share: 1.2, ebit: 30, ebitda: 35 },
-          { fiscal_year: 2023, period_ending: "2023-09-30 00:00:00", revenue: 90, net_income: 10, diluted_earnings_per_share: 1.0 },
-        ])
-        .mockResolvedValueOnce([
-          { fiscal_year: 2024, total_assets: 500, total_liabilities: 300, shareholders_equity: 200, total_debt: 100, total_current_assets: 150, total_current_liabilities: 100 },
-        ])
-        .mockResolvedValueOnce([
-          { fiscal_year: 2024, operating_cash_flow: 80, capital_expenditure: 20, depreciation_and_amortization: 10 },
-        ])
+        .mockResolvedValueOnce(statement("fmp", [
+          { fiscal_year: 2024, period_ending: "2024-09-28 00:00:00", revenue: 100, net_income: 20, diluted_earnings_per_share: 1.2, ebit: 30, ebitda: 35, reported_currency: "USD" },
+          { fiscal_year: 2023, period_ending: "2023-09-30 00:00:00", revenue: 90, net_income: 10, diluted_earnings_per_share: 1.0, reported_currency: "USD" },
+        ]))
+        .mockResolvedValueOnce(statement("fmp", [
+          { fiscal_year: 2024, total_assets: 500, total_liabilities: 300, shareholders_equity: 200, total_debt: 100, total_current_assets: 150, total_current_liabilities: 100, reported_currency: "USD" },
+        ]))
+        .mockResolvedValueOnce(statement("yfinance", [
+          { fiscal_year: 2024, operating_cash_flow: 80, capital_expenditure: 20, depreciation_and_amortization: 10, reported_currency: "USD" },
+        ]))
 
       const res = await req("/api/instruments/AAPL/fundamentals")
       expect(res.status).toBe(200)
@@ -835,6 +840,90 @@ describe("pt2 routes", () => {
       mocked.fetchFundamentals.mockRejectedValue(new cachest.UpstreamError("x", 500))
       const res = await req("/api/instruments/AAPL/fundamentals")
       expect(res.status).toBe(502)
+    })
+
+    // --- §79.2 provenance ------------------------------------------------
+    //
+    // The three statements are three independent provider walks. Before this,
+    // a table could answer with income from one provider and a balance sheet
+    // from another, in different currencies, with no record of either — and the
+    // tab rendered every value with no currency symbol, so a GPW name in PLN and
+    // a US name in USD looked identical.
+    const threeStatements = (
+      providers: [string | null, string | null, string | null],
+      currencies: Array<string | null> = ["USD", "USD", "USD"],
+    ) => {
+      const rows = (i: number) =>
+        [{ period_ending: "2024-12-31", reported_currency: currencies[i] }]
+      mocked.fetchFundamentals
+        .mockResolvedValueOnce(statement(providers[0], rows(0)))
+        .mockResolvedValueOnce(statement(providers[1], rows(1)))
+        .mockResolvedValueOnce(statement(providers[2], rows(2)))
+    }
+
+    it("records the provider that answered each statement", async () => {
+      threeStatements(["fmp", "yfinance", "fmp"])
+      const body = await (await req("/api/instruments/AAPL/fundamentals")).json()
+      expect(body.sources).toEqual({
+        incomeStatement: "fmp",
+        balanceSheet: "yfinance",
+        cashFlow: "fmp",
+      })
+    })
+
+    it("reports the provider currency only when all three statements agree", async () => {
+      threeStatements(["fmp", "fmp", "fmp"], ["USD", "USD", "USD"])
+      const body = await (await req("/api/instruments/AAPL/fundamentals")).json()
+      // AAPL resolves locally to USD too, but the declaration is what put it
+      // there, so the source is the provider.
+      expect(body.currency).toBe("USD")
+      expect(body.currencySource).toBe("provider")
+    })
+
+    it("a currency disagreement is never reported as provider-sourced", async () => {
+      // Income in EUR, balance sheet in USD: there is no single currency for
+      // this table, and claiming one would be the defect this fixes. With no DB
+      // in this harness the local resolver has nothing to answer with, so the
+      // result is `unknown` — the point is that it is NOT `provider`.
+      threeStatements(["fmp", "yfinance", "fmp"], ["EUR", "USD", "EUR"])
+      const body = await (await req("/api/instruments/AAPL/fundamentals")).json()
+      expect(body.currencySource).not.toBe("provider")
+      expect(body.currencySource).toBe("unknown")
+      expect(body.currency).toBeNull()
+    })
+
+    it("an undeclared currency is not read as a disagreement", async () => {
+      // The yfinance passthrough carries no `reported_currency` at all — true of
+      // every EU listing measured. Silence is not disagreement, so the
+      // declaration is simply absent and the local resolver gets to answer; with
+      // no DB here it answers `unknown` rather than inventing one.
+      threeStatements(["yfinance", "yfinance", "yfinance"], [null, null, null])
+      const body = await (await req("/api/instruments/AAPL/fundamentals")).json()
+      expect(body.currencySource).toBe("unknown")
+      expect(body.currency).toBeNull()
+      // The provenance still stands on its own — a missing currency must not
+      // cost the record of which provider answered.
+      expect(body.sources).toEqual({
+        incomeStatement: "yfinance",
+        balanceSheet: "yfinance",
+        cashFlow: "yfinance",
+      })
+    })
+
+    it("a body cached before the envelope reports no provider rather than failing", async () => {
+      // openst caches 24h in Redis and cachest for another 24h, so for up to a
+      // day after the openst deploy the statements can still arrive with a null
+      // provider. The numbers must survive that; only the attribution is lost.
+      threeStatements([null, null, null], ["USD", "USD", "USD"])
+      const res = await req("/api/instruments/AAPL/fundamentals")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.sources).toEqual({
+        incomeStatement: null,
+        balanceSheet: null,
+        cashFlow: null,
+      })
+      expect(body.currency).toBe("USD")
     })
   })
 
@@ -1101,11 +1190,11 @@ describe("pt2b routes", () => {
 
   describe("GET /:symbol/eps-surprises", () => {
     it("derives rows with YoY-baseline estimates", async () => {
-      mocked.fetchFundamentals.mockResolvedValue([
+      mocked.fetchFundamentals.mockResolvedValue(statement("fmp", [
         { period_ending: "2024-03-31 00:00:00", diluted_earnings_per_share: 1.0, revenue: 900 },
         { period_ending: "2025-03-31 00:00:00", diluted_earnings_per_share: 1.2, revenue: 1000 },
         { period_ending: "2025-06-30 00:00:00", diluted_earnings_per_share: 1.3, revenue: 1050 },
-      ])
+      ]))
       const res = await req("/api/instruments/AAPL/eps-surprises")
       expect(res.status).toBe(200)
       const body = await res.json()
@@ -1119,11 +1208,11 @@ describe("pt2b routes", () => {
 
     it("honors the quarters parameter", async () => {
       mocked.fetchFundamentals.mockResolvedValue(
-        Array.from({ length: 12 }, (_, i) => ({
+        statement("fmp", Array.from({ length: 12 }, (_, i) => ({
           period_ending: `20${25 + Math.floor(i / 4)}-0${(i % 4) * 3 + 1}-15 00:00:00`,
           diluted_earnings_per_share: 1,
           revenue: 100,
-        })),
+        }))),
       )
       const res = await req("/api/instruments/AAPL/eps-surprises?quarters=12")
       expect((await res.json()).quarterly).toHaveLength(12)
@@ -1132,10 +1221,10 @@ describe("pt2b routes", () => {
 
   describe("GET /:symbol/investor-relations", () => {
     it("lists earnings-call events per reported quarter", async () => {
-      mocked.fetchFundamentals.mockResolvedValue([
+      mocked.fetchFundamentals.mockResolvedValue(statement("fmp", [
         { period_ending: "2026-03-31 00:00:00" },
         { period_ending: "2025-12-31 00:00:00" },
-      ])
+      ]))
       mocked.fetchFilings.mockResolvedValue([])
       const res = await req("/api/instruments/AAPL/investor-relations")
       expect(res.status).toBe(200)
@@ -1151,7 +1240,7 @@ describe("pt2b routes", () => {
     })
 
     it("blends SEC filing events with earnings-call events", async () => {
-      mocked.fetchFundamentals.mockResolvedValue([{ period_ending: "2026-06-30 00:00:00" }])
+      mocked.fetchFundamentals.mockResolvedValue(statement("fmp", [{ period_ending: "2026-06-30 00:00:00" }]))
       mocked.fetchFilings.mockResolvedValue([
         {
           symbol: "AAPL",
@@ -1192,7 +1281,9 @@ describe("pt2b routes", () => {
     })
 
     it("falls back to quarters-only when filings are missing", async () => {
-      mocked.fetchFundamentals.mockResolvedValue([{ period_ending: "2026-03-31 00:00:00" }])
+      mocked.fetchFundamentals.mockResolvedValue(
+        statement("fmp", [{ period_ending: "2026-03-31 00:00:00" }]),
+      )
       mocked.fetchFilings.mockRejectedValue(new Error("404"))
       const res = await req("/api/instruments/AAPL/investor-relations")
       expect(res.status).toBe(200)

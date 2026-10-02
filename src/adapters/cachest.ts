@@ -83,13 +83,34 @@ export function fetchCryptoOhlcv(
   return fetchJson(`${BASE_URL}/crypto/ohlcv/${encodeURIComponent(pair)}?${q}`)
 }
 
-export function fetchFundamentals(
+/** One statement walk, with the provider that satisfied it (§79.2).
+ *
+ *  `provider` is null when the body predates the envelope: openst caches this
+ *  response in Redis for 24h and cachest for another 24h (`cache_ttl 86400`,
+ *  `config.yaml:251-258`), so for up to a day after openst ships, a body cached
+ *  by the old code is still a bare row list. Tolerating that shape is what keeps
+ *  the fundamentals tab populated across the deploy instead of blanking it —
+ *  and null provenance is honest about it, which a thrown error is not. */
+export interface FundamentalsStatement {
+  provider: string | null
+  rows: Array<Record<string, unknown>>
+}
+
+export async function fetchFundamentals(
   symbol: string,
   statement: "income" | "balance" | "cash",
   period: "annual" | "quarter",
-): Promise<Array<Record<string, unknown>>> {
+): Promise<FundamentalsStatement> {
   const q = new URLSearchParams({ statement, period })
-  return fetchJson(`${BASE_URL}/fundamentals/${encodeURIComponent(symbol)}?${q}`)
+  const body = await fetchJson<unknown>(
+    `${BASE_URL}/fundamentals/${encodeURIComponent(symbol)}?${q}`,
+  )
+  if (Array.isArray(body)) return { provider: null, rows: body }
+  const envelope = body as { provider?: unknown; rows?: unknown }
+  return {
+    provider: typeof envelope.provider === "string" ? envelope.provider : null,
+    rows: Array.isArray(envelope.rows) ? envelope.rows : [],
+  }
 }
 
 export function fetchCalendarEarnings(start: string, end: string): Promise<Array<Record<string, unknown>>> {
