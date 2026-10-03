@@ -142,6 +142,55 @@ export async function priceTierForSymbol(
   return rows[0]?.exchange === FUND_CATEGORY_VENUE ? "fund_category" : "standard"
 }
 
+/**
+ * The `ANALIZY::` reference row for a fund-category code, or `null`.
+ *
+ * §78 put the fund categories in `ticker_reference` and routed their *price* by
+ * the venue column ({@link priceTierForSymbol}), but the profile route had no
+ * branch for them: a category code like `ING01W` is not a GPW listing, so the
+ * equity tier 404s (yfinance "Invalid/delisted", biznesradar, intrinio) and the
+ * obligacje bond fallback 404s behind it, and the page answered 404 with the
+ * raw cachest URL as its message. The catalogue row already carries every field
+ * the profile needs — name, venue, country — so this asks for the row itself
+ * rather than assembling identity from a provider that has none.
+ *
+ * One query for both the tier and the identity, and the `ANALIZY` filter is
+ * what makes the row unambiguous: a bare ticker can be listed on several
+ * exchanges (`ING` alone is ASX, LSE, NYSE and WSE), while a category code is
+ * only ever an `ANALIZY` listing.
+ */
+export async function fundCategoryReference(
+  db: DB,
+  symbol: string,
+): Promise<TickerSearchRow | null> {
+  const keys = referenceTickerKeys(symbol)
+  if (keys.length === 0) return null
+  const rows = await db
+    .select({
+      listingKey: tickerReference.listingKey,
+      ticker: tickerReference.ticker,
+      exchange: tickerReference.exchange,
+      name: tickerReference.name,
+      assetType: tickerReference.assetType,
+      stockSector: tickerReference.stockSector,
+      etfCategory: tickerReference.etfCategory,
+      country: tickerReference.country,
+      countryCode: tickerReference.countryCode,
+      isin: tickerReference.isin,
+      yahooSuffix: exchangeReference.yahooSuffix,
+    })
+    .from(tickerReference)
+    .leftJoin(exchangeReference, sql`${exchangeReference.exchangeCode} = ${tickerReference.exchange}`)
+    .where(
+      sql`${tickerReference.exchange} = ${FUND_CATEGORY_VENUE} and ${tickerReference.ticker} in (${sql.join(
+        keys.map((k) => sql`${k}`),
+        sql`, `,
+      )})`,
+    )
+    .limit(1)
+  return rows[0] ?? null
+}
+
 /** Symbol/name/alias search over the reference table. Exact ticker matches
  * rank first, then ticker prefixes, then name/alias substring hits. */
 export async function searchTickerReference(

@@ -22,6 +22,7 @@ import {
 import { getExchangeBySuffix } from "../db/tickerref-queries.js"
 import { searchTickerReference } from "../db/tickerref-queries.js"
 import { assetTypeForSymbol, normalizeAssetType } from "../db/tickerref-queries.js"
+import { fundCategoryReference, FUND_CATEGORY_VENUE } from "../db/tickerref-queries.js"
 import {
   fetchProfile,
   fetchQuote,
@@ -222,6 +223,53 @@ function upstreamErrorResponse(c: any, e: unknown) {
 }
 
 /**
+ * The `ANALIZY::` catalogue row for a fund-category code (`ING01W`), or null.
+ *
+ * The reference table is the *only* source that knows these symbols: §78 routes
+ * their price to `/fund/history/{code}` by the venue column, but a category code
+ * is not a GPW listing, so the equity tier 404s for it ("Invalid/delisted
+ * ING01W" from all three providers) and the obligacje bond fallback 404s behind
+ * it. Probing providers that cannot answer is what made the research page
+ * report "upstream 404 for http://cachest.../equity/profile/ING01W".
+ */
+async function fundCategoryRow(db: DB | null, symbol: string) {
+  if (!db) return null
+  try {
+    return await fundCategoryReference(db, symbol)
+  } catch {
+    // Reference table unavailable — fall through to the provider cascade, which
+    // is the pre-existing behaviour for every symbol.
+    return null
+  }
+}
+
+/**
+ * Provider-row shape for a fund category, assembled from the catalogue row.
+ *
+ * Every field the profile reads is present in `ticker_reference` except the
+ * currency, and the currency is not a guess: `fundCategoryQuote` states PLN for
+ * the whole universe ("§72.39 asserts PLN on the quotation route") and a fund
+ * category has no listed price in any other currency. `asset_type` is passed
+ * through so `toInstrumentDetail` takes its D82 branch instead of defaulting to
+ * STOCK.
+ */
+function fundCategoryProfileRow(ref: {
+  name: string
+  exchange: string
+  country: string | null
+  assetType: string
+}): Record<string, unknown> {
+  return {
+    name: ref.name,
+    exchange: ref.exchange || FUND_CATEGORY_VENUE,
+    country: ref.country ?? undefined,
+    hq_country: ref.country ?? undefined,
+    asset_type: ref.assetType,
+    currency: "PLN",
+  }
+}
+
+/**
  * OHLCV with D79 bond fallback: a savings-bond symbol 404s (or times out —
  * the equity tier spins through three OpenBB providers) the equity history
  * leg, so fall back to the bond-pricing leg (`fixedincome/ohlcv`) for any
@@ -374,6 +422,17 @@ export function createInstrumentsRoutes() {
           return upstreamErrorResponse(c, e)
         }
       }
+      // §78 — an analizy.pl fund category is priced from its own tier and has no
+      // provider profile at all, so answer it from the catalogue row instead of
+      // walking the equity tier into a 404. This route feeds the add-position
+      // dialog's currency pre-fill, which otherwise starts empty for a fund.
+      const fundRef = await fundCategoryRow(getDb(), symbol)
+      if (fundRef) {
+        const resolution = await resolveCurrency(getDb(), routeSymbol, "PLN")
+        return c.json(
+          toInstrumentDetail(symbol, fundCategoryProfileRow(fundRef) as OpenstProfile, resolution),
+        )
+      }
       try {
         const profile = (await fetchProfile(symbol)) as OpenstProfile
         const resolution = await resolveCurrency(getDb(), routeSymbol, profile.currency)
@@ -446,6 +505,35 @@ export function createInstrumentsRoutes() {
           return c.json(toInstrumentProfile(symbol, bondProfile, resolution, { kind: "bond" }))
         } catch (e) {
           return upstreamErrorResponse(c, e)
+        }
+      }
+
+      // §78 — an analizy.pl fund category (`ING01W`) is priced from its own tier
+      // and has no provider profile in any of them: the equity walk 404s
+      // ("Invalid/delisted ING01W" from yfinance, biznesradar and intrinio) and
+      // the obligacje fallback 404s behind it, so the page used to answer 404
+      // with the cachest URL as its message while its quote and NAV chart were
+      // both working. The catalogue row is the profile; nothing is fetched.
+      //
+      // Gated on `assetType === "fund"` as well as the venue so this cannot
+      // shadow a `.TFI` fund, which keeps the equity profile path (biznesradar
+      // serves those) — the same distinction quote-dispatch makes at :145.
+      if (assetType === "fund") {
+        const fundRef = await fundCategoryRow(db, symbol)
+        if (fundRef) {
+          const resolution = await resolveCurrency(getDb(), routeSymbol, "PLN")
+          const out = toInstrumentProfile(
+            symbol,
+            fundCategoryProfileRow(fundRef) as OpenstProfile,
+            resolution,
+            // §86 — the listing key is what carries the category code; nothing
+            // upstream ever sends it.
+            { kind: "fund", listingKey: fundRef.listingKey },
+          )
+          out.assetType = toInstrumentType(fundRef.assetType)
+          if (!out.isin) out.isin = fundRef.isin
+          if (!out.countryCode) out.countryCode = fundRef.countryCode
+          return c.json(out)
         }
       }
 

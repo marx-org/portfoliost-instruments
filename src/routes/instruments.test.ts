@@ -2271,7 +2271,7 @@ describe("GET /:symbol/profile — asset-class dispatch (§86.8)", () => {
   it("gives an ANALIZY fund its category code and a TFI fund none", async () => {
     mocked.fetchProfile.mockResolvedValue({ name: "Erste Akcji Polskich" })
     const analizy = await profileWithReference(
-      `${REF_HEADER}\nANALIZY::ARK01,ARK01,GPW,"Erste Akcji Polskich",fund,,,,PL,,`,
+      `${REF_HEADER}\nANALIZY::ARK01,ARK01,ANALIZY,"Erste Akcji Polskich",fund,,,,Poland,PL,,`,
       "/api/instruments/ARK01/profile",
     )
 
@@ -2286,5 +2286,80 @@ describe("GET /:symbol/profile — asset-class dispatch (§86.8)", () => {
 
     expect(tfi.status).toBe(200)
     expect((await tfi.json()).keyFacts).toEqual({ kind: "fund", categoryCode: null })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// §78 — an analizy.pl fund category is a profile, not a provider lookup
+//
+// `ING01W` (ING Akcji W) is priced from `/fund/history/{code}`, so its quote and
+// NAV chart both worked while the page answered 404 with the cachest URL as the
+// message: a category code is not a GPW listing, so the equity tier 404s it
+// ("Invalid/delisted ING01W" from all three providers) and the obligacje bond
+// fallback 404s behind it.
+// ---------------------------------------------------------------------------
+
+/** The catalogue row a fund-category sync writes for `ING01W`. */
+const FUND_CATEGORY_REF =
+  `${REF_HEADER}\nANALIZY::ING01W,ING01W,ANALIZY,"ING Akcji W",fund,,,Poland,PL,,`
+
+describe("GET /:symbol/profile — analizy.pl fund category (§78)", () => {
+  it("serves the profile from the catalogue row without probing any provider", async () => {
+    const res = await profileWithReference(FUND_CATEGORY_REF, "/api/instruments/ING01W/profile")
+
+    expect(res.status).toBe(200)
+    // The regression guard: neither the equity walk nor the bond fallback may run.
+    expect(mocked.fetchProfile).not.toHaveBeenCalled()
+    expect(mocked.fetchBondProfile).not.toHaveBeenCalled()
+    const body = await res.json()
+    expect(body.name).toBe("ING Akcji W")
+    expect(body.exchange).toBe("ANALIZY")
+    expect(body.country).toBe("Poland")
+    expect(body.countryCode).toBe("PL")
+    expect(body.currency).toBe("PLN")
+    expect(body.assetType).toBe("FUND")
+    // Only an ANALIZY listing key carries a category code (§86 fund key facts).
+    expect(body.keyFacts).toEqual({ kind: "fund", categoryCode: "ING01W" })
+  })
+
+  it("answers the detail route too, so add-position pre-fills the currency", async () => {
+    // AddPositionDialog calls /:symbol for the transaction currency and used to
+    // get a 404 for a fund category, leaving the select empty (§66.2).
+    const res = await profileWithReference(FUND_CATEGORY_REF, "/api/instruments/ING01W")
+
+    expect(res.status).toBe(200)
+    expect(mocked.fetchProfile).not.toHaveBeenCalled()
+    const body = await res.json()
+    expect(body.name).toBe("ING Akcji W")
+    expect(body.type).toBe("FUND")
+    expect(body.currency).toBe("PLN")
+  })
+
+  it("leaves a .TFI fund on the equity path", async () => {
+    // The venue is the discriminator, not the asset class: biznesradar serves a
+    // TFI fund's profile, so the new branch must not swallow it.
+    mocked.fetchProfile.mockResolvedValue({ name: "NNEP65", currency: "PLN" })
+
+    const res = await profileWithReference(
+      `${REF_HEADER}\nTFI::NNEP65.TFI,NNEP65.TFI,TFI,"NNEP65",tfi,,,Poland,PL,,`,
+      "/api/instruments/NNEP65.TFI/profile",
+    )
+
+    expect(res.status).toBe(200)
+    expect(mocked.fetchProfile).toHaveBeenCalledWith("NNEP65.TFI")
+    expect((await res.json()).keyFacts).toEqual({ kind: "fund", categoryCode: null })
+  })
+
+  it("does not invent a profile for an unsynced fund code", async () => {
+    // No catalogue row means no sync has run — the cascade still answers, and a
+    // missing reference table must never turn into a 200 with a blank name.
+    mocked.fetchProfile.mockRejectedValue(new cachest.UpstreamError("x", 404))
+    mocked.fetchBondProfile.mockRejectedValue(new cachest.UpstreamError("x", 404))
+
+    const res = await req("/api/instruments/ING99X/profile")
+
+    expect(res.status).toBe(404)
+    expect((await res.json()).error).toBe("NotFound")
+    expect(mocked.fetchProfile).toHaveBeenCalledWith("ING99X")
   })
 })
