@@ -72,6 +72,7 @@ export async function assetTypeForSymbol(db: DB, symbol: string): Promise<string
 }
 
 export interface TickerSearchRow {
+  listingKey: string
   ticker: string
   exchange: string
   name: string
@@ -153,6 +154,9 @@ export async function searchTickerReference(
   if (q.length === 0) return []
   const upper = q.toUpperCase()
   const select = {
+    // §86 — the fund key facts need to know whether this row is an `ANALIZY::`
+    // listing or a `TFI::` one, and the two are told apart only by this column.
+    listingKey: tickerReference.listingKey,
     ticker: tickerReference.ticker,
     exchange: tickerReference.exchange,
     name: tickerReference.name,

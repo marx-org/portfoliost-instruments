@@ -34,7 +34,7 @@ import {
   fetchFundCategoryHistory,
 } from "../adapters/cachest.js"
 import { UpstreamError } from "../adapters/cachest.js"
-import { providerSymbol, venueFreeSymbol } from "../adapters/symbol.js"
+import { providerSymbol, venueFreeSymbol, cryptoPairFor } from "../adapters/symbol.js"
 
 /** Retail savings-bond emission codes (ROD/EDO + 4 digits). These are never
  * exchange-listed, so the equity tier 404s for them and the obligacje engine
@@ -121,8 +121,7 @@ export async function fetchQuoteByAssetClass(
     case "crypto": {
       // The crypto tier keys on the -USD pair; a bare stored ticker (BTC)
       // normalizes to BTC-USD (34.1: bare `BTC` 404s, `BTC-USD` 200).
-      const base = venueFreeSymbol(symbol)
-      const pair = base.includes("-") ? base : `${base}-USD`
+      const pair = cryptoPairFor(symbol)
       const row = await fetchCryptoQuote(pair)
       // The crypto tier reports the price under `price` (equity uses
       // `last_price`) and the bar day under `date` — normalize so toQuote
