@@ -139,6 +139,18 @@ export function fetchBondProfile(symbol: string): Promise<Record<string, unknown
   return fetchJson(`${BASE_URL}/fixedincome/profile/${encodeURIComponent(symbol)}`)
 }
 
+/** Catalyst corporate-bond profile (obligacje.pl). A 404 is *not* swallowed:
+ *  the caller has to tell "this symbol is not a Catalyst bond" (try the next
+ *  provider tier) from "cachest is down" (fail the request) — which is exactly
+ *  why `fetchFundSearch` swallows 404 and this does not (§86). */
+export function fetchCorpBondProfile(symbol: string): Promise<Record<string, unknown>> {
+  return fetchJson(`${BASE_URL}/corp-bond/profile/${encodeURIComponent(symbol)}`)
+}
+
+export function fetchCryptoProfile(pair: string): Promise<Record<string, unknown>> {
+  return fetchJson(`${BASE_URL}/crypto/profile/${encodeURIComponent(pair)}`)
+}
+
 export function fetchBondOhlcv(
   symbol: string,
   start: string,
