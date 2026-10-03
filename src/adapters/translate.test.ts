@@ -5,6 +5,11 @@ import {
   toInstrumentType,
   toBondKeyFacts,
   toCorpBondKeyFacts,
+  toCryptoKeyFacts,
+  toEtfKeyFacts,
+  toFundKeyFacts,
+  toStockKeyFacts,
+  toKeyFacts,
   toInstrumentProfile,
   toQuote,
   toPriceHistory,
@@ -29,6 +34,9 @@ import {
 import type { OpenstOhlcvRow, OpenstProfile, OpenstQuote } from "./openst-types.js"
 import type { CurrencyResolution } from "../services/instrument-currency.js"
 import type { Row } from "./translate.js"
+import type { components } from "../generated/api-types.js"
+
+type S = components["schemas"]
 
 const fmpProfile = {
   symbol: "AAPL",
@@ -1691,5 +1699,210 @@ describe("toInstrumentProfile keyFacts wiring (§86.6)", () => {
     >
 
     expect(p.keyFacts).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// §86.7 — crypto, ETF, fund and stock key facts
+// ---------------------------------------------------------------------------
+
+const CRYPTO_PROFILE_BTC = {
+  symbol: "BTC-USD",
+  currency: "USD",
+  price: 84621.5391,
+  date: "2026-10-03",
+  name: "Bitcoin USD",
+  exchange: "CCC",
+  ico_date: "2014-09-17",
+  circulating_supply: 19972590.0,
+  total_supply: 19972590.0,
+}
+
+describe("toCryptoKeyFacts (§86.7)", () => {
+  it("maps the recorded BTC-USD profile", () => {
+    expect(toCryptoKeyFacts(CRYPTO_PROFILE_BTC)).toEqual({
+      kind: "crypto",
+      name: "Bitcoin USD",
+      exchange: "CCC",
+      icoDate: "2014-09-17",
+      circulatingSupply: 19972590.0,
+      totalSupply: 19972590.0,
+    })
+  })
+
+  it("declares no market cap, rank, ATH or ATL key", () => {
+    // FMP's crypto search is the only configured provider and carries none of
+    // them. They are unavailable, not empty — a permanent dash either way.
+    const facts = toCryptoKeyFacts(CRYPTO_PROFILE_BTC) as Record<string, unknown>
+
+    for (const absent of ["marketCap", "rank", "ath", "atl"]) {
+      expect(absent in facts).toBe(false)
+    }
+  })
+
+  it("keeps a null supply null rather than 0", () => {
+    // WBTCUSD from the recorded 17-row search fixture: a circulating supply and
+    // no total supply.
+    expect(
+      toCryptoKeyFacts({
+        symbol: "WBTC-USD",
+        name: "Wrapped Bitcoin USD",
+        circulating_supply: 125330.0,
+        total_supply: null,
+      }),
+    ).toEqual({
+      kind: "crypto",
+      name: "Wrapped Bitcoin USD",
+      exchange: null,
+      icoDate: null,
+      circulatingSupply: 125330.0,
+      totalSupply: null,
+    })
+  })
+
+  it("does not duplicate the quote currency", () => {
+    const facts = toCryptoKeyFacts(CRYPTO_PROFILE_BTC) as Record<string, unknown>
+
+    expect("quoteCurrency" in facts).toBe(false)
+    expect("currency" in facts).toBe(false)
+  })
+})
+
+describe("toEtfKeyFacts (§86.7)", () => {
+  it("carries the reference table's etf_category", () => {
+    expect(toEtfKeyFacts("Fixed Income")).toEqual({ kind: "etf", category: "Fixed Income" })
+    expect(toEtfKeyFacts("Equity")).toEqual({ kind: "etf", category: "Equity" })
+  })
+
+  it("nulls a category the reference row does not carry", () => {
+    expect(toEtfKeyFacts(null)).toEqual({ kind: "etf", category: null })
+    expect(toEtfKeyFacts(undefined)).toEqual({ kind: "etf", category: null })
+    expect(toEtfKeyFacts("")).toEqual({ kind: "etf", category: null })
+  })
+})
+
+describe("toFundKeyFacts (§86.7)", () => {
+  it("strips the ANALIZY prefix off an analizy.pl listing key", () => {
+    expect(toFundKeyFacts("ANALIZY::ARK01")).toEqual({ kind: "fund", categoryCode: "ARK01" })
+  })
+
+  it("nulls a TFI key — its code is the fund's own number, not a category", () => {
+    expect(toFundKeyFacts("TFI::NNEP65.TFI")).toEqual({ kind: "fund", categoryCode: null })
+  })
+
+  it("nulls a missing or unrecognised key", () => {
+    expect(toFundKeyFacts(null).categoryCode).toBeNull()
+    expect(toFundKeyFacts("ARK01").categoryCode).toBeNull()
+  })
+})
+
+describe("toStockKeyFacts (§86.7)", () => {
+  const filled = {
+    ticker: "AAPL",
+    name: "Apple Inc",
+    country: "United States",
+    countryCode: "US",
+    assetType: "STOCK",
+    isin: "US0378331005",
+    currency: "USD",
+    currencySource: "provider",
+    exchange: "NASDAQ",
+    finnhubIndustry: "Technology",
+    ipo: "1980-12-12",
+    logo: null,
+    marketCapitalization: 3.1e6,
+    marketCapCurrency: "USD",
+    marketcapUSD: 3.1e12,
+    phone: null,
+    shareOutstanding: 15.2e9,
+    weburl: null,
+    description: null,
+    gicsSector: "Information Technology",
+    gicsIndustryGroup: "Technology Hardware & Equipment",
+    gicsIndustry: "Technology Hardware",
+    gicsSubIndustry: null,
+    address: null,
+    city: null,
+    state: null,
+    employeeTotal: 164000,
+    ceo: null,
+    keyFacts: null,
+  } as unknown as S["InstrumentProfile"]
+
+  it("relocates the profile's own fields — no new upstream call", () => {
+    expect(toStockKeyFacts(filled)).toEqual({
+      kind: "stock",
+      sector: "Information Technology",
+      industry: "Technology Hardware",
+      employees: 164000,
+      ceo: null,
+      ipo: "1980-12-12",
+      sharesOutstanding: 15.2e9,
+      marketCap: 3.1e6,
+    })
+  })
+
+  it("keeps a null ceo as null with the key still present", () => {
+    expect("ceo" in toStockKeyFacts(filled)).toBe(true)
+    expect(toStockKeyFacts(filled).ceo).toBeNull()
+  })
+
+  it("reads the post-fill profile, so a route-supplied sector survives", () => {
+    // The raw translation hard-codes gicsSector/gicsIndustry to null and the
+    // route fills them afterwards — a version reading the provider row would
+    // return the dashes this exists to remove.
+    const beforeFill = toStockKeyFacts({ ...filled, gicsSector: null })
+    expect(beforeFill.sector).toBeNull()
+    expect(toStockKeyFacts(filled).sector).toBe("Information Technology")
+  })
+})
+
+describe("toKeyFacts dispatch (§86.7)", () => {
+  it("returns null for an unknown asset class rather than a card of dashes", () => {
+    const profile = toInstrumentProfile("AAPL", { symbol: "AAPL", name: "Apple Inc" })
+
+    expect(toKeyFacts({ symbol: "AAPL" }, profile, {})).toBeNull()
+    expect(toKeyFacts({ symbol: "AAPL" }, profile, { kind: null })).toBeNull()
+  })
+
+  it("still recognises a bond row with no class from the reference table", () => {
+    // An unsynced savings-bond symbol has no reference row, so the route passes
+    // no kind — the row itself is enough, exactly as before this section.
+    const profile = toInstrumentProfile("ROS0932", SAVINGS_BOND_ROS)
+
+    expect(toKeyFacts(SAVINGS_BOND_ROS, profile, {})?.kind).toBe("bond")
+  })
+
+  it("routes each class to its own source", () => {
+    const profile = toInstrumentProfile("BTC-USD", CRYPTO_PROFILE_BTC)
+
+    expect(toKeyFacts(CRYPTO_PROFILE_BTC, profile, { kind: "crypto" })?.kind).toBe("crypto")
+    expect(toKeyFacts({}, profile, { kind: "etf", etfCategory: "Equity" })).toEqual({
+      kind: "etf",
+      category: "Equity",
+    })
+    expect(toKeyFacts({}, profile, { kind: "fund", listingKey: "ANALIZY::ARK01" })).toEqual({
+      kind: "fund",
+      categoryCode: "ARK01",
+    })
+  })
+
+  it("leaves an equity's keyFacts to the route's post-fill call", () => {
+    const profile = toInstrumentProfile(
+      "AAPL",
+      { symbol: "AAPL", name: "Apple Inc", employees: 164000 },
+      undefined,
+      { kind: "stock" },
+    ) as Record<string, any>
+
+    // Not a stale sector-less card: null, until the route has filled the
+    // reference fields and recomputed.
+    expect(profile.keyFacts).toBeNull()
+    expect(profile.gicsSector).toBeNull()
+
+    profile.gicsSector = "Information Technology"
+    profile.gicsIndustry = "Technology Hardware"
+    profile.keyFacts = toKeyFacts({}, profile, { kind: "stock" })
+    expect(profile.keyFacts.sector).toBe("Information Technology")
   })
 })
