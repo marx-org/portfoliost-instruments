@@ -260,19 +260,121 @@ function bondKeyFactsKind(row: Row): "bond" | "corp_bond" | null {
   return null
 }
 
+/** §86 — crypto. Exactly the fields the one configured search provider returns.
+ *  No market cap, rank, ATH or ATL: those are *unavailable* from FMP rather than
+ *  empty, and a permanently-null field is a permanent dash. The quote currency
+ *  stays on the profile and is deliberately not duplicated here. */
+export function toCryptoKeyFacts(row: Row): S["CryptoKeyFacts"] {
+  return {
+    kind: "crypto",
+    name: str(row.name) ?? null,
+    exchange: str(row.exchange) ?? null,
+    icoDate: str(row.ico_date) ?? null,
+    circulatingSupply: num(row.circulating_supply) ?? null,
+    totalSupply: num(row.total_supply) ?? null,
+  }
+}
+
+/** §86 — ETF. One field, and it is a row the backend already fills today and
+ *  the UI discards: `ticker_reference.etf_category`. */
+export function toEtfKeyFacts(etfCategory: string | null | undefined): S["EtfKeyFacts"] {
+  return { kind: "etf", category: str(etfCategory) ?? null }
+}
+
+/** §86 — fund. One field, on purpose: the local reference carries name and
+ *  aliases only, so there is no manager, OPL/TER or risk class to show and the
+ *  page says so rather than implying coverage. Only an ANALIZY listing key
+ *  carries a category code — a `TFI::` row's code is its own TFI number, which
+ *  is not a category. */
+export function toFundKeyFacts(listingKey: string | null | undefined): S["FundKeyFacts"] {
+  const key = str(listingKey)
+  const prefix = "ANALIZY::"
+  return { kind: "fund", categoryCode: key?.startsWith(prefix) ? key.slice(prefix.length) : null }
+}
+
+/** §86 — equity. Pure relocation: every value is already on the profile and was
+ *  already fetched, so this adds no upstream call.
+ *
+ *  It takes the **built profile**, not the provider row, and that is the whole
+ *  point: `gicsSector`/`gicsIndustry` are hard-coded null in the raw
+ *  translation and filled afterwards by the route's reference-table pass, so a
+ *  version reading the provider row would return the dashes this exists to
+ *  remove. */
+export function toStockKeyFacts(profile: S["InstrumentProfile"]): S["StockKeyFacts"] {
+  return {
+    kind: "stock",
+    sector: profile.gicsSector ?? null,
+    industry: profile.gicsIndustry ?? null,
+    employees: profile.employeeTotal ?? null,
+    ceo: profile.ceo ?? null,
+    ipo: profile.ipo ?? null,
+    sharesOutstanding: profile.shareOutstanding ?? null,
+    marketCap: profile.marketCapitalization ?? null,
+  }
+}
+
+/** §86 — what the route already knows about the symbol before it fetches
+ *  anything. `kind` is the reference table's answer, never inferred from the
+ *  provider row's shape; the other two are the reference columns the four thin
+ *  classes need and the provider never sends. */
+export interface KeyFactsContext {
+  kind?: "stock" | "etf" | "fund" | "crypto" | "bond" | "corp_bond" | null
+  etfCategory?: string | null
+  listingKey?: string | null
+}
+
+/** §86 — dispatch one profile's key facts.
+ *
+ *  Takes the provider row and the built profile because the six kinds do not
+ *  read the same source: the bond and crypto kinds read provider fields, the
+ *  equity kind reads the route's post-fill profile, and the ETF and fund kinds
+ *  read reference columns neither of the other two carries. Returns null when
+ *  the asset class is unknown, so an unsynced symbol gets no card rather than a
+ *  card of dashes. */
+export function toKeyFacts(
+  row: Row,
+  profile: S["InstrumentProfile"],
+  ctx: KeyFactsContext = {},
+): NonNullable<S["InstrumentProfile"]["keyFacts"]> | null {
+  switch (ctx.kind) {
+    case "stock":
+      return toStockKeyFacts(profile)
+    case "etf":
+      return toEtfKeyFacts(ctx.etfCategory)
+    case "fund":
+      return toFundKeyFacts(ctx.listingKey)
+    case "crypto":
+      return toCryptoKeyFacts(row)
+    case "bond":
+      return toBondKeyFacts(row)
+    case "corp_bond":
+      return toCorpBondKeyFacts(row)
+    default:
+      // No class from the reference table: the bond kinds are still recognisable
+      // from the row itself, which is how the translator worked before the route
+      // learned to dispatch.
+      const bondKind = bondKeyFactsKind(row)
+      return bondKind === "corp_bond"
+        ? toCorpBondKeyFacts(row)
+        : bondKind === "bond"
+          ? toBondKeyFacts(row)
+          : null
+  }
+}
+
 export function toInstrumentProfile(
   symbol: string,
   p: OpenstProfile,
   resolution?: CurrencyResolution,
+  keyFactsContext?: KeyFactsContext,
 ): S["InstrumentProfile"] {
   const marketCap = num(pick(p as Row, "market_cap"))
   // 45.3 — same no-guess rule as toInstrumentDetail.
   const row = p as Row
   const isBond = row.rate_rule !== undefined || row.series_code !== undefined
-  const bondKind = bondKeyFactsKind(row)
   const providerCcy = toIsoCurrency(str(p.currency)) ?? null
   const currency = resolutionCurrency(resolution, providerCcy, isBond ? "PLN" : null)
-  return {
+  const profile: S["InstrumentProfile"] = {
     ticker: symbol.toUpperCase(),
     name: str(p.name),
     country: str(pick(p as Row, "hq_country", "country")),
@@ -302,16 +404,25 @@ export function toInstrumentProfile(
     state: str(p.hq_state) ?? null,
     employeeTotal: num(pick(p as Row, "employees", "employee_total")) ?? null,
     ceo: str(p.ceo) ?? null,
-    // §86 — bond key facts travel with the profile; the other four kinds are
-    // filled in §86.7, and stock needs the route's reference-table pass, so this
-    // stays null until then rather than being guessed here.
-    keyFacts:
-      bondKind === "corp_bond"
-        ? toCorpBondKeyFacts(row)
-        : bondKind === "bond"
-          ? toBondKeyFacts(row)
-          : null,
+    // §86 — filled from the profile itself for an equity (the reference-table
+    // pass has already run by the time this is reached), and from the provider
+    // row for the classes that need provider fields. Null when the asset class
+    // is unknown, so an unsynced symbol gets no card rather than six dashes.
+    keyFacts: null,
   }
+  // Assigned after the object exists because the stock kind reads the finished
+  // profile — gicsSector/gicsIndustry are filled in by the route's
+  // reference-table pass, which happens after this function returns.
+  //
+  // So an equity is deliberately left null here: emitting it now would put a
+  // `sector: null` on the card directly under a profile that is about to be
+  // given a sector. The route recomputes key facts once its fill has run, and
+  // that call is the authoritative one.
+  profile.keyFacts =
+    keyFactsContext?.kind === "stock"
+      ? null
+      : toKeyFacts(row, profile, keyFactsContext ?? {})
+  return profile
 }
 
 export function toQuote(q: OpenstQuote, resolution?: CurrencyResolution): S["Quote"] {
