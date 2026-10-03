@@ -186,6 +186,80 @@ export function toInstrumentDetail(
   }
 }
 
+/** §86 — a percentage that arrives as a string, e.g. Catalyst `current_rate`
+ *  `"7.83%"`. The unit is stripped and the remainder parsed, so the value that
+ *  reaches the card is the number 7.83 — keeping the `%` would render as
+ *  `7.83%%` through the formatters. A value with no `%` is parsed as a plain
+ *  decimal rather than dropped: this is the most useful number on a bond card
+ *  and a missing suffix must not cost it. Anything unparseable is null, never
+ *  NaN. */
+function percentNumber(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null
+  const s = str(v)
+  if (s === undefined) return null
+  return num(s.replace(/%/g, "").trim()) ?? null
+}
+
+/** §86 — Polish retail savings bond (obligacjekarbowe). `margin` is the
+ *  overloaded column: under `rate_rule: "fixed"` it *is* the flat annual rate,
+ *  under the two indexed rules it is the add-on. The value is passed through
+ *  untranslated and the label is switched on `rateRule` by the card, because
+ *  the same number means two different things depending on that field. */
+export function toBondKeyFacts(row: Row): S["BondKeyFacts"] {
+  return {
+    kind: "bond",
+    seriesCode: str(row.series_code) ?? null,
+    issueDate: str(row.issue_date) ?? null,
+    maturityDate: str(row.maturity_date) ?? null,
+    // num() returns 0 for a real 0, and `?? null` does not eat it — a term of
+    // 0 months is a fact, not a missing value. No truthiness filter here.
+    termMonths: num(row.term_months) ?? null,
+    rateRule: str(row.rate_rule) ?? null,
+    margin: num(row.margin) ?? null,
+    redemptionFee: num(row.fee_b) ?? null,
+    nominal: num(row.nominal) ?? null,
+  }
+}
+
+/** §86 — Catalyst corporate bond (obligacje.pl).
+ *
+ *  No `margin` key: the scraper never sets one (`obligacje.py` — the detail page
+ *  embeds the margin in `coupon_type` for variable-rate bonds) and the recorded
+ *  payload has no such key. Its absence is a decision, not an oversight.
+ *
+ *  `secured` and `status` stay the provider's strings — `"NIE"`, `"Notowane"` —
+ *  verbatim and untranslated: mapping them to a boolean or to English would
+ *  invent a vocabulary the rest of the app does not have. */
+export function toCorpBondKeyFacts(row: Row): S["CorpBondKeyFacts"] {
+  return {
+    kind: "corp_bond",
+    issuer: str(row.issuer) ?? null,
+    series: str(row.series) ?? null,
+    market: str(row.market) ?? null,
+    status: str(row.status) ?? null,
+    // "100.0" — a Decimal on the wire, stringified by the provider's frame.
+    nominalValue: num(row.nominal_value) ?? null,
+    nominalCurrency: str(row.nominal_currency) ?? null,
+    secured: str(row.secured) ?? null,
+    couponType: str(row.coupon_type) ?? null,
+    currentRate: percentNumber(row.current_rate),
+    maturityDate: str(row.maturity_date) ?? null,
+  }
+}
+
+/** Which bond kind a provider row is, or null when it is not a bond at all.
+ *
+ *  `toInstrumentProfile`'s existing `isBond` test only recognises savings bonds
+ *  (a Catalyst row carries `asset_type` and no `rate_rule`), so key facts need
+ *  their own discriminator. `isBond` itself is left alone: it also drives the
+ *  PLN currency estimate, and widening it is a currency decision, not a
+ *  key-facts one. */
+function bondKeyFactsKind(row: Row): "bond" | "corp_bond" | null {
+  if ((str(row.asset_type) ?? "").toLowerCase() === "corp_bond") return "corp_bond"
+  if (row.rate_rule !== undefined || row.series_code !== undefined) return "bond"
+  return null
+}
+
 export function toInstrumentProfile(
   symbol: string,
   p: OpenstProfile,
@@ -195,6 +269,7 @@ export function toInstrumentProfile(
   // 45.3 — same no-guess rule as toInstrumentDetail.
   const row = p as Row
   const isBond = row.rate_rule !== undefined || row.series_code !== undefined
+  const bondKind = bondKeyFactsKind(row)
   const providerCcy = toIsoCurrency(str(p.currency)) ?? null
   const currency = resolutionCurrency(resolution, providerCcy, isBond ? "PLN" : null)
   return {
@@ -227,6 +302,15 @@ export function toInstrumentProfile(
     state: str(p.hq_state) ?? null,
     employeeTotal: num(pick(p as Row, "employees", "employee_total")) ?? null,
     ceo: str(p.ceo) ?? null,
+    // §86 — bond key facts travel with the profile; the other four kinds are
+    // filled in §86.7, and stock needs the route's reference-table pass, so this
+    // stays null until then rather than being guessed here.
+    keyFacts:
+      bondKind === "corp_bond"
+        ? toCorpBondKeyFacts(row)
+        : bondKind === "bond"
+          ? toBondKeyFacts(row)
+          : null,
   }
 }
 
