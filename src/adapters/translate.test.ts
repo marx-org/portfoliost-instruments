@@ -3,6 +3,8 @@ import {
   marketPhase,
   toInstrumentDetail,
   toInstrumentType,
+  toBondKeyFacts,
+  toCorpBondKeyFacts,
   toInstrumentProfile,
   toQuote,
   toPriceHistory,
@@ -1517,5 +1519,177 @@ describe("toFundamentals §79.2 — declared currency and provenance", () => {
         ]),
       ).toBeNull()
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// §86.6 — bond key facts
+//
+// The two provider rows below are the recorded payloads from §86.1, verbatim:
+// `openst/tests/fixtures/bond/savings_bond_series_ROS.json` (the
+// get_bond_profile DB-path body for the committed ros.html offer page) and
+// `openst/tests/fixtures/bond/corp_bond_profile_BST0327.json` (byte-identical to
+// the live /corp-bond/profile/BST0327 body). They are inlined rather than read
+// across repos, as every other profile fixture in this file is.
+// ---------------------------------------------------------------------------
+
+const SAVINGS_BOND_ROS = {
+  symbol: "ROS0932",
+  name: "Obligacje 6-letnie ROS",
+  series_code: "ROS",
+  issue_date: "2026-09-01",
+  maturity_date: "2032-09-01",
+  term_months: 72,
+  rate_rule: "cpi_12m+margin",
+  margin: "2.00",
+  fee_b: "2.00",
+  nominal: "100.00",
+}
+
+const CORP_BOND_BST0327 = {
+  symbol: "BST0327",
+  name: "Best S.A.",
+  isin: "PLBEST000333",
+  stock_exchange: "GPW RR",
+  hq_country: "PL",
+  asset_type: "corp_bond",
+  issuer: "Best S.A.",
+  series: "W3",
+  market: "GPW RR",
+  status: "Notowane",
+  nominal_value: "100.0",
+  nominal_currency: "PLN",
+  secured: "NIE",
+  coupon_type: "zmienne WIBOR 3M + 4%",
+  current_rate: "7.83%",
+  maturity_date: "2027-03-07",
+  country: "PL",
+  currency: "PLN",
+}
+
+describe("toBondKeyFacts (§86.6 — savings bond)", () => {
+  it("maps the recorded ROS0932 row", () => {
+    expect(toBondKeyFacts(SAVINGS_BOND_ROS)).toEqual({
+      kind: "bond",
+      seriesCode: "ROS",
+      issueDate: "2026-09-01",
+      maturityDate: "2032-09-01",
+      termMonths: 72,
+      rateRule: "cpi_12m+margin",
+      // "2.00" and "100.00" are stringified Decimals on the wire.
+      margin: 2,
+      redemptionFee: 2,
+      nominal: 100,
+    })
+  })
+
+  it("passes rate_rule through untranslated — the card switches the label on it", () => {
+    const indexed = toBondKeyFacts(SAVINGS_BOND_ROS)
+    const fixed = toBondKeyFacts({ ...SAVINGS_BOND_ROS, rate_rule: "fixed" })
+
+    expect(indexed.rateRule).toBe("cpi_12m+margin")
+    expect(fixed.rateRule).toBe("fixed")
+    // Same stored number, two meanings: this pair is what gives §86.9's label
+    // switch its data.
+    expect(fixed.margin).toBe(indexed.margin)
+  })
+
+  it("keeps a zero term as 0 rather than null", () => {
+    // A 0 is a real value and `?? null` must not eat it. This is the case a
+    // truthiness filter would quietly get wrong.
+    expect(toBondKeyFacts({ ...SAVINGS_BOND_ROS, term_months: 0 }).termMonths).toBe(0)
+  })
+
+  it("nulls every field an empty row does not carry", () => {
+    expect(toBondKeyFacts({})).toEqual({
+      kind: "bond",
+      seriesCode: null,
+      issueDate: null,
+      maturityDate: null,
+      termMonths: null,
+      rateRule: null,
+      margin: null,
+      redemptionFee: null,
+      nominal: null,
+    })
+  })
+})
+
+describe("toCorpBondKeyFacts (§86.6 — Catalyst)", () => {
+  it("maps the recorded BST0327 row", () => {
+    expect(toCorpBondKeyFacts(CORP_BOND_BST0327)).toEqual({
+      kind: "corp_bond",
+      issuer: "Best S.A.",
+      series: "W3",
+      market: "GPW RR",
+      status: "Notowane",
+      nominalValue: 100,
+      nominalCurrency: "PLN",
+      // Provider strings stay strings: "NIE" is not a boolean and "Notowane"
+      // is not translated.
+      secured: "NIE",
+      couponType: "zmienne WIBOR 3M + 4%",
+      // "7.83%" -> 7.83, so the card does not render 7.83%%.
+      currentRate: 7.83,
+      maturityDate: "2027-03-07",
+    })
+  })
+
+  it("emits no margin key at all", () => {
+    const facts = toCorpBondKeyFacts(CORP_BOND_BST0327) as Record<string, unknown>
+
+    expect("margin" in facts).toBe(false)
+  })
+
+  it("parses a rate with no % suffix as a plain decimal", () => {
+    expect(toCorpBondKeyFacts({ current_rate: "7.83" }).currentRate).toBe(7.83)
+  })
+
+  it("passes a numeric rate straight through", () => {
+    expect(toCorpBondKeyFacts({ current_rate: 7.83 }).currentRate).toBe(7.83)
+  })
+
+  it("nulls a missing rate instead of throwing", () => {
+    expect(toCorpBondKeyFacts({ ...CORP_BOND_BST0327, current_rate: undefined }).currentRate).toBeNull()
+  })
+
+  it("nulls an unparseable rate rather than emitting NaN", () => {
+    const rate = toCorpBondKeyFacts({ current_rate: "wycofane" }).currentRate
+
+    expect(rate).toBeNull()
+    expect(Number.isNaN(rate as unknown as number)).toBe(false)
+  })
+
+  it("nulls a malformed nominal rather than emitting NaN", () => {
+    expect(toCorpBondKeyFacts({ nominal_value: "-" }).nominalValue).toBeNull()
+  })
+})
+
+describe("toInstrumentProfile keyFacts wiring (§86.6)", () => {
+  it("carries savings-bond key facts on the profile", () => {
+    const p = toInstrumentProfile("ROS0932", SAVINGS_BOND_ROS) as Record<string, any>
+
+    expect(p.keyFacts.kind).toBe("bond")
+    expect(p.keyFacts.margin).toBe(2)
+  })
+
+  it("carries Catalyst key facts even though isBond is false for that row", () => {
+    // The existing isBond test only sees savings bonds (no rate_rule), so the
+    // corp-bond kind needs its own discriminator or a Catalyst page renders
+    // dashes for fields the provider already sent.
+    const p = toInstrumentProfile("BST0327", CORP_BOND_BST0327) as Record<string, any>
+
+    expect(p.keyFacts.kind).toBe("corp_bond")
+    expect(p.keyFacts.issuer).toBe("Best S.A.")
+    expect(p.keyFacts.currentRate).toBe(7.83)
+  })
+
+  it("leaves keyFacts null for an equity — the other kinds land in §86.7", () => {
+    const p = toInstrumentProfile("AAPL", { symbol: "AAPL", name: "Apple Inc" }) as Record<
+      string,
+      any
+    >
+
+    expect(p.keyFacts).toBeNull()
   })
 })
