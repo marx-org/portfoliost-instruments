@@ -40,6 +40,7 @@ import {
   fetchCorpBondProfile,
   fetchCryptoProfile,
   fetchBondOhlcv,
+  fetchFundCategoryHistory,
   fetchDividendHistory,
   fetchFilings,
   fetchMda,
@@ -280,6 +281,20 @@ async function fetchOhlcvWithBondFallback(
   start: string,
   end: string,
 ): Promise<OpenstOhlcvRow[]> {
+  // §78 — an analizy.pl fund category has no OHLCV upstream in any tier; its
+  // series is the NAV history the price tier already reads, and asking the equity
+  // tier for it 404s (`/ohlcv/ING01W`) — which the seasonality panel then printed
+  // verbatim. open/high/low are the close: a category publishes one valuation per
+  // business day, the same shape `fundCategoryQuote` states for the quote.
+  const db = getDb()
+  const fundRef = await fundCategoryRow(db, symbol)
+  if (fundRef) {
+    const bars = (await fetchFundCategoryHistory(symbol, start, end)) ?? []
+    return bars.map((bar) => {
+      const close = Number(bar.close)
+      return { date: String(bar.date), open: close, high: close, low: close, close }
+    }) as OpenstOhlcvRow[]
+  }
   // Plan §37.2 — an emission's only OHLCV source is the obligacje engine;
   // go straight there instead of paying the equity provider walk first.
   // A miss in the bond engine is surfaced as-is (no equity retry — for a
