@@ -33,6 +33,8 @@ vi.mock("../adapters/cachest.js", () => ({
   fetchCryptoSearch: vi.fn(),
   fetchBondSearch: vi.fn(),
   fetchBondProfile: vi.fn(),
+  fetchCorpBondProfile: vi.fn(),
+  fetchCryptoProfile: vi.fn(),
   fetchBondOhlcv: vi.fn(),
   fetchDividendHistory: vi.fn(),
   fetchFilings: vi.fn(),
@@ -71,6 +73,8 @@ beforeEach(() => {
   mocked.fetchCryptoSearch.mockReset()
   mocked.fetchBondSearch.mockReset()
   mocked.fetchBondProfile.mockReset()
+  mocked.fetchCorpBondProfile.mockReset()
+  mocked.fetchCryptoProfile.mockReset()
   mocked.fetchBondOhlcv.mockReset()
   mocked.fetchDividendHistory.mockReset()
   mocked.fetchFilings.mockReset()
@@ -2046,5 +2050,241 @@ describe("GET /:symbol/price — ?currency= (plan §48.2)", () => {
       await t.client.close()
       dbState.db = null
     }
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// §86.8 — the profile route dispatches by asset class
+//
+// These run against a real test db and real `ticker_reference` rows rather than
+// a mocked query module: the dispatch reads the same column the rest of the
+// service reads, and a mock of `assetTypeForSymbol` would test the switch rather
+// than the wiring.
+// ---------------------------------------------------------------------------
+
+/** The recorded Catalyst and crypto profile rows (§86.1). */
+const CORP_BOND_ROW = {
+  symbol: "BST0327",
+  name: "Best S.A.",
+  isin: "PLBEST000333",
+  stock_exchange: "GPW RR",
+  hq_country: "PL",
+  asset_type: "corp_bond",
+  issuer: "Best S.A.",
+  series: "W3",
+  market: "GPW RR",
+  status: "Notowane",
+  nominal_value: "100.0",
+  nominal_currency: "PLN",
+  secured: "NIE",
+  coupon_type: "zmienne WIBOR 3M + 4%",
+  current_rate: "7.83%",
+  maturity_date: "2027-03-07",
+  country: "PL",
+  currency: "PLN",
+}
+
+const CRYPTO_ROW = {
+  symbol: "BTC-USD",
+  currency: "USD",
+  price: 84621.5391,
+  date: "2026-10-03",
+  name: "Bitcoin USD",
+  exchange: "CCC",
+  ico_date: "2014-09-17",
+  circulating_supply: 19972590.0,
+  total_supply: 19972590.0,
+}
+
+/** Seed `ticker_reference` and run one profile request against it. */
+async function profileWithReference(csv: string, path: string) {
+  const { createTestDb } = await import("../db/test-db.js")
+  const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+  const t = await createTestDb()
+  dbState.db = t.db
+  await syncTickerReference(csv, t.db)
+  try {
+    return await req(path)
+  } finally {
+    await t.client.close()
+    dbState.db = null
+  }
+}
+
+const REF_HEADER =
+  "listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases"
+
+describe("GET /:symbol/profile — asset-class dispatch (§86.8)", () => {
+  it("serves a Catalyst bond through fetchCorpBondProfile and never probes equity", async () => {
+    mocked.fetchCorpBondProfile.mockResolvedValue(CORP_BOND_ROW)
+    const res = await profileWithReference(
+      `${REF_HEADER}\nGPW::BST0327,BST0327,GPW,"Best S.A.",corp_bond,,,,PL,PLBEST000333,`,
+      "/api/instruments/BST0327/profile",
+    )
+
+    expect(res.status).toBe(200)
+    expect(mocked.fetchCorpBondProfile).toHaveBeenCalledWith("BST0327")
+    expect(mocked.fetchProfile).not.toHaveBeenCalled()
+    const body = await res.json()
+    expect(body.keyFacts.kind).toBe("corp_bond")
+    expect(body.keyFacts.issuer).toBe("Best S.A.")
+    expect(body.keyFacts.nominalValue).toBe(100)
+    expect(body.keyFacts.currentRate).toBe(7.83)
+    expect(body.keyFacts.secured).toBe("NIE")
+  })
+
+  it("serves a crypto pair through fetchCryptoProfile, keyed as a -USD pair", async () => {
+    mocked.fetchCryptoProfile.mockResolvedValue(CRYPTO_ROW)
+    const res = await profileWithReference(
+      `${REF_HEADER}\nCCC::BTC,BTC,CCC,"Bitcoin USD",crypto,,,,,,`,
+      "/api/instruments/BTC/profile",
+    )
+
+    expect(res.status).toBe(200)
+    // A bare stored ticker has to become the pair the tier keys on.
+    expect(mocked.fetchCryptoProfile).toHaveBeenCalledWith("BTC-USD")
+    expect(mocked.fetchProfile).not.toHaveBeenCalled()
+    const body = await res.json()
+    expect(body.keyFacts.kind).toBe("crypto")
+    expect(body.keyFacts.name).toBe("Bitcoin USD")
+    expect(body.keyFacts.icoDate).toBe("2014-09-17")
+    expect(body.keyFacts.circulatingSupply).toBe(19972590.0)
+  })
+
+  it("serves a Catalyst bond even when the equity tier would have answered", async () => {
+    // The regression this step exists for. obligacje.pl carries no BST0327, so
+    // the old order probed equity, failed, probed the savings-bond tier, failed
+    // again, and returned 502 — for a page whose data was always one call away.
+    mocked.fetchProfile.mockResolvedValue({ name: "Best S.A.", sector: "Retail" })
+    mocked.fetchCorpBondProfile.mockResolvedValue(CORP_BOND_ROW)
+
+    const res = await profileWithReference(
+      `${REF_HEADER}\nGPW::BST0327,BST0327,GPW,"Best S.A.",corp_bond,,,,PL,PLBEST000333,`,
+      "/api/instruments/BST0327/profile",
+    )
+
+    expect(res.status).toBe(200)
+    expect(mocked.fetchProfile).not.toHaveBeenCalled()
+    expect((await res.json()).keyFacts.kind).toBe("corp_bond")
+  })
+
+  it("maps a Catalyst 404 to NotFound instead of falling through to equity", async () => {
+    mocked.fetchCorpBondProfile.mockRejectedValue(new cachest.UpstreamError("x", 404))
+
+    const res = await profileWithReference(
+      `${REF_HEADER}\nGPW::NOPE99,NOPE99,GPW,"Niepowiadamująca",corp_bond,,,,PL,,`,
+      "/api/instruments/NOPE99/profile",
+    )
+
+    expect(res.status).toBe(404)
+    expect((await res.json()).error).toBe("NotFound")
+    expect(mocked.fetchProfile).not.toHaveBeenCalled()
+  })
+
+  it("still routes a savings bond to the bond tier and gives it bond key facts", async () => {
+    mocked.fetchBondProfile.mockResolvedValue({
+      symbol: "ROD0129",
+      name: "Obligacje 12-letnie ROD",
+      series_code: "ROD",
+      rate_rule: "fixed",
+      margin: "5.75",
+      fee_b: "2.00",
+      term_months: 144,
+      nominal: "100.00",
+    })
+    const res = await profileWithReference(
+      `${REF_HEADER}\nGPW::ZZZ,ZZZ,GPW,"Unrelated",Stock,,,Poland,PL,,`,
+      "/api/instruments/ROD0129/profile",
+    )
+
+    expect(res.status).toBe(200)
+    expect(mocked.fetchBondProfile).toHaveBeenCalledWith("ROD0129")
+    const body = await res.json()
+    expect(body.keyFacts.kind).toBe("bond")
+    expect(body.keyFacts.margin).toBe(5.75)
+    expect(body.keyFacts.rateRule).toBe("fixed")
+    expect(body.keyFacts.termMonths).toBe(144)
+  })
+
+  it("keeps today's probe order for a symbol the reference does not know", async () => {
+    // No reference row at all means no sync has run, which is not evidence that
+    // the symbol is an equity — so the old equity-then-bond cascade stands.
+    mocked.fetchProfile.mockResolvedValue({ name: "Apple Inc." })
+
+    const res = await req("/api/instruments/ZZZZ/profile")
+
+    expect(res.status).toBe(200)
+    expect(mocked.fetchProfile).toHaveBeenCalledWith("ZZZZ")
+    expect((await res.json()).keyFacts).toBeNull()
+  })
+
+  it("falls back to the bond tier for an unknown symbol whose equity profile 404s", async () => {
+    mocked.fetchProfile.mockRejectedValue(new cachest.UpstreamError("x", 404))
+    mocked.fetchBondProfile.mockResolvedValue({
+      symbol: "ZZZZ",
+      name: "Obligacje",
+      series_code: "ZZZ",
+      rate_rule: "nbp_ref+margin",
+      margin: "1.25",
+    })
+
+    const res = await req("/api/instruments/ZZZZ/profile")
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(mocked.fetchBondProfile).toHaveBeenCalledWith("ZZZZ")
+    expect(body.keyFacts.kind).toBe("bond")
+    expect(body.keyFacts.rateRule).toBe("nbp_ref+margin")
+  })
+
+  it("fills an equity's key facts after the reference fill, not before", async () => {
+    // gicsSector is null in the raw translation and filled from stock_sector by
+    // the reference pass — so the card has to be computed after that, or it
+    // renders a dash directly under a profile that says Energy.
+    mocked.fetchProfile.mockResolvedValue({ symbol: "PKN", name: "PKN Orlen" })
+
+    const res = await profileWithReference(
+      `${REF_HEADER}\nWSE::PKN,PKN,WSE,"Polski Koncern Naftowy ORLEN SA",Stock,Energy,,Poland,PL,PLPKN0000018,orlen`,
+      "/api/instruments/PKN/profile",
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.gicsSector).toBe("Energy")
+    expect(body.keyFacts.kind).toBe("stock")
+    expect(body.keyFacts.sector).toBe("Energy")
+  })
+
+  it("gives an ETF the category the reference table already fills", async () => {
+    mocked.fetchProfile.mockResolvedValue({ symbol: "SPY", name: "SPDR S&P 500 ETF" })
+
+    const res = await profileWithReference(
+      `${REF_HEADER}\nGPW::SPY,SPY,GPW,"SPDR S&P 500 ETF Trust",ETF,,Equity,US,US78462F1030,spy`,
+      "/api/instruments/SPY/profile",
+    )
+
+    expect(res.status).toBe(200)
+    expect((await res.json()).keyFacts).toEqual({ kind: "etf", category: "Equity" })
+  })
+
+  it("gives an ANALIZY fund its category code and a TFI fund none", async () => {
+    mocked.fetchProfile.mockResolvedValue({ name: "Erste Akcji Polskich" })
+    const analizy = await profileWithReference(
+      `${REF_HEADER}\nANALIZY::ARK01,ARK01,GPW,"Erste Akcji Polskich",fund,,,,PL,,`,
+      "/api/instruments/ARK01/profile",
+    )
+
+    expect(analizy.status).toBe(200)
+    expect((await analizy.json()).keyFacts).toEqual({ kind: "fund", categoryCode: "ARK01" })
+
+    mocked.fetchProfile.mockResolvedValue({ name: "NNEP65" })
+    const tfi = await profileWithReference(
+      `${REF_HEADER}\nTFI::NNEP65.TFI,NNEP65.TFI,TFI,"NNEP65",tfi,,,,PL,,`,
+      "/api/instruments/NNEP65.TFI/profile",
+    )
+
+    expect(tfi.status).toBe(200)
+    expect((await tfi.json()).keyFacts).toEqual({ kind: "fund", categoryCode: null })
   })
 })

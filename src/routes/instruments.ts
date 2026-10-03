@@ -12,9 +12,16 @@ import { TRACKED_CURRENCIES } from "../services/fx-import.js"
 import { convertSeries, rateTablesByDate } from "../services/fx-convert.js"
 import { fetchQuoteByAssetClass } from "../services/quote-dispatch.js"
 import { getNewsForTicker, getRecentNews, getNewsStats } from "../services/news.js"
-import { isSavingsBond, providerSymbol, symbolSuffix, venueFreeSymbol } from "../adapters/symbol.js"
+import {
+  isSavingsBond,
+  providerSymbol,
+  symbolSuffix,
+  venueFreeSymbol,
+  cryptoPairFor,
+} from "../adapters/symbol.js"
 import { getExchangeBySuffix } from "../db/tickerref-queries.js"
 import { searchTickerReference } from "../db/tickerref-queries.js"
+import { assetTypeForSymbol, normalizeAssetType } from "../db/tickerref-queries.js"
 import {
   fetchProfile,
   fetchQuote,
@@ -29,6 +36,8 @@ import {
   fetchBondSearch,
   fetchFundSearch,
   fetchBondProfile,
+  fetchCorpBondProfile,
+  fetchCryptoProfile,
   fetchBondOhlcv,
   fetchDividendHistory,
   fetchFilings,
@@ -66,6 +75,8 @@ import {
   toNewsArticleList,
   str,
   type Row,
+  toKeyFacts,
+  type KeyFactsContext,
   UNRESOLVED_CURRENCY,
 } from "../adapters/translate.js"
 import { curatedPairFromQuery } from "../adapters/crypto.js"
@@ -405,17 +416,57 @@ export function createInstrumentsRoutes() {
     async (c) => {
       const routeSymbol = c.req.param("symbol").toUpperCase()
       const symbol = providerSymbol(routeSymbol)
+      // §86.8 — resolve the asset class from the local reference *first*, then
+      // fetch the provider profile that matches it. The old order probed the
+      // equity tier for every symbol that was not a savings bond, so a Catalyst
+      // bond paid a three-provider equity walk on every lookup and then 502'd,
+      // because /corp-bond/profile was never reached at all.
+      //
+      // `assetTypeForSymbol` returning null means the reference does not know
+      // the symbol — no sync has run — which is not evidence that it is an
+      // equity, so that case keeps the old cascade below rather than being
+      // forced to "stock".
+      const db = getDb()
+      let assetType: ReturnType<typeof normalizeAssetType> | null = null
+      if (db) {
+        try {
+          const raw = await assetTypeForSymbol(db, symbol)
+          assetType = raw === null ? null : normalizeAssetType(raw)
+        } catch {
+          assetType = null
+        }
+      }
+
       if (isSavingsBond(symbol)) {
         // Plan §37.2 — the obligacje bond profile is the only profile source
         // for an emission; never probe the equity tier for it.
         try {
           const bondProfile = (await fetchBondProfile(symbol)) as OpenstProfile
           const resolution = await resolveCurrency(getDb(), routeSymbol, bondProfile.currency)
-          return c.json(toInstrumentProfile(symbol, bondProfile, resolution))
+          return c.json(toInstrumentProfile(symbol, bondProfile, resolution, { kind: "bond" }))
         } catch (e) {
           return upstreamErrorResponse(c, e)
         }
       }
+
+      // One dispatch, copied from services/quote-dispatch.ts:106 rather than
+      // invented — two dispatchers reading the same column is cheap, a third
+      // ordering convention is not.
+      if (assetType === "corp_bond" || assetType === "crypto") {
+        try {
+          const row =
+            assetType === "corp_bond"
+              ? ((await fetchCorpBondProfile(symbol)) as OpenstProfile)
+              : ((await fetchCryptoProfile(cryptoPairFor(symbol))) as OpenstProfile)
+          const resolution = await resolveCurrency(getDb(), routeSymbol, row.currency)
+          return c.json(
+            toInstrumentProfile(symbol, row, resolution, { kind: assetType }),
+          )
+        } catch (e) {
+          return upstreamErrorResponse(c, e)
+        }
+      }
+
       try {
         const profile = (await fetchProfile(symbol)) as OpenstProfile
         const resolution = await resolveCurrency(getDb(), routeSymbol, profile.currency)
@@ -423,15 +474,27 @@ export function createInstrumentsRoutes() {
           symbol,
           profile,
           resolution,
+          // §86.7 — an equity's key facts are recomputed after the reference
+          // fill below; passing the kind here would only produce a stale
+          // sector-less card.
+          assetType === "stock" ? { kind: "stock" } : undefined,
         )
         // Fill identity gaps (ISIN, sector, country, exchange) from the
         // local reference table when the provider profile lacks them.
+        let keyFacts: KeyFactsContext = {}
         try {
           const suffix = symbolSuffix(routeSymbol)
           const venueExchange = suffix ? await getExchangeBySuffix(getDb(), suffix) : null
           const [ref] = await searchTickerReference(getDb(), symbol, 1, venueExchange)
           const baseTicker = symbol.split(".")[0]
-          if (ref && ref.ticker === baseTicker) {
+          // §86.8 — the comparison also accepts the venue-qualified spelling.
+          // `baseTicker` alone can never match a dotted listing such as
+          // `NNEP65.TFI`, so a TFI fund was silently excluded from the whole
+          // identity block — and from its fund key facts. The extra clause is an
+          // exact comparison against the symbol the lookup was actually made
+          // with, so it can only add matches for symbols that contain a dot and
+          // today get no enrichment at all.
+          if (ref && (ref.ticker === baseTicker || ref.ticker === symbol)) {
             out.name = out.name ?? ref.name
             // §61.8 — asset class for the shared identity block, from the same
             // reference row and under the same guard as countryCode.
@@ -445,17 +508,31 @@ export function createInstrumentsRoutes() {
             out.exchange = exchangePlaceholder && ref.exchange ? ref.exchange : out.exchange
             out.finnhubIndustry = out.finnhubIndustry ?? ref.stockSector ?? ref.etfCategory
             out.gicsSector = out.gicsSector ?? ref.stockSector
+            keyFacts = {
+              // The reference row is the only source for the ETF category and
+              // the fund listing key — the provider never sends either (§86.7).
+              kind:
+                assetType ??
+                (normalizeAssetType(ref.assetType) === "stock"
+                  ? null
+                  : normalizeAssetType(ref.assetType)),
+              etfCategory: ref.etfCategory,
+              listingKey: ref.listingKey,
+            }
           }
         } catch {
           /* reference table unavailable — provider profile is enough */
         }
+        // §86.7 — authoritative key facts: computed here, after the fill, so the
+        // equity kind sees the sector the reference table just supplied.
+        out.keyFacts = toKeyFacts(profile as Row, out, keyFacts)
         return c.json(out)
       } catch (e) {
         if (e instanceof UpstreamError) {
           try {
             const bondProfile = (await fetchBondProfile(symbol)) as OpenstProfile
             const resolution = await resolveCurrency(getDb(), routeSymbol, bondProfile.currency)
-            const out = toInstrumentProfile(symbol, bondProfile, resolution)
+            const out = toInstrumentProfile(symbol, bondProfile, resolution, { kind: "bond" })
             return c.json(out)
           } catch {
             /* not a bond either — fall through to the original error */

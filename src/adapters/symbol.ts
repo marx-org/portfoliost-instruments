@@ -33,3 +33,11 @@ export const SAVINGS_BOND = /^(ROD|EDO)\d{4}$/
 export function isSavingsBond(routeSymbol: string): boolean {
   return SAVINGS_BOND.test(venueFreeSymbol(routeSymbol.toUpperCase()))
 }
+
+/** The crypto tier keys on the -USD pair; a bare stored ticker (BTC) has to
+ *  become BTC-USD or the tier 404s on it. Shared by the quote dispatcher and the
+ *  profile route so the two cannot drift into different pair conventions. */
+export function cryptoPairFor(routeSymbol: string): string {
+  const base = venueFreeSymbol(routeSymbol.toUpperCase())
+  return base.includes("-") ? base : `${base}-USD`
+}
