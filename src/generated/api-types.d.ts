@@ -1020,6 +1020,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/portfolios/positions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Open positions across all portfolios
+         * @description Every OPEN position the identity holds, across every one of its portfolios, each carrying `portfolioName`.
+         *     Distinct from `/portfolios/held-stocks`, which aggregates BY SYMBOL and so cannot answer "which portfolio is this row from" — the question the cumulative Performance tab's performer cards exist to answer, since the same ticker can be held in two portfolios with very different results. Unlike `/portfolios/{id}/positions` it needs no id, and it deliberately returns no portfolio-specific derived state.
+         *     `portfolioName` is null on the per-portfolio route, which keeps satisfying the same `Position` schema unchanged.
+         */
+        get: operations["getAllPositions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/portfolios/shares": {
         parameters: {
             query?: never;
@@ -2453,6 +2475,112 @@ export interface components {
             state?: string | null;
             employeeTotal?: number | null;
             ceo?: string | null;
+            /** @description Per-asset-class key facts, discriminated by `kind` (plan §86). Null when the provider tier has nothing class-specific to say for this symbol. `kind` is deliberately redundant with `assetType`: `assetType` is the SCREAMING_CASE contract enum and is null when the symbol is missing from the local reference table, whereas `kind` is non-null whenever `keyFacts` is present, which is what makes the union discriminable. The two are not merged. */
+            keyFacts?: (components["schemas"]["StockKeyFacts"] | components["schemas"]["EtfKeyFacts"] | components["schemas"]["FundKeyFacts"] | components["schemas"]["CryptoKeyFacts"] | components["schemas"]["BondKeyFacts"] | components["schemas"]["CorpBondKeyFacts"]) | null;
+        };
+        /** @description Equity-only key facts. Every field is a relocation of a value already on the profile — no new upstream call (§86.7). */
+        StockKeyFacts: {
+            /**
+             * @description Discriminant; always `stock`.
+             * @constant
+             */
+            kind: "stock";
+            /** @description GICS sector. Null for an unsynced symbol rather than guessed. */
+            sector?: string | null;
+            /** @description GICS industry. */
+            industry?: string | null;
+            /** @description Employee total; null when the provider does not carry it. */
+            employees?: number | null;
+            /** @description Provider string, verbatim. */
+            ceo?: string | null;
+            ipo?: string | null;
+            sharesOutstanding?: number | null;
+            /** @description In `marketCapCurrency`. */
+            marketCap?: number | null;
+        };
+        /** @description One field, and it is a row the backend already fills today and the UI discarded: `ticker_reference.etf_category` (§86). */
+        EtfKeyFacts: {
+            /**
+             * @description Discriminant; always `etf`.
+             * @constant
+             */
+            kind: "etf";
+            /** @description e.g. `Equity`, `Fixed Income`; null when the reference row carries none. */
+            category?: string | null;
+        };
+        /** @description One field, on purpose. The local fund reference carries name + aliases only — there is no manager, category type, OPL/TER, risk class or recommended holding period anywhere in the stack, so the page says so rather than implying coverage. The TFI detail importer that would fix this is recorded as follow-up (§86.10). */
+        FundKeyFacts: {
+            /**
+             * @description Discriminant; always `fund`.
+             * @constant
+             */
+            kind: "fund";
+            /** @description ANALIZY listing code; null for a `TFI::` reference key, which carries none. */
+            categoryCode?: string | null;
+        };
+        /** @description Exactly what the one configured crypto-search provider returns (§86). Market cap, rank, ATH and ATL are **not** declared as nullable fields: they are unavailable from the provider, which is a different statement from "we fetch it and it happens to be empty". */
+        CryptoKeyFacts: {
+            /**
+             * @description Discriminant; always `crypto`.
+             * @constant
+             */
+            kind: "crypto";
+            name?: string | null;
+            /** @description Provider venue code; constant in practice for the current provider. */
+            exchange?: string | null;
+            /** Format: date */
+            icoDate?: string | null;
+            /** @description Null, never 0, when the provider does not carry it. */
+            circulatingSupply?: number | null;
+            /** @description Null, never 0, when the provider does not carry it. */
+            totalSupply?: number | null;
+        };
+        /** @description Polish retail savings bond. Deliberately a separate schema from `CorpBondKeyFacts`: the two field sets are disjoint apart from maturity and nominal, and one schema with fourteen nullable fields would make every reader know which half applies (§86). */
+        BondKeyFacts: {
+            /**
+             * @description Discriminant; always `bond`.
+             * @constant
+             */
+            kind: "bond";
+            seriesCode?: string | null;
+            /** Format: date */
+            issueDate?: string | null;
+            /** Format: date */
+            maturityDate?: string | null;
+            /** @description 0 is a real value, not a missing one. */
+            termMonths?: number | null;
+            /** @description `fixed` | `cpi_12m+margin` | `nbp_ref+margin`; determines what `margin` means. */
+            rateRule?: string | null;
+            /** @description Overloaded, and the label depends on `rateRule` (§86): under `fixed` it **is** the flat annual rate, under `cpi_12m+margin` it is the inflation add-on, under `nbp_ref+margin` the NBP add-on. Never render it as "Margin" without switching on `rateRule`. */
+            margin?: number | null;
+            /** @description Fee `b`, in the quote currency. */
+            redemptionFee?: number | null;
+            nominal?: number | null;
+        };
+        /** @description Catalyst corporate bond (obligacje.pl). `nominalValue` and `currentRate` are numbers here even though the provider sends strings (`"100.0"`, `"7.83%"`): the unit is stripped in the translator, with a guard that yields null rather than NaN. `secured` and `status` stay strings — they are provider text rendered verbatim, never translated (§86). */
+        CorpBondKeyFacts: {
+            /**
+             * @description Discriminant; always `corp_bond`.
+             * @constant
+             */
+            kind: "corp_bond";
+            /** @description Verbatim. */
+            issuer?: string | null;
+            series?: string | null;
+            market?: string | null;
+            /** @description Verbatim, e.g. `Notowane`. */
+            status?: string | null;
+            nominalValue?: number | null;
+            /** @description ISO-4217. */
+            nominalCurrency?: string | null;
+            /** @description Provider's Polish boolean string (`NIE`), verbatim — never mapped to a boolean. */
+            secured?: string | null;
+            /** @description Verbatim, carries its own embedded margin for variable-rate bonds. */
+            couponType?: string | null;
+            /** @description Percent as a number (7.83), never the raw `"7.83%"`. */
+            currentRate?: number | null;
+            /** Format: date */
+            maturityDate?: string | null;
         };
         InstrumentMetrics: {
             metrics?: {
@@ -2965,6 +3093,7 @@ export interface components {
             totalInvested: number;
             currentValue: number;
             isPublic: boolean;
+            cashLegOnTrade?: boolean;
             isMarginEnabled: boolean;
             marginRate?: number | null;
             maintenanceMarginRate?: number | null;
@@ -2986,6 +3115,7 @@ export interface components {
             strategy?: string;
             currency?: string;
             isPublic?: boolean;
+            cashLegOnTrade?: boolean;
         };
         /**
          * @description The dashboard headline aggregate, all amounts in `baseCurrency`.
@@ -3209,6 +3339,7 @@ export interface components {
                 [key: string]: unknown;
             };
             displayCurrency: string;
+            portfolioName?: string | null;
             logo?: string | null;
             labels?: components["schemas"]["Label"][];
         };
@@ -5431,6 +5562,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HeldStocks"];
+                };
+            };
+        };
+    };
+    getAllPositions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Positions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        positions?: components["schemas"]["Position"][];
+                    };
                 };
             };
         };
