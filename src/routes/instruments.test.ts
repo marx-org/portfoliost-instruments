@@ -36,6 +36,7 @@ vi.mock("../adapters/cachest.js", () => ({
   fetchCorpBondProfile: vi.fn(),
   fetchCryptoProfile: vi.fn(),
   fetchBondOhlcv: vi.fn(),
+  fetchFundCategoryHistory: vi.fn(),
   fetchDividendHistory: vi.fn(),
   fetchFilings: vi.fn(),
   fetchMda: vi.fn(),
@@ -76,6 +77,7 @@ beforeEach(() => {
   mocked.fetchCorpBondProfile.mockReset()
   mocked.fetchCryptoProfile.mockReset()
   mocked.fetchBondOhlcv.mockReset()
+  mocked.fetchFundCategoryHistory.mockReset()
   mocked.fetchDividendHistory.mockReset()
   mocked.fetchFilings.mockReset()
   mocked.fetchMda.mockReset()
@@ -2361,5 +2363,38 @@ describe("GET /:symbol/profile — analizy.pl fund category (§78)", () => {
     expect(res.status).toBe(404)
     expect((await res.json()).error).toBe("NotFound")
     expect(mocked.fetchProfile).toHaveBeenCalledWith("ING99X")
+  })
+
+  it("serves seasonality from the NAV history instead of the equity OHLCV tier", async () => {
+    // Same symptom one panel over: /ohlcv/ING01W 404s and the seasonality panel
+    // printed the cachest URL. One valuation per business day, so OHLC is the
+    // close — the shape fundCategoryQuote already states.
+    mocked.fetchFundCategoryHistory.mockResolvedValue([
+      { date: "2026-09-29", close: 934.07 },
+      { date: "2026-09-30", close: 918.64 },
+    ])
+
+    const res = await profileWithReference(FUND_CATEGORY_REF, "/api/instruments/ING01W/seasonality?years=3")
+
+    expect(res.status).toBe(200)
+    expect(mocked.fetchFundCategoryHistory).toHaveBeenCalledWith("ING01W", expect.any(String), expect.any(String))
+    expect(mocked.fetchOhlcv).not.toHaveBeenCalled()
+    expect((await res.json()).symbol).toBe("ING01W")
+  })
+
+  it("leaves an equity's seasonality on the OHLCV tier", async () => {
+    mocked.fetchOhlcv.mockResolvedValue([
+      { date: "2026-09-29", open: 1, high: 1, low: 1, close: 1 },
+      { date: "2026-09-30", open: 2, high: 2, low: 2, close: 2 },
+    ])
+
+    const res = await profileWithReference(
+      `${REF_HEADER}\nWSE::PKN,PKN,WSE,"Polski Koncern Naftowy ORLEN SA",Stock,Energy,,Poland,PL,PLPKN0000018,orlen`,
+      "/api/instruments/PKN/seasonality?years=3",
+    )
+
+    expect(res.status).toBe(200)
+    expect(mocked.fetchOhlcv).toHaveBeenCalledWith("PKN", expect.any(String), expect.any(String))
+    expect(mocked.fetchFundCategoryHistory).not.toHaveBeenCalled()
   })
 })
