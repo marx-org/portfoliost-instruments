@@ -3586,7 +3586,7 @@ export interface components {
                 issues?: Record<string, never>[];
             };
         };
-        /** @description A portfolio transaction row. For `type: DIVIDEND` the stoxly convention applies (verified against the live API 2026-09-26): `price` is the per-share gross dividend, `quantity × price` is the gross total, `taxes` is the withholding tax, and `totalAmount` is the **net** (gross − taxes). BUY/SELL rows keep `totalAmount = quantity × price + fees`. */
+        /** @description A portfolio transaction row. For `type: DIVIDEND` the stoxly convention applies (verified against the live API 2026-09-26): `price` is the per-share gross dividend, `quantity × price` is the gross total, `taxes` is the withholding tax, and `totalAmount` is the **net** (gross − taxes). BUY/SELL rows keep `totalAmount = quantity × price + fees`. `TRANSFER_OUT`/`TRANSFER_IN` rows are an in-kind movement of the instrument between portfolios: `price` is the source lot's cost carried over unchanged, `totalAmount` is informational, `realizedGainLoss` is absent because nothing was disposed of, and the row has **no cash effect and is not an external flow**. It must not be read as a trade. */
         Transaction: components["schemas"]["FeeFxFields"] & {
             /** Format: uuid */
             id: string;
@@ -3838,8 +3838,13 @@ export interface components {
         ImportPortfolioTx: components["schemas"]["FeeFxFields"] & {
             /** Format: uuid */
             portfolioId: string;
-            /** @enum {string} */
-            type: "BUY" | "SELL" | "DIVIDEND" | "EXPIRATION";
+            /**
+             * @description `TRANSFER_OUT` moves an instrument, unchanged, out of this portfolio to another one — a real in-kind (delivery-versus- payment-free) transfer between brokers. It is NOT a sale: no realised P/L is booked and no cash moves. `TRANSFER_IN` is its receiving leg. Send only `TRANSFER_OUT`; the receiving leg is derived by the server, one row per source lot drawn FIFO, each carrying that lot's own price. `quantity` on such a row is the quantity to move; `price` is the source lot's cost and is determined server-side from the FIFO draw, not supplied by the caller.
+             * @enum {string}
+             */
+            type: "BUY" | "SELL" | "DIVIDEND" | "EXPIRATION" | "TRANSFER_OUT" | "TRANSFER_IN";
+            /** @description Required iff `type` is `TRANSFER_OUT`; must exist and differ from the source portfolio. The receiving portfolio takes the instrument at the source lot's cost basis. */
+            toPortfolioName?: string | null;
             instrumentSymbol: string;
             instrumentName?: string | null;
             /** @default STOCK */
