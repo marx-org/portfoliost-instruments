@@ -1128,6 +1128,8 @@ describe("pt2 routes", () => {
   })
 
   describe("GET /:symbol/dividends", () => {
+    const storeDb = useStoreDb()
+
     it("maps openst dividend rows into example-service history shape with currency + currencySource", async () => {
       mocked.fetchDividendHistory.mockResolvedValue([
         { date: "2026-05-12", amount: "0.2600", currency: "USD", payment_date: "2026-05-15" },
@@ -1145,10 +1147,8 @@ describe("pt2 routes", () => {
     })
 
     it("resolves the instrument trading currency for rows without one (§36)", async () => {
-      const { createTestDb } = await import("../db/test-db.js")
       const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
-      const t = await createTestDb()
-      dbState.db = t.db
+      const t = { db: storeDb() }
       await syncTickerReference(
         `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
  WSE::SNT,SNT,WSE,Synektik Sa,Stock,,,,PL,,`,
@@ -1156,7 +1156,6 @@ describe("pt2 routes", () => {
       )
       // Suffix→exchange mapping so SNT.WA scopes to WSE
       await t.db.execute((await import("drizzle-orm")).sql`INSERT INTO instruments.exchange_reference (exchange_code, canonical_name, yahoo_suffix) VALUES ('WSE', 'Warsaw Stock Exchange', 'WA') ON CONFLICT DO NOTHING`)
-      try {
         mocked.fetchDividendHistory.mockResolvedValue([
           { date: "2026-04-15", amount: "1.20" },
           { date: "2025-12-15", amount: "1.10", currency: "PLN" },
@@ -1171,24 +1170,17 @@ describe("pt2 routes", () => {
         // §49.6 — provider-declared (row) against a matching local resolution → provider
         expect(body.currency).toBe("PLN")
         expect(body.currencySource).toBe("provider")
-      } finally {
-        await t.client.close()
-        dbState.db = null
-      }
     })
 
     it("marks a locally resolved currency 'estimated' when the provider is silent", async () => {
-      const { createTestDb } = await import("../db/test-db.js")
       const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
-      const t = await createTestDb()
-      dbState.db = t.db
+      const t = { db: storeDb() }
       await syncTickerReference(
         `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
  WSE::PKN,PKN,WSE,Orlen,Stock,,,,PL,,`,
         t.db,
       )
       await t.db.execute((await import("drizzle-orm")).sql`INSERT INTO instruments.exchange_reference (exchange_code, canonical_name, yahoo_suffix) VALUES ('WSE', 'Warsaw Stock Exchange', 'WA') ON CONFLICT DO NOTHING`)
-      try {
         mocked.fetchDividendHistory.mockResolvedValue([
           { date: "2026-04-15", amount: "1.20" },
         ])
@@ -1198,10 +1190,41 @@ describe("pt2 routes", () => {
         expect(body.history[0]).toMatchObject({ currency: "PLN" })
         expect(body.currency).toBe("PLN")
         expect(body.currencySource).toBe("estimated")
-      } finally {
-        await t.client.close()
-        dbState.db = null
-      }
+    })
+
+    // --- #71 write-through ------------------------------------------------
+    //
+    // The whole point of the store: a symbol read once is warm for every later
+    // read. Every assertion counts calls, not body shape — a body can look
+    // right while the walk still happened.
+
+    it("walks the provider once on a cold read and not at all on a warm one", async () => {
+      mocked.fetchDividendHistory.mockResolvedValue([
+        { date: "2026-05-12", amount: "0.2600", currency: "USD", payment_date: "2026-05-15" },
+      ])
+
+      const cold = await req("/api/instruments/AAPL/dividends")
+      expect(cold.status).toBe(200)
+      expect(mocked.fetchDividendHistory).toHaveBeenCalledTimes(1)
+
+      const warm = await req("/api/instruments/AAPL/dividends")
+      expect(warm.status).toBe(200)
+      expect(mocked.fetchDividendHistory).toHaveBeenCalledTimes(1)
+      expect(await warm.json()).toEqual(await cold.json())
+    })
+
+    it("records an empty response as backed-off — the second read does not walk", async () => {
+      mocked.fetchDividendHistory.mockResolvedValue([])
+
+      const cold = await req("/api/instruments/ETF/dividends")
+      expect(cold.status).toBe(200)
+      const coldBody = await cold.json()
+      expect(coldBody.history).toEqual([])
+      expect(mocked.fetchDividendHistory).toHaveBeenCalledTimes(1)
+
+      const warm = await req("/api/instruments/ETF/dividends")
+      expect(mocked.fetchDividendHistory).toHaveBeenCalledTimes(1)
+      expect(await warm.json()).toEqual(coldBody)
     })
 
     it("falls back to USD with 'unknown' source when nothing declares or resolves (§49.6, currency never null)", async () => {
