@@ -13,6 +13,7 @@ import { convertSeries, rateTablesByDate } from "../services/fx-convert.js"
 import { fetchQuoteByAssetClass } from "../services/quote-dispatch.js"
 import { getNewsForTicker, getRecentNews, getNewsStats } from "../services/news.js"
 import { loadMetricsThrough, loadStatementsThrough, type StoredRow } from "../services/fundamentals.js"
+import { loadDividendsThrough } from "../services/dividends-store.js"
 import {
   isSavingsBond,
   providerSymbol,
@@ -1459,15 +1460,18 @@ export function registerPt2Routes(instruments: Hono) {
       const routeSymbol = c.req.param("symbol").toUpperCase()
       const symbol = providerSymbol(routeSymbol)
       try {
-        const rows = await fetchDividendHistory(symbol)
+        const rows = await loadDividendsThrough(getDb(), routeSymbol, () => fetchDividendHistory(symbol))
         // §49.6 — thread the §47.4 currencySource treatment: the first
         // provider-declared row currency is the declaration; the single
         // resolver fills the silence. The response carries non-null `currency`
         // (fallback "USD" only when nothing is known) + `currencySource`.
-        const providerCurrency =
-          (rows as unknown as Array<{ currency?: string | null }>).find((r) => (r?.currency ?? "").trim())?.currency ?? null
+        const providerCurrency = rows.find((r) => (r.currency ?? "").trim())?.currency ?? null
         const resolution = await resolveCurrency(getDb(), routeSymbol, providerCurrency)
-        return c.json(toDividends(rows as any[], resolution))
+        // Reshape the stored rows into the provider shape `toDividends` reads.
+        const history = rows.map((r) => ({
+          date: r.exDate, amount: r.amount, payment_date: r.paymentDate, currency: r.currency,
+        }))
+        return c.json(toDividends(history as any[], resolution))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
