@@ -1424,6 +1424,14 @@ export function registerPt2Routes(instruments: Hono) {
           orEmpty(fetchCalendarEarnings(start, end)),
           orEmpty(fetchCalendarDividends(start, end)),
         ])
+        // #71 — per-symbol dividends (past, declared, and predicted) from the
+        // store. One walk on the first read of a symbol in this route, zero
+        // afterwards; the global calendar fetch above remains as the GPW
+        // fallback until fmp's 402 clears.
+        const storedRows = await loadDividendsThrough(getDb(), routeSymbol, () => fetchDividendHistory(symbol))
+        const storedCalendarRows = storedRows
+          .filter((r) => (r.exDate >= start && r.exDate <= end) || (r.paymentDate !== null && r.paymentDate >= start && r.paymentDate <= end))
+          .map((r) => ({ symbol: routeSymbol, ex_dividend_date: r.exDate, payment_date: r.paymentDate, amount: r.amount }))
         // §49.6 — the resolved instrument currency replaces the §36 profile
         // fallback; the contract requires a non-null currency.
         // §66.4 — resolver silence used to silently grant "USD". It is now the
@@ -1434,7 +1442,12 @@ export function registerPt2Routes(instruments: Hono) {
           console.warn(`[instruments] resolver silence for ${routeSymbol}; reporting the unresolved-currency placeholder`)
         }
         const currency = resolvedCcy ?? UNRESOLVED_CURRENCY
-        return c.json(toCalendar(symbol, earningsRows as any[], dividendRows as any[], currency))
+        // §52 insight from the spike: the global calendar is GPW-only in
+        // practice, so per-symbol stored rows are what make non-GPW dividends
+        // show up on the calendar at all. The merge lets GPW rows from the
+        // global fetch still surface for symbols not yet read through the
+        // store path.
+        return c.json(toCalendar(symbol, earningsRows as any[], [...storedCalendarRows, ...(dividendRows as any[])], currency))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
