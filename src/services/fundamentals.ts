@@ -405,6 +405,56 @@ export async function storedPeriodCounts(
 }
 
 /**
+ * The metrics snapshot, served from the store and refreshed on read.
+ *
+ *  A snapshot rather than a history: `get_metrics` goes through `_single_record`,
+ *  which returns one bare record with no date and no provenance envelope
+ *  (`openst/src/openbb_client.py:409-421`), so there is nothing to key a history
+ *  on and no provider to record.
+ *
+ *  The 1-day window is the one that has to stay honest. P/E, market cap and the
+ *  margins are price-derived, so they are wrong within a trading day — that is
+ *  why this is not folded into the 30d annual window the statements get. A
+ *  stored metrics row is therefore "as of sometime in the last day", never
+ *  "as of the last quarter".
+ *
+ *  A provider 404 is recorded as `empty` and stores nothing; anything else
+ *  propagates, for the same reason as the statements.
+ */
+export async function loadMetricsThrough(
+  db: DB,
+  symbol: string,
+  fetchRecord: () => Promise<Record<string, unknown>>,
+  now: Date = new Date(),
+): Promise<Record<string, unknown> | null> {
+  const scope = "metrics"
+
+  if (await shouldRefetch(db, symbol, scope, now)) {
+    try {
+      const record = await fetchRecord()
+      // An empty object is a provider that answered with nothing, which is the
+      // same fact as a 404 for this purpose: there are no metrics to store.
+      if (record !== null && Object.keys(record).length > 0) {
+        await upsertMetrics(db, symbol, record)
+        await markFetch(db, symbol, scope, "ok", now)
+      } else {
+        await markFetch(db, symbol, scope, "empty", now)
+      }
+    } catch (e) {
+      if (e instanceof UpstreamError && e.status === 404) {
+        await markFetch(db, symbol, scope, "empty", now)
+        const stored = await loadMetrics(db, symbol)
+        return stored?.payload ?? null
+      }
+      throw e
+    }
+  }
+
+  const stored = await loadMetrics(db, symbol)
+  return stored?.payload ?? null
+}
+
+/**
  * One statement scope, served from the store and refreshed on read.
  *
  *  This is the whole read path of the store (#51 step 5):
