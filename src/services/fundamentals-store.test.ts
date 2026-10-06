@@ -52,9 +52,11 @@ describe("fundamentals store", () => {
       expect(await upsertStatements(db, "PKO.WA", ANNUAL, b.provider, b.rows)).toBe(5)
 
       const stored = await loadStatements(db, "PKO.WA", ANNUAL)
-      expect(stored.map((r) => r.periodKey)).toEqual(["2021-Q4", "2022-Q4", "2023-Q4", "2024-Q4", "2025-Q4"])
-      expect(stored[4]!.provider).toBe("yfinance")
-      expect(stored[4]!.periodEnd).toBe("2025-12-31")
+      // Newest first — the order every provider sends, and the order the
+      // response's period list depends on.
+      expect(stored.map((r) => r.periodKey)).toEqual(["2025-Q4", "2024-Q4", "2023-Q4", "2022-Q4", "2021-Q4"])
+      expect(stored[0]!.provider).toBe("yfinance")
+      expect(stored[0]!.periodEnd).toBe("2025-12-31")
     })
 
     it("overwrites a restated period and leaves every other period alone", async () => {
@@ -86,7 +88,7 @@ describe("fundamentals store", () => {
       const stored = await loadStatements(db, "AAPL", ANNUAL)
       // fmp reaches one year further back (2021); the shared years stay single.
       expect(stored.map((r) => r.periodKey)).toEqual([
-        "2021-Q3", "2022-Q3", "2023-Q3", "2024-Q3", "2025-Q3",
+        "2025-Q3", "2024-Q3", "2023-Q3", "2022-Q3", "2021-Q3",
       ])
       // And every row now records the provider that actually answered last,
       // including the fiscal labels fmp declares and yfinance did not.
