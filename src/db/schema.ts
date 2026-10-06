@@ -1,4 +1,4 @@
-import { char, date, index, integer, numeric, pgSchema, primaryKey, text, timestamp } from "drizzle-orm/pg-core"
+import { char, date, index, integer, jsonb, numeric, pgSchema, primaryKey, text, timestamp } from "drizzle-orm/pg-core"
 
 export const instrumentsSchema = pgSchema("instruments")
 
@@ -211,3 +211,98 @@ export const fxSyncState = instrumentsSchema.table("fx_sync_state", {
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
   lastStatus: text("last_status"),
 })
+
+/**
+ * One row of one financial statement for one period (pfire-docs #51).
+ *
+ * NOT user-scoped — shared reference data, same as `fx_rates` and `news_articles`.
+ *
+ * The primary key is `(symbol, statement, period, period_key)`, and none of
+ * those four is negotiable:
+ *
+ * - `period_key` is the calendar quarter containing the provider's period end
+ *   (`YYYY-Qn`), NOT `period_ending` and NOT `fiscal_year`+`fiscal_period`.
+ *   Both of those fork a symbol's history when the provider changes: fmp reports
+ *   Apple's FY2025 as ending 2025-09-27 and yfinance as 2025-09-30, and fmp
+ *   labels the quarter ending 2026-06-27 "Q3 of FY2026" where yfinance's
+ *   calendarised date is calendar Q2. Derived by `rowIdentity()` — see
+ *   `src/services/fundamentals.ts` and `test/fixtures/fundamentals/README.md`.
+ * - `period` is in the key because the same period end legitimately appears in
+ *   both scopes: AAPL 2025-09-30 is the FY2025 annual row AND the 2025Q3
+ *   quarterly row.
+ * - `period_end` is stored but is NOT part of the key — it is the provider's own
+ *   date, kept for display and audit, and it legitimately differs per provider.
+ *
+ * `payload` is `jsonb` because there is no fixed statement schema (§79.3): fmp
+ * emits the same typed snake_case keys for every symbol, while yfinance emits
+ * per-listing passthrough names, so the rows are not one relational shape.
+ * `fiscal_year`/`fiscal_period` keep whatever the provider declared — audit
+ * metadata, not identity.
+ *
+ * `provider` is the §79.2 envelope's provider. It is NOT stable over time: fmp
+ * 402s on non-US symbols, which blocks it in-process for 24h inside a long-lived
+ * openst container, so a symbol's rows can come from fmp and later be rewritten
+ * from yfinance. The upsert is therefore last-write-wins and a switch is visible
+ * here rather than forking a second row set.
+ */
+export const fundamentalsStatements = instrumentsSchema.table(
+  "fundamentals_statements",
+  {
+    symbol: text("symbol").notNull(),
+    statement: text("statement").notNull(),
+    period: text("period").notNull(),
+    periodKey: text("period_key").notNull(),
+    periodEnd: date("period_end"),
+    fiscalYear: integer("fiscal_year"),
+    fiscalPeriod: text("fiscal_period"),
+    provider: text("provider"),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.symbol, t.statement, t.period, t.periodKey] }),
+    index("idx_fundamentals_symbol_period").on(t.symbol, t.period, t.periodEnd.desc()),
+  ],
+)
+
+/**
+ * Current metrics snapshot per symbol (P/E, margins, market cap — #51).
+ *
+ * A snapshot, not a history: `get_metrics` goes through `_single_record`, which
+ * returns one record with no date and no provenance envelope
+ * (`openst/src/openbb_client.py:409-421`). Nothing to key a history on, and no
+ * `provider` to store, so both are deliberately absent rather than null columns.
+ *
+ * Written on read with a one-day revalidation window, because the ratios here
+ * are price-derived and go stale within a trading day.
+ */
+export const fundamentalsMetrics = instrumentsSchema.table("fundamentals_metrics", {
+  symbol: text("symbol").primaryKey(),
+  payload: jsonb("payload").notNull(),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Revalidation clock and negative backoff, one row per (symbol, scope) (#51).
+ *
+ * `scope` is `income:annual`, `balance:quarter`, `metrics`, … — the granularity a
+ * fetch decision is made at, which is finer than a statement because the three
+ * statements are three independent provider walks (§79.2).
+ *
+ * `last_status` is `ok` or `empty`. `empty` is what stops an ETF or a fund — a
+ * symbol with no statements at all — from re-walking the provider chain on every
+ * single read; it is a backoff, not data, and is never written to
+ * `fundamentals_statements`.
+ *
+ * Same shape as `fx_syncState`, one row per unit of work instead of one singleton.
+ */
+export const fundamentalsFetchState = instrumentsSchema.table(
+  "fundamentals_fetch_state",
+  {
+    symbol: text("symbol").notNull(),
+    scope: text("scope").notNull(),
+    lastFetchedAt: timestamp("last_fetched_at", { withTimezone: true }),
+    lastStatus: text("last_status"),
+  },
+  (t) => [primaryKey({ columns: [t.symbol, t.scope] })],
+)
