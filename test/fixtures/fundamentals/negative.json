@@ -1,0 +1,18 @@
+{
+ "_comment": [
+  "Symbols from instruments.ticker_reference that have no financial statements.",
+  "openst answers 404 for every statement and period; the body is not stored, only the",
+  "negative backoff state (see issue #54). A fund or ETF must never re-walk the",
+  "provider chain on every read."
+ ],
+ "symbols": [
+  {
+   "symbol": "AIPOWR.AS",
+   "status": 404
+  },
+  {
+   "symbol": "ARK01",
+   "status": 404
+  }
+ ]
+}
