@@ -135,9 +135,10 @@ export function rejectedRowCount(rows: StatementRow[]): number {
 // Store (pfire-docs #51 step 3)
 // ---------------------------------------------------------------------------
 
-import { and, eq, sql } from "drizzle-orm"
+import { and, desc, eq, sql } from "drizzle-orm"
 import type { DB } from "../db/index.js"
 import { fundamentalsFetchState, fundamentalsMetrics, fundamentalsStatements } from "../db/schema.js"
+import { UpstreamError } from "../adapters/cachest.js"
 
 /** How long a stored scope is served before upstream is asked again, in hours.
  *
@@ -198,7 +199,14 @@ export interface StoredRow {
   fetchedAt: Date
 }
 
-/** Every stored period for one statement scope, oldest first. */
+/**
+ * Every stored period for one statement scope, NEWEST first.
+ *
+ * Newest-first because that is the order every provider sends (verified on 21
+ * live bodies for #52) and the response is a list of periods, not a time series:
+ * `financialHighlights.incomeStatement[0]` is the most recent year on screen, and
+ * a store that returned them oldest-first would silently reverse that table.
+ */
 export async function loadStatements(
   db: DB,
   symbol: string,
@@ -214,7 +222,7 @@ export async function loadStatements(
         eq(fundamentalsStatements.period, scope.period),
       ),
     )
-    .orderBy(fundamentalsStatements.periodKey)
+    .orderBy(desc(fundamentalsStatements.periodKey))
 
   return rows.map((r) => ({
     periodKey: r.periodKey,
@@ -394,4 +402,55 @@ export async function storedPeriodCounts(
     .from(fundamentalsStatements)
     .where(eq(fundamentalsStatements.symbol, symbol))
     .groupBy(fundamentalsStatements.statement, fundamentalsStatements.period)
+}
+
+/**
+ * One statement scope, served from the store and refreshed on read.
+ *
+ *  This is the whole read path of the store (#51 step 5):
+ *
+ *    1. read the store
+ *    2. if `shouldRefetch`, walk the provider tier once and upsert
+ *    3. read the store again and return *that*
+ *
+ *  Step 3 is not redundant. It means the response is built from exactly what is
+ *  persisted, so a warm read and a cold read cannot disagree — the first request
+ *  after a deploy returns the same body as the second, and a partial write is
+ *  never served as if it were complete.
+ *
+ *  A provider 404 is recorded as `empty` and nothing is stored: a fund or an ETF
+ *  has no statements, and that fact must cost one walk a week rather than one
+ *  per read. Any other upstream failure propagates, so a broken provider tier
+ *  still surfaces as a 502 instead of being laundered into an empty result.
+ */
+export async function loadStatementsThrough(
+  db: DB,
+  symbol: string,
+  scope: StatementScope,
+  fetchBody: () => Promise<{ provider: string | null; rows: StatementRow[] }>,
+  now: Date = new Date(),
+): Promise<StoredRow[]> {
+  const key = scopeKey(scope)
+
+  if (await shouldRefetch(db, symbol, key, now)) {
+    try {
+      const body = await fetchBody()
+      if (body.rows.length > 0) {
+        await upsertStatements(db, symbol, scope, body.provider, body.rows)
+        await markFetch(db, symbol, key, "ok", now)
+      } else {
+        await markFetch(db, symbol, key, "empty", now)
+      }
+    } catch (e) {
+      // Only a 404 means "this symbol has no statements". Anything else is a
+      // broken provider tier and must not be remembered as an answer.
+      if (e instanceof UpstreamError && e.status === 404) {
+        await markFetch(db, symbol, key, "empty", now)
+        return loadStatements(db, symbol, scope)
+      }
+      throw e
+    }
+  }
+
+  return loadStatements(db, symbol, scope)
 }

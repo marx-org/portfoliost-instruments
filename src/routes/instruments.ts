@@ -12,6 +12,7 @@ import { TRACKED_CURRENCIES } from "../services/fx-import.js"
 import { convertSeries, rateTablesByDate } from "../services/fx-convert.js"
 import { fetchQuoteByAssetClass } from "../services/quote-dispatch.js"
 import { getNewsForTicker, getRecentNews, getNewsStats } from "../services/news.js"
+import { loadStatementsThrough, type StoredRow } from "../services/fundamentals.js"
 import {
   isSavingsBond,
   providerSymbol,
@@ -46,7 +47,7 @@ import {
   fetchMda,
   fetchInsiderTrading,
 } from "../adapters/cachest.js"
-import { UpstreamError, type FundamentalsStatement } from "../adapters/cachest.js"
+import { UpstreamError } from "../adapters/cachest.js"
 import {
   toInstrumentDetail,
   toInstrumentProfile,
@@ -1265,21 +1266,30 @@ export function registerPt2Routes(instruments: Hono) {
    * outranks the cross-listing ambiguity guard exactly as §72.4 requires, and it
    * is what lets a venue-qualified symbol with no `ticker_reference` listing
    * resolve at all (§71).
+   *
+   * Both facts now come off the STORED rows, not off the request (#51). A warm
+   * read makes no provider call at all, so provenance read from the request would
+   * report `null` for every stored symbol. The stored provider is also the honest
+   * one after a provider switch: it names whoever last wrote the payload this
+   * response was actually built from.
    */
-  async function fundamentalsProvenance(
+  async function storedProvenance(
     routeSymbol: string,
-    income: FundamentalsStatement,
-    balance: FundamentalsStatement,
-    cash: FundamentalsStatement,
+    statements: Array<{ statement: string; rows: StoredRow[] }>,
   ): Promise<FundamentalsProvenance> {
-    const sources = {
-      incomeStatement: income.provider,
-      balanceSheet: balance.provider,
-      cashFlow: cash.provider,
+    const byName = new Map(statements.map((s) => [s.statement, s.rows]))
+    const providerOf = (name: string): string | null => {
+      const providers = new Set(
+        (byName.get(name) ?? []).map((r) => r.provider).filter((p): p is string => p !== null),
+      )
+      // One provider per statement, or the periods disagree about who answered —
+      // in which case there is no single answer and null is the honest one.
+      return providers.size === 1 ? [...providers][0]! : null
     }
+
     const declared = new Set<string>()
-    for (const statement of [income, balance, cash]) {
-      const c = declaredStatementCurrency(statement.rows)
+    for (const name of ["income", "balance", "cash"]) {
+      const c = declaredStatementCurrency((byName.get(name) ?? []).map((r) => r.payload))
       if (c) declared.add(c)
     }
     const providerCurrency = declared.size === 1 ? [...declared][0] : null
@@ -1289,7 +1299,11 @@ export function registerPt2Routes(instruments: Hono) {
     return {
       currency: resolution.currency,
       currencySource: resolution.currencySource,
-      sources,
+      sources: {
+        incomeStatement: providerOf("income"),
+        balanceSheet: providerOf("balance"),
+        cashFlow: providerOf("cash"),
+      },
     }
   }
 
@@ -1317,13 +1331,41 @@ export function registerPt2Routes(instruments: Hono) {
         return c.json({ error: "NotFound", message: "Not applicable for savings bonds" }, 404)
       }
       try {
-        const [income, balance, cash] = await Promise.all([
-          fetchFundamentals(symbol, "income", "annual"),
-          fetchFundamentals(symbol, "balance", "annual"),
-          fetchFundamentals(symbol, "cash", "annual"),
-        ])
+        // #51 — the three statements are three independent provider walks, so
+        // each is stored and revalidated on its own clock.
+        const db = getDb()
+        const stored = await Promise.all(
+          (["income", "balance", "cash"] as const).map((statement) =>
+            loadStatementsThrough(
+              db,
+              symbol,
+              { statement, period: "annual" },
+              () => fetchFundamentals(symbol, statement, "annual"),
+            ),
+          ),
+        )
+        const [income, balance, cash] = stored
+
+        // A symbol with no statements at all — an ETF, a fund, an unknown ticker
+        // — used to answer 404 because the upstream walk 404'd, and it still
+        // does. Without this the store would quietly turn that into a 200 with an
+        // empty highlights block, which the UI renders as "no data" rather than
+        // "not applicable".
+        if (income.length === 0 && balance.length === 0 && cash.length === 0) {
+          return c.json({ error: "NotFound", message: `No fundamentals for ${symbol}` }, 404)
+        }
+
         return c.json(
-          toFundamentals(income.rows, balance.rows, cash.rows, await fundamentalsProvenance(routeSymbol, income, balance, cash)),
+          toFundamentals(
+            income.map((r) => r.payload),
+            balance.map((r) => r.payload),
+            cash.map((r) => r.payload),
+            await storedProvenance(routeSymbol, [
+              { statement: "income", rows: income },
+              { statement: "balance", rows: balance },
+              { statement: "cash", rows: cash },
+            ]),
+          ),
         )
       } catch (e) {
         return upstreamErrorResponse(c, e)
