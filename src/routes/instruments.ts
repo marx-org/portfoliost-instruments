@@ -1429,9 +1429,17 @@ export function registerPt2Routes(instruments: Hono) {
         // afterwards; the global calendar fetch above remains as the GPW
         // fallback until fmp's 402 clears.
         const storedRows = await loadDividendsThrough(getDb(), routeSymbol, () => fetchDividendHistory(symbol))
-        const storedCalendarRows = storedRows
-          .filter((r) => (r.exDate >= start && r.exDate <= end) || (r.paymentDate !== null && r.paymentDate >= start && r.paymentDate <= end))
-          .map((r) => ({ symbol: routeSymbol, ex_dividend_date: r.exDate, payment_date: r.paymentDate, amount: r.amount }))
+        // Split per-symbol rows by role: a payment row whose *payment* date falls
+        // in the window must not pull its possibly pre-window ex-date into the
+        // exDividend array, and vice versa — one event's box never leaks its
+        // sibling date (matching the global calendar's window semantics).
+        const storedExRows = storedRows
+          .filter((r) => r.exDate >= start && r.exDate <= end)
+          .map((r) => ({ symbol: routeSymbol, ex_dividend_date: r.exDate, payment_date: null, amount: r.amount }))
+        const storedPayRows = storedRows
+          .filter((r) => r.paymentDate !== null && r.paymentDate >= start && r.paymentDate <= end)
+          .map((r) => ({ symbol: routeSymbol, ex_dividend_date: null, payment_date: r.paymentDate, amount: r.amount }))
+        const storedCalendarRows = [...storedExRows, ...storedPayRows]
         // §49.6 — the resolved instrument currency replaces the §36 profile
         // fallback; the contract requires a non-null currency.
         // §66.4 — resolver silence used to silently grant "USD". It is now the
