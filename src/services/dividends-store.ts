@@ -101,6 +101,7 @@ export function normalizeDividendRows(
 import { and, desc, eq, sql } from "drizzle-orm"
 import type { DB } from "../db/index.js"
 import { dividends, dividendsFetchState } from "../db/schema.js"
+import { UpstreamError } from "../adapters/cachest.js"
 
 /** Revalidation cadence per scope, in hours. 7d everywhere: paid rows are
  *  immutable, and a predicted row revised by the provider is caught within a
@@ -283,4 +284,45 @@ export async function markFetch(
       target: [dividendsFetchState.symbol, dividendsFetchState.scope],
       set: { lastFetchedAt: at, lastStatus: status },
     })
+}
+
+/**
+ * One symbol's dividends, served from the store and refreshed on read.
+ *
+ *  Same read-path contract as `loadStatementsThrough` (#51):
+ *
+ *    1. read the store
+ *    2. if `shouldRefetch`, walk the provider tier once and upsert
+ *    3. read the store again and return *that*
+ *
+ *  Step 3 means the response is built from exactly what persisted, so a warm
+ *  and a cold read agree. A provider 404 is recorded as `empty` — one walk a
+ *  week, not one per page view — and everything else propagates as a 502.
+ */
+export async function loadDividendsThrough(
+  db: DB,
+  symbol: string,
+  fetchRows: () => Promise<Array<Record<string, unknown>>>,
+  provider: string | null = null,
+  now: Date = new Date(),
+): Promise<StoredDividend[]> {
+  const scope = "history"
+  if (await shouldRefetch(db, symbol, scope, now)) {
+    try {
+      const rows = await fetchRows()
+      if (rows.length > 0) {
+        await upsertDividends(db, symbol, provider, rows, now.toISOString().slice(0, 10))
+        await markFetch(db, symbol, scope, "ok", now)
+      } else {
+        await markFetch(db, symbol, scope, "empty", now)
+      }
+    } catch (e) {
+      if (e instanceof UpstreamError && e.status === 404) {
+        await markFetch(db, symbol, scope, "empty", now)
+        return loadDividends(db, symbol)
+      }
+      throw e
+    }
+  }
+  return loadDividends(db, symbol)
 }
