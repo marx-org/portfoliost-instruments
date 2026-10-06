@@ -12,7 +12,7 @@ import { TRACKED_CURRENCIES } from "../services/fx-import.js"
 import { convertSeries, rateTablesByDate } from "../services/fx-convert.js"
 import { fetchQuoteByAssetClass } from "../services/quote-dispatch.js"
 import { getNewsForTicker, getRecentNews, getNewsStats } from "../services/news.js"
-import { loadStatementsThrough, type StoredRow } from "../services/fundamentals.js"
+import { loadMetricsThrough, loadStatementsThrough, type StoredRow } from "../services/fundamentals.js"
 import {
   isSavingsBond,
   providerSymbol,
@@ -671,7 +671,13 @@ export function createInstrumentsRoutes() {
         return c.json({ error: "NotFound", message: "Not applicable for savings bonds" }, 404)
       }
       try {
-        const metrics = await fetchMetrics(symbol)
+        // #51 — the metrics snapshot is stored too, on a 1-day window: the ratios
+        // are price-derived, so they are wrong within a trading day. An absent
+        // snapshot keeps answering 404, which is what the upstream 404 became.
+        const metrics = await loadMetricsThrough(getDb(), symbol, () => fetchMetrics(symbol))
+        if (metrics === null) {
+          return c.json({ error: "NotFound", message: `No metrics for ${symbol}` }, 404)
+        }
         let consensus: OpenstConsensus | undefined
         try {
           consensus = (await fetchProjections(symbol)) as OpenstConsensus
@@ -707,7 +713,8 @@ export function createInstrumentsRoutes() {
         return c.json({ error: "NotFound", message: "Not applicable for savings bonds" }, 404)
       }
       try {
-        const metrics = await fetchMetrics(symbol)
+        const metrics =
+          (await loadMetricsThrough(getDb(), symbol, () => fetchMetrics(symbol))) ?? ({} as Row)
         let profile: OpenstProfile | undefined
         try {
           profile = (await fetchProfile(symbol)) as OpenstProfile
@@ -1533,9 +1540,9 @@ export function registerPt2Routes(instruments: Hono) {
         const [profile, quote, metrics] = await Promise.all([
           fetchProfile(symbol),
           fetchQuote(symbol).catch(() => undefined),
-          fetchMetrics(symbol),
+          loadMetricsThrough(getDb(), symbol, () => fetchMetrics(symbol)).catch(() => null),
         ])
-        return c.json(toCompare(profile as any, quote as any, metrics))
+        return c.json(toCompare(profile as any, quote as any, (metrics ?? {}) as Row))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
@@ -1742,7 +1749,12 @@ export function registerPt2Routes(instruments: Hono) {
               /* price/metrics optional for peers */
             }
             try {
-              metrics = (await fetchMetrics(sym)) as Row
+              // Peers compare metrics ACROSS symbols, so a sweep can now mix a
+              // symbol stored today with one stored yesterday where before both
+              // came from the same 24h cachest window. Ratios are not prices, so
+              // that is a consistency change rather than a correctness one — but
+              // it is the reason the metrics window is a day and not a month.
+              metrics = ((await loadMetricsThrough(getDb(), sym, () => fetchMetrics(sym))) ?? {}) as Row
             } catch {
               /* optional */
             }
