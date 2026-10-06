@@ -1065,6 +1065,8 @@ describe("pt2 routes", () => {
   })
 
   describe("GET /:symbol/calendar", () => {
+    const storeDbCalendar = useStoreDb()
+
     it("filters window entries by symbol", async () => {
       mocked.fetchCalendarEarnings.mockResolvedValue([
         { symbol: "AAPL", report_date: "2026-09-15" },
@@ -1073,6 +1075,7 @@ describe("pt2 routes", () => {
       mocked.fetchCalendarDividends.mockResolvedValue([
         { symbol: "AAPL", ex_dividend_date: "2026-09-01", amount: 0.26 },
       ])
+      mocked.fetchDividendHistory.mockResolvedValue([])
       const res = await req("/api/instruments/AAPL/calendar")
       expect(res.status).toBe(200)
       const body = await res.json()
@@ -1084,6 +1087,7 @@ describe("pt2 routes", () => {
     it("requests a window reaching into the future, keeping the past ≤ 30d (fmp free-tier lookback, upcoming entries)", async () => {
       mocked.fetchCalendarEarnings.mockResolvedValue([])
       mocked.fetchCalendarDividends.mockResolvedValue([])
+      mocked.fetchDividendHistory.mockResolvedValue([])
       await req("/api/instruments/AAPL/calendar")
       const [start, end] = mocked.fetchCalendarDividends.mock.calls[0] as [string, string]
       // The window is produced by `todayRange`, which formats with
@@ -1097,33 +1101,45 @@ describe("pt2 routes", () => {
     })
 
     it("resolves the calendar currency via the §49.6 single resolver, not the profile (§47 parity)", async () => {
-      const { createTestDb } = await import("../db/test-db.js")
       const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
-      const t = await createTestDb()
-      dbState.db = t.db
+      const t = { db: storeDbCalendar() }
       await syncTickerReference(
         `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
  WSE::SNT,SNT,WSE,Synektik Sa,Stock,,,,PL,,`,
         t.db,
       )
       await t.db.execute((await import("drizzle-orm")).sql`INSERT INTO instruments.exchange_reference (exchange_code, canonical_name, yahoo_suffix) VALUES ('WSE', 'Warsaw Stock Exchange', 'WA') ON CONFLICT DO NOTHING`)
-      try {
-        // The provider profile (had the route used it) would say USD — the
-        // resolver must win: SNT.WA → PLN via the WSE/country mapping.
-        mocked.fetchProfile.mockResolvedValue({ currency: "USD" })
-        mocked.fetchCalendarEarnings.mockResolvedValue([])
-        mocked.fetchCalendarDividends.mockResolvedValue([
-          { symbol: "SNT.WA", ex_dividend_date: "2026-09-01", amount: 0.26 },
-        ])
-        const res = await req("/api/instruments/SNT.WA/calendar")
-        expect(res.status).toBe(200)
-        const body = await res.json()
-        expect(body.currency).toBe("PLN")
-        expect(mocked.fetchProfile).not.toHaveBeenCalled()
-      } finally {
-        await t.client.close()
-        dbState.db = null
-      }
+      // The provider profile (had the route used it) would say USD — the
+      // resolver must win: SNT.WA → PLN via the WSE/country mapping.
+      mocked.fetchProfile.mockResolvedValue({ currency: "USD" })
+      mocked.fetchCalendarEarnings.mockResolvedValue([])
+      mocked.fetchDividendHistory.mockResolvedValue([])
+      mocked.fetchCalendarDividends.mockResolvedValue([
+        { symbol: "SNT.WA", ex_dividend_date: "2026-09-01", amount: 0.26 },
+      ])
+      const res = await req("/api/instruments/SNT.WA/calendar")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.currency).toBe("PLN")
+      expect(mocked.fetchProfile).not.toHaveBeenCalled()
+    })
+
+    it("surfaces a stored non-GPW upcoming dividend on the calendar", async () => {
+      // The global calendar fetch only ever serves GPW rows (fmp 402 +
+      // nasdaq 403, confirmed by the #72 spike), so a US upcoming dividend
+      // must come from the store: that is the whole reason #71 exists.
+      mocked.fetchCalendarEarnings.mockResolvedValue([])
+      mocked.fetchCalendarDividends.mockResolvedValue([])
+      const today = new Date().toISOString().slice(0, 10)
+      mocked.fetchDividendHistory.mockResolvedValue([
+        { date: "2026-08-10", amount: "0.2600", currency: "USD", payment_date: "2026-08-17" },
+        { date: today, amount: "0.2700", currency: "USD", payment_date: today },
+      ])
+      const res = await req("/api/instruments/AAPL/calendar")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.exDividend).toContainEqual(expect.objectContaining({ date: today }))
+      expect(body.dividend).toContainEqual(expect.objectContaining({ date: today }))
     })
   })
 
