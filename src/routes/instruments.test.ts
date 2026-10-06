@@ -58,6 +58,35 @@ function req(path: string) {
 
 const mocked = vi.mocked(cachest, true)
 
+/**
+ * A fresh PGlite store for every test in the calling describe.
+ *
+ * #51 made these routes stateful: they read `instruments.fundamentals_*` before
+ * walking the provider tier, so a symbol read once is warm for the rest of the
+ * block and would answer from the store while the test still asserted on its
+ * mocked walk. Per-test isolation is what lets a test say "cold read, then warm
+ * read" out loud instead of depending on ordering.
+ *
+ * Every test also gets an empty `ticker_reference`, which is why the currency
+ * assertions land on `unknown` — there is nothing for the local resolver to
+ * answer with.
+ */
+function useStoreDb() {
+  let store: { db: unknown; client: { close: () => Promise<void> } } | null = null
+  beforeEach(async () => {
+    const { createTestDb } = await import("../db/test-db.js")
+    const t = await createTestDb()
+    store = t
+    dbState.db = t.db
+  })
+  afterEach(async () => {
+    await store!.client.close()
+    dbState.db = null
+  })
+  /** The same handle the route saw, for asserting on what was stored. */
+  return () => store!.db as DB
+}
+
 /** §79.2 — the statement envelope openst now answers with. */
 function statement(provider: string | null, rows: Array<Record<string, unknown>>) {
   return { provider, rows }
@@ -763,6 +792,65 @@ describe("GET /api/instruments/:symbol/history", () => {
 })
 
 describe("GET /api/instruments/:symbol/metrics", () => {
+  const currentDb = useStoreDb()
+
+  // --- #57 metrics snapshot ----------------------------------------------
+  //
+  // Metrics are stored too, but on a 1-day window and not the statements' 30d:
+  // P/E, market cap and the margins are price-derived and wrong within a trading
+  // day. So "warm" here means "within the day", not "within the quarter".
+
+  it("fetches once, then serves the snapshot without touching the provider", async () => {
+    mocked.fetchMetrics.mockResolvedValue({ pe_ratio: 35.5, market_cap: 1e9 })
+    mocked.fetchProjections.mockRejectedValue(new Error("no consensus"))
+
+    const cold = await req("/api/instruments/AAPL/metrics")
+    expect(cold.status).toBe(200)
+    expect(mocked.fetchMetrics).toHaveBeenCalledTimes(1)
+    expect((await cold.json()).metrics.metric.pe_ratio).toBe(35.5)
+
+    const warm = await req("/api/instruments/AAPL/metrics")
+    expect(warm.status).toBe(200)
+    expect(mocked.fetchMetrics).toHaveBeenCalledTimes(1)
+    expect((await warm.json()).metrics.metric.pe_ratio).toBe(35.5)
+  })
+
+  it("refetches once the 1-day window has passed", async () => {
+    mocked.fetchMetrics.mockResolvedValue({ pe_ratio: 10 })
+    mocked.fetchProjections.mockRejectedValue(new Error("no consensus"))
+    await req("/api/instruments/AAPL/metrics")
+    expect(mocked.fetchMetrics).toHaveBeenCalledTimes(1)
+
+    const { fundamentalsFetchState } = await import("../db/schema.js")
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 3600 * 1000)
+    await currentDb()!
+      .update(fundamentalsFetchState)
+      .set({ lastFetchedAt: twoDaysAgo })
+
+    mocked.fetchMetrics.mockClear()
+    mocked.fetchMetrics.mockResolvedValue({ pe_ratio: 12 })
+    const res = await req("/api/instruments/AAPL/metrics")
+    expect(res.status).toBe(200)
+    expect(mocked.fetchMetrics).toHaveBeenCalledTimes(1)
+    expect((await res.json()).metrics.metric.pe_ratio).toBe(12)
+  })
+
+  it("keeps answering 404 for a symbol with no metrics, and backs off", async () => {
+    mocked.fetchMetrics.mockRejectedValue(new cachest.UpstreamError("x", 404))
+
+    const first = await req("/api/instruments/AIPOWR.AS/metrics")
+    expect(first.status).toBe(404)
+    expect((await first.json()).error).toBe("NotFound")
+    expect(mocked.fetchMetrics).toHaveBeenCalledTimes(1)
+
+    const { fundamentalsMetrics } = await import("../db/schema.js")
+    expect(await currentDb()!.select().from(fundamentalsMetrics)).toEqual([])
+
+    mocked.fetchMetrics.mockClear()
+    const second = await req("/api/instruments/AIPOWR.AS/metrics")
+    expect(second.status).toBe(404)
+    expect(mocked.fetchMetrics).not.toHaveBeenCalled()
+  })
   it("attaches consensus when projections succeed and degrades gracefully when not", async () => {
     mocked.fetchMetrics.mockResolvedValue({ pe_ratio: 35.5 })
     mocked.fetchProjections.mockResolvedValue({
@@ -783,6 +871,7 @@ describe("GET /api/instruments/:symbol/metrics", () => {
 })
 
 describe("GET /api/instruments/:symbol/overview-metrics", () => {
+  useStoreDb()
   it("merges metrics with profile employees", async () => {
     mocked.fetchMetrics.mockResolvedValue({ market_cap: 1000 })
     mocked.fetchProfile.mockResolvedValue({ employees: 164000 })
@@ -818,7 +907,7 @@ describe("pt2 routes", () => {
   })
 
   describe("GET /:symbol/fundamentals", () => {
-    let fundStore: { client: { close: () => Promise<void> } } | null = null
+
     // #51 — the route reads `instruments.fundamentals_statements` before it walks
     // the provider tier, so this block needs the real store on PGlite.
     //
@@ -831,18 +920,7 @@ describe("pt2 routes", () => {
     // The DB has no ticker_reference rows, which is why the currency assertions
     // below still land on `unknown` — there is nothing for the local resolver to
     // answer with.
-    let storeDb: DB
-    beforeEach(async () => {
-      const { createTestDb } = await import("../db/test-db.js")
-      const t = await createTestDb()
-      storeDb = t.db as unknown as DB
-      dbState.db = t.db
-      fundStore = t
-    })
-    afterEach(async () => {
-      await fundStore!.client.close()
-      dbState.db = null
-    })
+    const storeDb = useStoreDb()
 
     it("assembles financial highlights from the three statements", async () => {
       mocked.fetchFundamentals
@@ -925,7 +1003,7 @@ describe("pt2 routes", () => {
       // real time would.
       const { fundamentalsFetchState } = await import("../db/schema.js")
       const longAgo = new Date(Date.now() - 31 * 24 * 3600 * 1000)
-      await storeDb
+      await storeDb()
         .update(fundamentalsFetchState)
         .set({ lastFetchedAt: longAgo })
 
@@ -939,18 +1017,18 @@ describe("pt2 routes", () => {
       // replacing it.
       const { loadStatements } = await import("../services/fundamentals.js")
       const scope = { statement: "income", period: "annual" } as const
-      expect((await loadStatements(storeDb, "AAPL", scope)).length).toBe(1)
+      expect((await loadStatements(storeDb(), "AAPL", scope)).length).toBe(1)
       mocked.fetchFundamentals.mockResolvedValue(
         statement("fmp", [
           ...rows,
           { period_ending: "2025-12-31", revenue: 120, reported_currency: "USD" },
         ]),
       )
-      await storeDb
+      await storeDb()
         .update(fundamentalsFetchState)
         .set({ lastFetchedAt: longAgo })
       await req("/api/instruments/AAPL/fundamentals")
-      const grown = await loadStatements(storeDb, "AAPL", scope)
+      const grown = await loadStatements(storeDb(), "AAPL", scope)
       expect(grown.map((r) => r.periodKey)).toEqual(["2025-Q4", "2024-Q4"])
     })
 
@@ -963,7 +1041,7 @@ describe("pt2 routes", () => {
       expect(mocked.fetchFundamentals).toHaveBeenCalledTimes(3)
 
       const { fundamentalsStatements } = await import("../db/schema.js")
-      const stored = await storeDb.select().from(fundamentalsStatements)
+      const stored = await storeDb().select().from(fundamentalsStatements)
       expect(stored).toEqual([])
 
       // The backoff: a second read of a symbol with no statements costs nothing.
@@ -981,7 +1059,7 @@ describe("pt2 routes", () => {
       // A 500 is not an answer about the symbol, so nothing was recorded as one:
       // the next read walks again rather than serving a remembered failure.
       const { fundamentalsFetchState } = await import("../db/schema.js")
-      const state = await storeDb.select().from(fundamentalsFetchState)
+      const state = await storeDb().select().from(fundamentalsFetchState)
       expect(state).toEqual([])
     })
   })
@@ -1158,6 +1236,7 @@ describe("pt2 routes", () => {
   })
 
   describe("GET /:symbol/compare", () => {
+    useStoreDb()
     it("composes profile+quote+metrics into compare snapshot", async () => {
       mocked.fetchProfile.mockResolvedValue({ symbol: "AAPL", name: "Apple Inc.", currency: "USD" })
       mocked.fetchQuote.mockResolvedValue({ last_price: 309.35 })
