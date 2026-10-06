@@ -36,6 +36,13 @@
       "when": 1791280220026,
       "tag": "0004_fundamentals",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791315732670,
+      "tag": "0005_dividends",
+      "breakpoints": true
     }
   ]
 }
