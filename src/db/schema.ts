@@ -306,3 +306,57 @@ export const fundamentalsFetchState = instrumentsSchema.table(
   },
   (t) => [primaryKey({ columns: [t.symbol, t.scope] })],
 )
+
+/**
+ * Per-symbol dividend history and its upcoming (predicted) ex-dates (#71).
+ *
+ * One row per (symbol, ex_date). `payment_date` is mutable so the state
+ * lifecycle `predicted` -> `confirmed` -> `paid` updates the row in place on
+ * last-write-wins upsert, rather than forking a second row set for the same
+ * ex-date. `status` is the marker: `predicted` rows are date-only forecasts
+ * (dividendmax `Forecast` — the amount cell is sign-up gated, so `amount` is
+ * NULL until the row goes `confirmed` with a declared amount). `confirmed` and
+ * `paid` rows always beat a late-arriving `predicted` row for the same ex-date.
+ *
+ * `provider` is the §79.2 envelope's provider — which one answered last is
+ * stored rather than guessed. `fetched_at` + the 7d window live next to
+ * `dividends_fetch_state`.
+ */
+export const dividends = instrumentsSchema.table(
+  "dividends",
+  {
+    symbol: text("symbol").notNull(),
+    exDate: date("ex_date").notNull(),
+    paymentDate: date("payment_date"),
+    declarationDate: date("declaration_date"),
+    amount: numeric("amount", { precision: 18, scale: 8 }),
+    currency: text("currency"),
+    status: text("status").notNull(),
+    provider: text("provider"),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.symbol, t.exDate] }),
+    index("idx_dividends_symbol_payment").on(t.symbol, t.paymentDate),
+  ],
+)
+
+/**
+ * Revalidation clock and negative backoff for the dividends store (#71).
+ *
+ * `scope` is `history` or `predicted` — the granularity the fetch decision is
+ * made at, because the paid history and the forecast walk are independent
+ * provider passes. `last_status` is `ok` or `empty`; `empty` is what stops an
+ * ETF or a fund — a symbol that never pays — from re-walking on every read.
+ */
+export const dividendsFetchState = instrumentsSchema.table(
+  "dividends_fetch_state",
+  {
+    symbol: text("symbol").notNull(),
+    scope: text("scope").notNull(),
+    lastFetchedAt: timestamp("last_fetched_at", { withTimezone: true }),
+    lastStatus: text("last_status"),
+  },
+  (t) => [primaryKey({ columns: [t.symbol, t.scope] })],
+)
