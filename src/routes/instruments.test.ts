@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { Hono } from "hono"
 import { createInstrumentsRoutes } from "./instruments.js"
 import * as cachest from "../adapters/cachest.js"
+import type { DB } from "../db/index.js"
 
 const dbState = vi.hoisted(() => ({ db: null as unknown }))
 
@@ -817,17 +818,47 @@ describe("pt2 routes", () => {
   })
 
   describe("GET /:symbol/fundamentals", () => {
+    let fundStore: { client: { close: () => Promise<void> } } | null = null
+    // #51 — the route reads `instruments.fundamentals_statements` before it walks
+    // the provider tier, so this block needs the real store on PGlite.
+    //
+    // A fresh database PER TEST, not per block: the store is the point of the
+    // change, so a symbol read once is warm for every later test in the block and
+    // would answer from the store while the test still asserted on its mocked
+    // walk. Per-test isolation is what makes "cold read then warm read" a thing a
+    // test can say out loud instead of an accident of ordering.
+    //
+    // The DB has no ticker_reference rows, which is why the currency assertions
+    // below still land on `unknown` — there is nothing for the local resolver to
+    // answer with.
+    let storeDb: DB
+    beforeEach(async () => {
+      const { createTestDb } = await import("../db/test-db.js")
+      const t = await createTestDb()
+      storeDb = t.db as unknown as DB
+      dbState.db = t.db
+      fundStore = t
+    })
+    afterEach(async () => {
+      await fundStore!.client.close()
+      dbState.db = null
+    })
+
     it("assembles financial highlights from the three statements", async () => {
       mocked.fetchFundamentals
         .mockResolvedValueOnce(statement("fmp", [
           { fiscal_year: 2024, period_ending: "2024-09-28 00:00:00", revenue: 100, net_income: 20, diluted_earnings_per_share: 1.2, ebit: 30, ebitda: 35, reported_currency: "USD" },
           { fiscal_year: 2023, period_ending: "2023-09-30 00:00:00", revenue: 90, net_income: 10, diluted_earnings_per_share: 1.0, reported_currency: "USD" },
         ]))
+        // `period_ending` on every row, because every real provider sends one —
+        // 21 live bodies captured for #52 all carry it, and openbb's fmp model
+        // declares it. The store keys on it, so a row without it is not
+        // addressable and is refused rather than stored under an invented period.
         .mockResolvedValueOnce(statement("fmp", [
-          { fiscal_year: 2024, total_assets: 500, total_liabilities: 300, shareholders_equity: 200, total_debt: 100, total_current_assets: 150, total_current_liabilities: 100, reported_currency: "USD" },
+          { fiscal_year: 2024, period_ending: "2024-09-28 00:00:00", total_assets: 500, total_liabilities: 300, shareholders_equity: 200, total_debt: 100, total_current_assets: 150, total_current_liabilities: 100, reported_currency: "USD" },
         ]))
         .mockResolvedValueOnce(statement("yfinance", [
-          { fiscal_year: 2024, operating_cash_flow: 80, capital_expenditure: 20, depreciation_and_amortization: 10, reported_currency: "USD" },
+          { fiscal_year: 2024, period_ending: "2024-09-28 00:00:00", operating_cash_flow: 80, capital_expenditure: 20, depreciation_and_amortization: 10, reported_currency: "USD" },
         ]))
 
       const res = await req("/api/instruments/AAPL/fundamentals")
@@ -848,88 +879,110 @@ describe("pt2 routes", () => {
       expect(res.status).toBe(502)
     })
 
-    // --- §79.2 provenance ------------------------------------------------
+    // --- #51 write-through ------------------------------------------------
     //
-    // The three statements are three independent provider walks. Before this,
-    // a table could answer with income from one provider and a balance sheet
-    // from another, in different currencies, with no record of either — and the
-    // tab rendered every value with no currency symbol, so a GPW name in PLN and
-    // a US name in USD looked identical.
-    const threeStatements = (
-      providers: [string | null, string | null, string | null],
-      currencies: Array<string | null> = ["USD", "USD", "USD"],
-    ) => {
-      const rows = (i: number) =>
-        [{ period_ending: "2024-12-31", reported_currency: currencies[i] }]
+    // The whole point of the store: the second read of a symbol must cost
+    // nothing upstream. Every assertion below counts calls rather than inspecting
+    // the body, because a body can look right while the walk still happened.
+
+    const threePeriods = () => {
+      const rows = [{ period_ending: "2024-12-31", revenue: 100, reported_currency: "USD" }]
       mocked.fetchFundamentals
-        .mockResolvedValueOnce(statement(providers[0], rows(0)))
-        .mockResolvedValueOnce(statement(providers[1], rows(1)))
-        .mockResolvedValueOnce(statement(providers[2], rows(2)))
+        .mockResolvedValueOnce(statement("fmp", rows))
+        .mockResolvedValueOnce(statement("fmp", rows))
+        .mockResolvedValueOnce(statement("fmp", rows))
     }
 
-    it("records the provider that answered each statement", async () => {
-      threeStatements(["fmp", "yfinance", "fmp"])
-      const body = await (await req("/api/instruments/AAPL/fundamentals")).json()
-      expect(body.sources).toEqual({
-        incomeStatement: "fmp",
-        balanceSheet: "yfinance",
-        cashFlow: "fmp",
-      })
+    it("walks each statement once on a cold read and not at all on a warm one", async () => {
+      threePeriods()
+
+      const cold = await req("/api/instruments/AAPL/fundamentals")
+      expect(cold.status).toBe(200)
+      expect(mocked.fetchFundamentals).toHaveBeenCalledTimes(3)
+
+      const warm = await req("/api/instruments/AAPL/fundamentals")
+      expect(warm.status).toBe(200)
+      // Nothing upstream — not three calls, not one.
+      expect(mocked.fetchFundamentals).toHaveBeenCalledTimes(3)
+      expect(await warm.json()).toEqual(await cold.json())
     })
 
-    it("reports the provider currency only when all three statements agree", async () => {
-      threeStatements(["fmp", "fmp", "fmp"], ["USD", "USD", "USD"])
-      const body = await (await req("/api/instruments/AAPL/fundamentals")).json()
-      // AAPL resolves locally to USD too, but the declaration is what put it
-      // there, so the source is the provider.
-      expect(body.currency).toBe("USD")
-      expect(body.currencySource).toBe("provider")
+    it("serves the same provenance warm as it does cold", async () => {
+      threePeriods()
+      const cold = await (await req("/api/instruments/AAPL/fundamentals")).json()
+      const warm = await (await req("/api/instruments/AAPL/fundamentals")).json()
+      expect(warm.sources).toEqual(cold.sources)
+      expect(warm.sources.incomeStatement).toBe("fmp")
     })
 
-    it("a currency disagreement is never reported as provider-sourced", async () => {
-      // Income in EUR, balance sheet in USD: there is no single currency for
-      // this table, and claiming one would be the defect this fixes. With no DB
-      // in this harness the local resolver has nothing to answer with, so the
-      // result is `unknown` — the point is that it is NOT `provider`.
-      threeStatements(["fmp", "yfinance", "fmp"], ["EUR", "USD", "EUR"])
-      const body = await (await req("/api/instruments/AAPL/fundamentals")).json()
-      expect(body.currencySource).not.toBe("provider")
-      expect(body.currencySource).toBe("unknown")
-      expect(body.currency).toBeNull()
+    it("refetches once the annual window has passed, and keeps every stored period", async () => {
+      const rows = [{ period_ending: "2024-12-31", revenue: 100, reported_currency: "USD" }]
+      threePeriods()
+      await req("/api/instruments/AAPL/fundamentals")
+      expect(mocked.fetchFundamentals).toHaveBeenCalledTimes(3)
+
+      // Age the stored state past the 30d annual window, the way a month of
+      // real time would.
+      const { fundamentalsFetchState } = await import("../db/schema.js")
+      const longAgo = new Date(Date.now() - 31 * 24 * 3600 * 1000)
+      await storeDb
+        .update(fundamentalsFetchState)
+        .set({ lastFetchedAt: longAgo })
+
+      mocked.fetchFundamentals.mockClear()
+      mocked.fetchFundamentals.mockResolvedValue(statement("fmp", rows))
+      const refreshed = await req("/api/instruments/AAPL/fundamentals")
+      expect(refreshed.status).toBe(200)
+      expect(mocked.fetchFundamentals).toHaveBeenCalledTimes(3)
+
+      // …and a fourth period arriving upstream joins the history rather than
+      // replacing it.
+      const { loadStatements } = await import("../services/fundamentals.js")
+      const scope = { statement: "income", period: "annual" } as const
+      expect((await loadStatements(storeDb, "AAPL", scope)).length).toBe(1)
+      mocked.fetchFundamentals.mockResolvedValue(
+        statement("fmp", [
+          ...rows,
+          { period_ending: "2025-12-31", revenue: 120, reported_currency: "USD" },
+        ]),
+      )
+      await storeDb
+        .update(fundamentalsFetchState)
+        .set({ lastFetchedAt: longAgo })
+      await req("/api/instruments/AAPL/fundamentals")
+      const grown = await loadStatements(storeDb, "AAPL", scope)
+      expect(grown.map((r) => r.periodKey)).toEqual(["2025-Q4", "2024-Q4"])
     })
 
-    it("an undeclared currency is not read as a disagreement", async () => {
-      // The yfinance passthrough carries no `reported_currency` at all — true of
-      // every EU listing measured. Silence is not disagreement, so the
-      // declaration is simply absent and the local resolver gets to answer; with
-      // no DB here it answers `unknown` rather than inventing one.
-      threeStatements(["yfinance", "yfinance", "yfinance"], [null, null, null])
-      const body = await (await req("/api/instruments/AAPL/fundamentals")).json()
-      expect(body.currencySource).toBe("unknown")
-      expect(body.currency).toBeNull()
-      // The provenance still stands on its own — a missing currency must not
-      // cost the record of which provider answered.
-      expect(body.sources).toEqual({
-        incomeStatement: "yfinance",
-        balanceSheet: "yfinance",
-        cashFlow: "yfinance",
-      })
+    it("records an upstream 404 as a backoff and stores nothing", async () => {
+      mocked.fetchFundamentals.mockRejectedValue(new cachest.UpstreamError("x", 404))
+
+      const first = await req("/api/instruments/AIPOWR.AS/fundamentals")
+      expect(first.status).toBe(404)
+      expect((await first.json()).error).toBe("NotFound")
+      expect(mocked.fetchFundamentals).toHaveBeenCalledTimes(3)
+
+      const { fundamentalsStatements } = await import("../db/schema.js")
+      const stored = await storeDb.select().from(fundamentalsStatements)
+      expect(stored).toEqual([])
+
+      // The backoff: a second read of a symbol with no statements costs nothing.
+      mocked.fetchFundamentals.mockClear()
+      const second = await req("/api/instruments/AIPOWR.AS/fundamentals")
+      expect(second.status).toBe(404)
+      expect(mocked.fetchFundamentals).not.toHaveBeenCalled()
     })
 
-    it("a body cached before the envelope reports no provider rather than failing", async () => {
-      // openst caches 24h in Redis and cachest for another 24h, so for up to a
-      // day after the openst deploy the statements can still arrive with a null
-      // provider. The numbers must survive that; only the attribution is lost.
-      threeStatements([null, null, null], ["USD", "USD", "USD"])
+    it("still answers 502 when the provider tier is broken rather than remembering the failure", async () => {
+      mocked.fetchFundamentals.mockRejectedValue(new cachest.UpstreamError("x", 500))
       const res = await req("/api/instruments/AAPL/fundamentals")
-      expect(res.status).toBe(200)
-      const body = await res.json()
-      expect(body.sources).toEqual({
-        incomeStatement: null,
-        balanceSheet: null,
-        cashFlow: null,
-      })
-      expect(body.currency).toBe("USD")
+      expect(res.status).toBe(502)
+
+      // A 500 is not an answer about the symbol, so nothing was recorded as one:
+      // the next read walks again rather than serving a remembered failure.
+      const { fundamentalsFetchState } = await import("../db/schema.js")
+      const state = await storeDb.select().from(fundamentalsFetchState)
+      expect(state).toEqual([])
     })
   })
 
