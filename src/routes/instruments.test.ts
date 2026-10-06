@@ -1141,6 +1141,19 @@ describe("pt2 routes", () => {
       expect(body.exDividend).toContainEqual(expect.objectContaining({ date: today }))
       expect(body.dividend).toContainEqual(expect.objectContaining({ date: today }))
     })
+
+    it("does not leak a pre-window ex-date into exDividend when only its payment date is in-window", async () => {
+      mocked.fetchCalendarEarnings.mockResolvedValue([])
+      mocked.fetchCalendarDividends.mockResolvedValue([])
+      const today = new Date().toISOString().slice(0, 10)
+      mocked.fetchDividendHistory.mockResolvedValue([
+        { date: "2026-08-20", amount: "0.91", currency: "USD", payment_date: today },
+      ])
+      const res = await req("/api/instruments/MSFT/calendar")
+      const body = await res.json()
+      expect(body.dividend.some((r: { date: string }) => r.date === today)).toBe(true)
+      expect(body.exDividend.some((r: { date: string }) => r.date === "2026-08-20")).toBe(false)
+    })
   })
 
   describe("GET /:symbol/dividends", () => {
