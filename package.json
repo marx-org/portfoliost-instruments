@@ -24,7 +24,9 @@
     "gen:openapi": "tsx src/gen-openapi.ts",
     "gen:types": "openapi-typescript node_modules/@marx2/contracts/openapi.yaml -o src/generated/api-types.d.ts",
     "dividends:backfill": "node dist/scripts/dividends-backfill.js",
-    "dividends:backfill:dev": "tsx src/scripts/dividends-backfill.ts"
+    "dividends:backfill:dev": "tsx src/scripts/dividends-backfill.ts",
+    "split-sync": "node dist/scripts/split-sync.js",
+    "split-sync:dev": "tsx src/scripts/split-sync.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
