@@ -57,6 +57,13 @@
       "when": 1791402492751,
       "tag": "0007_cute_wildside",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791409913982,
+      "tag": "0008_harsh_tinkerer",
+      "breakpoints": true
     }
   ]
 }

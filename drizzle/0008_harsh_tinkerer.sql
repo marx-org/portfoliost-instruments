@@ -1,0 +1,3 @@
+ALTER TABLE "instruments"."split_candidates" DROP CONSTRAINT "split_candidates_symbol_detected_at_pk";--> statement-breakpoint
+ALTER TABLE "instruments"."split_candidates" ADD COLUMN "id" serial PRIMARY KEY NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "split_candidates_symbol_detected_at_uidx" ON "instruments"."split_candidates" USING btree ("symbol","detected_at") WHERE "instruments"."split_candidates"."effective_date" is null;
