@@ -192,6 +192,27 @@ export async function queryViewAs(
   }))
 }
 
+async function previousBar(
+  db: DB,
+  symbol: string,
+  from: string,
+  convertTo: { base: string; target: string } | null,
+): Promise<PriceBarRow | null> {
+  const result = await db.execute(sql`
+    select distinct date from instruments.price_bars_all
+    where symbol = ${symbol} and date < ${from}
+    order by date desc
+  `)
+  const dates = rowsOf<{ date: string }>(result).map((row) => row.date)
+  for (const previousDate of dates) {
+    const rows = convertTo
+      ? await queryViewAs(db, symbol, previousDate, previousDate, convertTo.base, convertTo.target)
+      : await queryView(db, symbol, previousDate, previousDate)
+    if (rows[0]) return rows[0]
+  }
+  return null
+}
+
 /**
  * §72.10 — the bar dates in `[from, to]` that `conversionJoinSql` **dropped**
  * because no FX rate existed for the pair.
@@ -618,7 +639,7 @@ export async function getPriceBarSeries(
   from: string,
   to: string,
   now = new Date(),
-  opts: { targetCcy?: string | null; baseCcy?: string | null } = {},
+  opts: { targetCcy?: string | null; baseCcy?: string | null; includePrevious?: boolean } = {},
 ): Promise<PriceBarSeriesResult> {
   const resolvedBase = await resolveInstrumentCurrency(db, symbol)
   // §63.10.5 — the caller's declared base wins ONLY where the local resolver is
@@ -783,6 +804,11 @@ export async function getPriceBarSeries(
         stale = true
       }
     }
+  }
+
+  if (opts.includePrevious) {
+    const previous = await previousBar(db, symbol, from, convertTo)
+    if (previous) rows = [previous, ...rows]
   }
 
   // §48.2 — bars with no fx row for their date stay in the base currency;
