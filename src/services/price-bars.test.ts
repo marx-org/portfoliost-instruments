@@ -104,6 +104,19 @@ describe("price-bars (H3) service", () => {
     ])
   })
 
+  it("returns the last close before a closed-day window only when requested", async () => {
+    await seedStooq(db, "PREV82", [["2026-01-02", "200.00000000"], ["2026-01-05", "205.00000000"]])
+    const now = new Date("2026-01-06T00:00:00Z")
+    const ordinary = await getPriceBarSeries(db, "PREV82", "2026-01-04", "2026-01-04", now)
+    const seeded = await getPriceBarSeries(db, "PREV82", "2026-01-04", "2026-01-04", now, {
+      includePrevious: true,
+    })
+
+    expect(ordinary.dates).toEqual([])
+    expect(seeded.dates).toEqual(["2026-01-02"])
+    expect(seeded.closes).toEqual([200])
+  })
+
   it("hasGap flakes only beyond the tolerance", () => {
     const now = new Date("2026-07-10T00:00:00Z")
     expect(hasGap("2026-07-09", now)).toBe(false) // 1 day

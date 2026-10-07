@@ -1047,6 +1047,7 @@ export function createInstrumentsRoutes() {
       parameters: [
         { name: "from", in: "query", required: true, schema: { type: "string", format: "date" } },
         { name: "to", in: "query", required: true, schema: { type: "string", format: "date" } },
+        { name: "includePrevious", in: "query", schema: { type: "boolean", default: false }, description: "Include the latest preceding bar when its currency can be resolved" },
         {
           name: "currency",
           in: "query",
@@ -1095,6 +1096,10 @@ export function createInstrumentsRoutes() {
       if (!from || !to || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
         return c.json({ error: "BadRequest", message: "from and to must be YYYY-MM-DD" }, 400)
       }
+      const includePreviousParam = c.req.query("includePrevious")
+      if (includePreviousParam && !["true", "false"].includes(includePreviousParam)) {
+        return c.json({ error: "BadRequest", message: "includePrevious must be true or false" }, 400)
+      }
       const target = targetCurrencyParam(c)
       if ("status" in target) {
         return c.json({ error: "BadRequest", message: target.message }, 400)
@@ -1118,6 +1123,7 @@ export function createInstrumentsRoutes() {
       const series = await getPriceBarSeries(getDb(), symbol, from, to, new Date(), {
         targetCcy: target.value,
         baseCcy: declaredBase,
+        includePrevious: includePreviousParam === "true",
       })
       // §72.10 — same declaration as /price-history: absent when no conversion was
       // requested, present (possibly empty) when one was. This route converts in
