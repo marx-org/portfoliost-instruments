@@ -66,7 +66,7 @@ async function applyConfirmed(symbol: string, event: ProviderEvent, status: stri
   const res = await fetch(`${walletsUrl}/internal/apply-split`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ symbol, factor: event.factor, effectiveDate: event.effectiveDate }),
+    body: JSON.stringify({ symbol, factor: event.factor, effectiveDate: event.effectiveDate, source: `openst:${event.provider}` }),
     signal: AbortSignal.timeout(30_000),
   })
   if (!res.ok) throw new Error(`wallets returned ${res.status}: ${await res.text()}`)
