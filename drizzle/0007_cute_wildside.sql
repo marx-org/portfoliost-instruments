@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "split_candidates_symbol_effective_date_uidx" ON "instruments"."split_candidates" USING btree ("symbol","effective_date") WHERE "instruments"."split_candidates"."effective_date" is not null;

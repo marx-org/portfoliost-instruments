@@ -1,4 +1,5 @@
-import { char, date, index, integer, jsonb, numeric, pgSchema, primaryKey, text, timestamp } from "drizzle-orm/pg-core"
+import { sql } from "drizzle-orm"
+import { char, date, index, integer, jsonb, numeric, pgSchema, primaryKey, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core"
 
 export const instrumentsSchema = pgSchema("instruments")
 
@@ -132,6 +133,7 @@ export const splitCandidates = instrumentsSchema.table(
   {
     symbol: text("symbol").notNull(),
     detectedAt: date("detected_at").notNull(),
+    effectiveDate: date("effective_date"),
     lastStooqDate: date("last_stooq_date"),
     lastStooqClose: numeric("last_stooq_close", { precision: 28, scale: 8 }),
     firstOverflowDate: date("first_overflow_date"),
@@ -139,11 +141,23 @@ export const splitCandidates = instrumentsSchema.table(
     ratio: numeric("ratio", { precision: 10, scale: 6 }),
     suggestedFactor: numeric("suggested_factor", { precision: 10, scale: 6 }),
     suggestedRatio: text("suggested_ratio"),
+    provider: text("provider"),
+    providerNumerator: numeric("provider_numerator", { precision: 18, scale: 8 }),
+    providerDenominator: numeric("provider_denominator", { precision: 18, scale: 8 }),
+    providerFactor: numeric("provider_factor", { precision: 18, scale: 8 }),
+    providerStatus: text("provider_status").notNull().default("manual"),
+    evidence: jsonb("evidence"),
     status: text("status").notNull().default("pending"), // 'pending'|'applied'|'dismissed'
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     reviewedBy: text("reviewed_by"),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
   },
-  (t) => [primaryKey({ columns: [t.symbol, t.detectedAt] })],
+  (t) => [
+    primaryKey({ columns: [t.symbol, t.detectedAt] }),
+    uniqueIndex("split_candidates_symbol_effective_date_uidx")
+      .on(t.symbol, t.effectiveDate)
+      .where(sql`${t.effectiveDate} is not null`),
+  ],
 )
 
 /**
