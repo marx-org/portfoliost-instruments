@@ -41,7 +41,7 @@ async function recordCandidate(symbol: string, response: SplitResponse, event?: 
   })
   const conflictTarget = event
     ? sql`(symbol, effective_date) WHERE effective_date IS NOT NULL`
-    : sql`(symbol, detected_at)`
+    : sql`(symbol, detected_at) WHERE effective_date IS NULL`
   const rows = await sql`
     INSERT INTO instruments.split_candidates (
       symbol, detected_at, effective_date, provider, provider_numerator,
