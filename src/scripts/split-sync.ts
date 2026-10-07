@@ -11,7 +11,7 @@ type ProviderEvent = {
 }
 
 type SplitResponse = {
-  status: "confirmed" | "confirmed_empty" | "unsupported" | "unavailable" | "malformed"
+  status: "confirmed" | "confirmed_empty" | "unsupported" | "unavailable" | "malformed" | "stale"
   provider: string | null
   events: ProviderEvent[]
 }
@@ -26,6 +26,7 @@ async function fetchSplits(symbol: string): Promise<SplitResponse> {
   })
   const body = await res.json() as SplitResponse
   if (!res.ok) throw new Error(`cachest returned ${res.status}`)
+  if (res.headers.get("X-Cache-Stale-Reason")) return { ...body, status: "stale", events: [] }
   return body
 }
 
