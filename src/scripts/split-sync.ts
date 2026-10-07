@@ -39,6 +39,9 @@ async function recordCandidate(symbol: string, response: SplitResponse, event?: 
     providerResponse: response,
     observedAt: new Date().toISOString(),
   })
+  const conflictTarget = event
+    ? sql`(symbol, effective_date) WHERE effective_date IS NOT NULL`
+    : sql`(symbol, detected_at)`
   const rows = await sql`
     INSERT INTO instruments.split_candidates (
       symbol, detected_at, effective_date, provider, provider_numerator,
@@ -48,7 +51,7 @@ async function recordCandidate(symbol: string, response: SplitResponse, event?: 
       ${event?.numerator ?? null}, ${event?.denominator ?? null},
       ${event?.factor ?? null}, ${response.status}, ${evidence}::jsonb, ${status}
     )
-    ON CONFLICT
+    ON CONFLICT ${conflictTarget}
     DO UPDATE SET
       provider = excluded.provider,
       provider_numerator = excluded.provider_numerator,
