@@ -1864,6 +1864,41 @@ describe("GET /:symbol/price-bars — ?currency= (plan §48.2)", () => {
     }
   })
 
+  it("includes the previous converted close only when requested", async () => {
+    const t = await dbWithFx()
+    try {
+      const path = "/api/instruments/PKN/price-bars?from=2026-09-17&to=2026-09-19&currency=USD"
+      const ordinary = await req(path)
+      const seeded = await req(`${path}&includePrevious=true`)
+      expect(ordinary.status).toBe(200)
+      expect(seeded.status).toBe(200)
+      const defaultBody = await ordinary.json()
+      const seededBody = await seeded.json()
+      expect(defaultBody.dates).toEqual(["2026-09-17", "2026-09-18", "2026-09-19"])
+      expect(seededBody.dates).toEqual(["2026-09-16", ...defaultBody.dates])
+      expect(seededBody.closes[0]).toBeCloseTo(107.5, 8)
+      expect(seededBody.fxFrom).toBe("2026-09-16")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
+  it("does not seed a preceding close that cannot be converted", async () => {
+    const t = await dbWithFx()
+    try {
+      const res = await req("/api/instruments/PKN/price-bars?from=2026-09-11&to=2026-09-15&currency=USD&includePrevious=true")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.dates).toEqual([])
+      expect(body.closes).toEqual([])
+      expect(body.currency).toBe("USD")
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
+  })
+
   it("§72.17: omits the bar before the fx floor instead of serving it unconverted", async () => {
     // This asserted the opposite and is kept as the record of the change: the
     // response used to begin at 2026-09-10 with a raw close of 98, under a
