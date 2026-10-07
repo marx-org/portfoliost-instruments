@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm"
-import { char, date, index, integer, jsonb, numeric, pgSchema, primaryKey, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core"
+import { char, date, index, integer, jsonb, numeric, pgSchema, primaryKey, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core"
 
 export const instrumentsSchema = pgSchema("instruments")
 
@@ -131,6 +131,7 @@ export const priceBarMetadata = instrumentsSchema.table("price_bar_metadata", {
 export const splitCandidates = instrumentsSchema.table(
   "split_candidates",
   {
+    id: serial("id").primaryKey(),
     symbol: text("symbol").notNull(),
     detectedAt: date("detected_at").notNull(),
     effectiveDate: date("effective_date"),
@@ -153,10 +154,12 @@ export const splitCandidates = instrumentsSchema.table(
     appliedAt: timestamp("applied_at", { withTimezone: true }),
   },
   (t) => [
-    primaryKey({ columns: [t.symbol, t.detectedAt] }),
     uniqueIndex("split_candidates_symbol_effective_date_uidx")
       .on(t.symbol, t.effectiveDate)
       .where(sql`${t.effectiveDate} is not null`),
+    uniqueIndex("split_candidates_symbol_detected_at_uidx")
+      .on(t.symbol, t.detectedAt)
+      .where(sql`${t.effectiveDate} is null`),
   ],
 )
 
