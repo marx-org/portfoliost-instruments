@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises"
 import { sql } from "drizzle-orm"
 import { closeDb, getDb, type DB } from "../db/index.js"
-import { exchangeReference, tickerReference } from "../db/schema.js"
+import { curatedListingOverrides, exchangeReference, tickerReference } from "../db/schema.js"
 import { CRYPTO_PRIMARY_PAIRS } from "../adapters/crypto.js"
+import { CURATED_LISTING_OVERRIDES, CURATED_LISTING_OVERRIDES_VERSION, type CuratedListingOverrideRow } from "../data/curated-listing-overrides.js"
 
 // Pure upstream adanos sync + curated routing rows — no sheet-compat patches
 // re-applied (the §24.9 ALIAS_OVERRIDES were removed in plan §40: the
@@ -85,6 +86,46 @@ export async function syncCuratedListings(db: DB = getDb()): Promise<number> {
     total += batch.length
   }
   return total
+}
+
+export async function syncCuratedListingOverrides(
+  db: DB = getDb(),
+  rows: CuratedListingOverrideRow[] = CURATED_LISTING_OVERRIDES,
+): Promise<number> {
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE)
+    if (batch.length === 0) continue
+    await db
+      .insert(curatedListingOverrides)
+      .values(
+        batch.map((row) => ({
+          listingKey: row.listingKey,
+          ticker: row.ticker.toUpperCase(),
+          exchange: row.exchange.toUpperCase(),
+          quoteCurrency: row.quoteCurrency.toUpperCase(),
+          assetType: row.assetType,
+          status: row.status,
+          rationale: row.rationale,
+          provenance: row.provenance,
+          sourceVersion: CURATED_LISTING_OVERRIDES_VERSION,
+        })),
+      )
+      .onConflictDoUpdate({
+        target: curatedListingOverrides.listingKey,
+        set: {
+          ticker: sqlExcluded("ticker"),
+          exchange: sqlExcluded("exchange"),
+          quoteCurrency: sqlExcluded("quote_currency"),
+          assetType: sqlExcluded("asset_type"),
+          status: sqlExcluded("status"),
+          rationale: sqlExcluded("rationale"),
+          provenance: sqlExcluded("provenance"),
+          sourceVersion: sqlExcluded("source_version"),
+          updatedAt: new Date(),
+        },
+      })
+  }
+  return rows.length
 }
 
 /** Minimal RFC4180 CSV row parser (quoted fields, escaped quotes, CRLF). */
@@ -278,6 +319,8 @@ async function main() {
   // are re-applied on every run (incl. --if-empty / --curated-only).
   const curated = await syncCuratedListings(db)
   console.log(`[tickerref] curated listings upserted: ${curated}`)
+  const overrides = await syncCuratedListingOverrides(db)
+  console.log(`[tickerref] curated listing overrides upserted: ${overrides}`)
 
   // Venues + MIC→Yahoo-suffix map: failure is non-fatal — identity search
   // still works, only suffix→exchange resolution degrades. --if-empty gates

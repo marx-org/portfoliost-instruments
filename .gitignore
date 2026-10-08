@@ -1,5 +1,7 @@
 node_modules/
 dist/
 data/
+!src/data/
+!src/data/curated-listing-overrides.ts
 *.db
 portfoliost-backend.iml

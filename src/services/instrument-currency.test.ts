@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { sql } from "drizzle-orm"
 import { createTestDb } from "../db/test-db.js"
 import type { DB } from "../db/index.js"
-import { exchangeReference, tickerReference } from "../db/schema.js"
+import { curatedListingOverrides, exchangeReference, tickerReference } from "../db/schema.js"
 import { cryptoPairCurrency, resolveCurrency, resolveInstrumentCurrency } from "./instrument-currency.js"
 
 vi.mock("../adapters/cachest.js", () => ({
@@ -425,6 +425,22 @@ describe("§72.4: a known venue must beat the provider's primary-listing currenc
     // THE regression test. PROD served CAD for an NYQ instrument.
     const r = await resolveCurrency(db, "MFC", "CAD", "NYQ")
     expect(r.currency).toBe("USD")
+  })
+
+  it("uses the reviewed NYSE override for a venue-qualified MFC symbol", async () => {
+    await db.insert(exchangeReference).values({ exchangeCode: "NYSE", yahooSuffix: "NYQ", countryCode: "US" }).onConflictDoNothing()
+    await db.insert(curatedListingOverrides).values({
+      listingKey: "NYSE::MFC",
+      ticker: "MFC",
+      exchange: "NYSE",
+      quoteCurrency: "USD",
+      assetType: "Stock",
+      status: "active",
+      rationale: "test",
+      provenance: "test",
+      sourceVersion: "test",
+    })
+    expect(await resolveInstrumentCurrency(db, "MFC.NYQ")).toBe("USD")
   })
 
   it("a TSX hint resolves MFC to CAD — the hint is followed, not hardcoded to USD", async () => {
