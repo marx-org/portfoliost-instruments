@@ -45,6 +45,46 @@ export const tickerReference = instrumentsSchema.table(
 )
 
 /**
+ * Reviewed venue-specific facts that supplement the upstream ticker snapshot.
+ * These rows never replace `ticker_reference`; consumers merge them explicitly.
+ */
+export const curatedListingOverrides = instrumentsSchema.table(
+  "curated_listing_overrides",
+  {
+    listingKey: text("listing_key").primaryKey(),
+    ticker: text("ticker").notNull(),
+    exchange: text("exchange").notNull(),
+    quoteCurrency: char("quote_currency", { length: 3 }).notNull(),
+    assetType: text("asset_type").notNull(),
+    status: text("status").notNull().default("active"),
+    rationale: text("rationale").notNull(),
+    provenance: text("provenance").notNull(),
+    sourceVersion: text("source_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("curated_listing_overrides_ticker_idx").on(t.ticker),
+    index("curated_listing_overrides_exchange_idx").on(t.exchange),
+    index("curated_listing_overrides_status_idx").on(t.status),
+  ],
+)
+
+/** Immutable snapshots of override changes for admin history. */
+export const curatedListingOverrideHistory = instrumentsSchema.table(
+  "curated_listing_override_history",
+  {
+    id: serial("id").primaryKey(),
+    listingKey: text("listing_key").notNull(),
+    action: text("action").notNull(),
+    snapshot: jsonb("snapshot").notNull(),
+    actor: text("actor").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("curated_listing_override_history_listing_idx").on(t.listingKey, t.createdAt)],
+)
+
+/**
  * Logo cache index (logos.md D35). The row is the index; the binary lives on
  * disc at `LOGOS_DIR/{file}`. `refresh_after` drives lazy background
  * revalidation on read; failures never persist (initials serve instead).

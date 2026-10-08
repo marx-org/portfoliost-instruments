@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm"
 import type { DB } from "./index.js"
-import { exchangeReference, tickerReference } from "./schema.js"
-import { isSavingsBond, venueFreeSymbol } from "../adapters/symbol.js"
+import { curatedListingOverrides, exchangeReference, tickerReference } from "./schema.js"
+import { isSavingsBond, symbolSuffix, venueFreeSymbol } from "../adapters/symbol.js"
 
 /** Canonical asset-class set for price-bars (D81) and quote (34) dispatch. */
 export type AssetType = "stock" | "etf" | "fund" | "crypto" | "bond" | "corp_bond"
@@ -110,6 +110,42 @@ export async function getExchangeCountry(db: DB, exchangeCode: string): Promise<
     .where(sql`UPPER(${exchangeReference.exchangeCode}) = ${exchangeCode.toUpperCase()}`)
     .limit(1)
   return rows[0]?.countryCode ?? null
+}
+
+export interface CuratedListingOverride {
+  listingKey: string
+  ticker: string
+  exchange: string
+  quoteCurrency: string
+  assetType: string
+  status: string
+}
+
+/** Return a reviewed override only when the route identifies its venue. */
+export async function curatedListingOverrideForSymbol(
+  db: DB,
+  symbol: string,
+  exchangeHint?: string | null,
+): Promise<CuratedListingOverride | null> {
+  const suffix = symbolSuffix(symbol)
+  const exchange = exchangeHint ?? (suffix ? await getExchangeBySuffix(db, suffix) : null)
+  if (!exchange) return null
+  const ticker = venueFreeSymbol(symbol).toUpperCase()
+  const rows = await db
+    .select({
+      listingKey: curatedListingOverrides.listingKey,
+      ticker: curatedListingOverrides.ticker,
+      exchange: curatedListingOverrides.exchange,
+      quoteCurrency: curatedListingOverrides.quoteCurrency,
+      assetType: curatedListingOverrides.assetType,
+      status: curatedListingOverrides.status,
+    })
+    .from(curatedListingOverrides)
+    .where(sql`${curatedListingOverrides.ticker} = ${ticker}
+      AND ${curatedListingOverrides.exchange} = ${exchange.toUpperCase()}
+      AND ${curatedListingOverrides.status} = 'active'`)
+    .limit(1)
+  return rows[0] ?? null
 }
 
 /**

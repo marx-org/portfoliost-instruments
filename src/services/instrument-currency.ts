@@ -26,6 +26,7 @@ import { CURRENCIES } from "@marx2/contracts/currencies"
 import type { DB } from "../db/index.js"
 import {
   assetTypeForSymbol,
+  curatedListingOverrideForSymbol,
   getExchangeBySuffix,
   getExchangeCountry,
   normalizeAssetType,
@@ -154,6 +155,8 @@ export async function resolveInstrumentCurrency(
   if (pairCcy) return pairCcy
   if (!db) return null
   try {
+    const curated = await curatedListingOverrideForSymbol(db, symbol, exchangeHint)
+    if (curated) return curated.quoteCurrency.toUpperCase()
     // §72.4 — a known venue is a FACT, so it is consulted before anything that
     // would have to guess. Deliberately AFTER the crypto pair test (BTC-USD is
     // denominated by its quote leg regardless of any venue) and before the bond /

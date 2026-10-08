@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { like, or, sql } from "drizzle-orm"
 import { createTestDb, migrationsFolder } from "../db/test-db.js"
 import type { DB } from "../db/index.js"
-import { tickerReference } from "../db/schema.js"
+import { curatedListingOverrides, tickerReference } from "../db/schema.js"
 import { parseCsv, parseCsvLine, syncExchangeReference, syncTickerReference } from "../scripts/tickerref-sync.js"
 
 const FIXTURE = `listing_key,ticker,exchange,name,asset_type,stock_sector,etf_category,country,country_code,isin,aliases
@@ -184,6 +184,36 @@ describe("tickerref curated listings (plan 34.5)", () => {
       const aapl = all.filter((r) => r.ticker === "AAPL")
       expect(aapl).toHaveLength(1)
       expect(aapl[0].listingKey).toBe("NASDAQ::AAPL")
+    } finally {
+      await t.client.close()
+    }
+  })
+})
+
+describe("tickerref curated listing overrides", () => {
+  it("keeps venue-specific overrides separate from upstream rows", async () => {
+    const { syncCuratedListingOverrides } = await import("../scripts/tickerref-sync.js")
+    const t = await createTestDb()
+    try {
+      await syncTickerReference(`${FIXTURE}\nNYSE::MFC,MFC,NYSE,Manulife Financial Corporation,Stock,Financials,,United States,US,,`, t.db)
+      const rows = [{
+        listingKey: "NYSE::MFC",
+        ticker: "MFC",
+        exchange: "NYSE",
+        quoteCurrency: "USD",
+        assetType: "Stock",
+        status: "active" as const,
+        rationale: "NYSE is USD quoted.",
+        provenance: "test",
+      }]
+
+      expect(await syncCuratedListingOverrides(t.db, rows)).toBe(1)
+      expect(await syncCuratedListingOverrides(t.db, rows)).toBe(1)
+
+      const upstream = await t.db.select().from(tickerReference).where(sql`${tickerReference.listingKey} = 'NYSE::MFC'`)
+      const overrides = await t.db.select().from(curatedListingOverrides)
+      expect(upstream).toHaveLength(1)
+      expect(overrides).toMatchObject([{ listingKey: "NYSE::MFC", quoteCurrency: "USD", provenance: "test" }])
     } finally {
       await t.client.close()
     }
