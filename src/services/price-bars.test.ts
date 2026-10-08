@@ -958,6 +958,36 @@ describe("§102 — the provider-declared currency is the series label", () => {
     expect(res.currency).toBe("GBP")
   })
 
+  it("a USD-denominated LSE line keeps the venue's GBP guess out of the label (IUFS.L)", async () => {
+    // The audit's representative LSE case: suffix L implies GBP, but the
+    // provider serves the series in USD, so the label is USD.
+    await ref("IUFS.L", "LSE", "GB")
+    expect(await resolveInstrumentCurrency(db, "IUFS.L")).toBe("GBP") // precondition
+    mockFetchQuote.mockResolvedValue({ currency: "USD" })
+    await seedStooq(db, "IUFS.L", [["2026-07-09", "16.010000000000000"]])
+    const res = await getPriceBarSeries(db, "IUFS.L", "2026-07-01", "2026-07-10", new Date("2026-07-10T00:00:00Z"))
+    expect(res.baseCurrency).toBe("USD")
+    expect(res.currency).toBe("USD")
+  })
+
+  it("agrees with the venue for a single-currency listing (CHF, EUR, PLN)", async () => {
+    // Where provider and venue coincide the label is simply that currency —
+    // the override must not disturb the classes that were already right.
+    const cases: Array<[string, string, string]> = [
+      ["NOSY", "SIX", "CHF"],
+      ["VIV", "EPA", "EUR"],
+      ["PKN", "WSE", "PLN"],
+    ]
+    for (const [ticker, exchange, ccy] of cases) {
+      await ref(ticker, exchange, ccy === "CHF" ? "CH" : ccy === "EUR" ? "FR" : "PL")
+      mockFetchQuote.mockResolvedValue({ currency: ccy })
+      await seedStooq(db, ticker, [["2026-07-09", "42.000000000000000"]])
+      const res = await getPriceBarSeries(db, ticker, "2026-07-01", "2026-07-10", new Date("2026-07-10T00:00:00Z"))
+      expect(res.baseCurrency, ticker).toBe(ccy)
+      expect(res.currency, ticker).toBe(ccy)
+    }
+  })
+
   it("seriesBaseCurrency reports the provenance of the label", async () => {
     await ref("SRC1", "TSX", "CA")
     mockFetchQuote.mockResolvedValue({ currency: "USD" })
