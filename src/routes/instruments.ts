@@ -6,7 +6,7 @@ import { convert } from "@marx2/contracts/fx"
 import { serviceOrUserMiddleware } from "../auth.js"
 import { getDb, type DB } from "../db/index.js"
 import { fxWindow, latestFxRates } from "../db/fx-rates.js"
-import { getPriceBarSeries, backgroundUpsertBars, queryView, unconvertedDatesForWindow } from "../services/price-bars.js"
+import { getPriceBarSeries, backgroundUpsertBars, queryView, unconvertedDatesForWindow, seriesBaseCurrency } from "../services/price-bars.js"
 import { resolveCurrency, resolveInstrumentCurrency } from "../services/instrument-currency.js"
 import { TRACKED_CURRENCIES } from "../services/fx-import.js"
 import { convertSeries, rateTablesByDate } from "../services/fx-convert.js"
@@ -789,10 +789,9 @@ export function createInstrumentsRoutes() {
       // The price-bars leg already guards; this is the /history leg of
       // PriceChart, which previously returned 200 with currency:null + USD
       // closes while the title selector still read the chosen display ccy.
-      if (
-        target.value &&
-        !(await resolveInstrumentCurrency(getDb(), c.req.param("symbol").toUpperCase()))
-      ) {
+      // §102 — the base is the provider-declared series currency first, so a
+      // cross-listing whose local guess is silent-but-wrong still converts.
+      if (target.value && !(await seriesBaseCurrency(getDb(), c.req.param("symbol").toUpperCase())).currency) {
         return c.json({ error: "BadRequest", message: "base currency unknown; cannot convert" }, 400)
       }
       try {
@@ -830,10 +829,12 @@ export function createInstrumentsRoutes() {
         // H4: background write-through — accumulates price_bars organically
         // (provider rows only; local rows are already in the view).
         if (!fromLocal) backgroundUpsertBars(getDb(), systemSymbol, rows)
-        // §36 — the series is denominated in the instrument's trading currency.
-        // 47.4 — no USD guess: the resolution may legitimately be null, which is
-        // reported via currencySource="unknown".
-        const resolution = await resolveCurrency(getDb(), c.req.param("symbol"), null)
+// §36 — the series is denominated in the instrument's trading currency.
+        // §47.4 — no USD guess: the resolution may legitimately be null, which
+        // is reported via currencySource "unknown".
+        // §102 — the provider's declared currency outranks the venue guess for
+        // the series label; the local resolver is the fallback when it is silent.
+        const resolution = await seriesBaseCurrency(getDb(), c.req.param("symbol"))
         const base = toPriceHistory(rows, resolutionParam, resolution.currency, resolution.currencySource)
 
         // §48.2 — server-side conversion to ?currency=: one fx_rates window
@@ -1115,7 +1116,7 @@ export function createInstrumentsRoutes() {
       }
       if (
         target.value &&
-        !(await resolveInstrumentCurrency(getDb(), symbol)) &&
+        !(await seriesBaseCurrency(getDb(), symbol)).currency &&
         !declaredBase
       ) {
         return c.json({ error: "BadRequest", message: "base currency unknown; cannot convert" }, 400)

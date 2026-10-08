@@ -245,8 +245,9 @@ export async function resolveInstrumentCurrency(
 
 /** §39 — OpenBB labels LSE pence quotes "GBp"; the ISO code is "GBP".
  * "GBp" and "GBP" collide once lowercased, so the ISO code is excluded
- * case-sensitively (mirrors translate.ts isPence). */
-function normalizeProviderDeclaration(currency: string | null | undefined): string | null {
+ * case-sensitively (mirrors translate.ts isPence). Exported so the price-bars
+ * series-label path can normalize the provider's declaration the same way. */
+export function normalizeProviderDeclaration(currency: string | null | undefined): string | null {
   const c = (currency ?? "").trim()
   if (!c) return null
   if (c !== "GBP" && c.toLowerCase() === "gbp") return "GBP"

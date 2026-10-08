@@ -22,9 +22,11 @@ import {
   recentlyFailed,
   stooqTickerFor,
   upstreamFor,
+  seriesBaseCurrency,
   COOLDOWN_MS,
   TRANSIENT_COOLDOWN_MS,
 } from "./price-bars.js"
+import { resolveInstrumentCurrency } from "./instrument-currency.js"
 
 vi.mock("../adapters/cachest.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../adapters/cachest.js")>()),
@@ -32,6 +34,9 @@ vi.mock("../adapters/cachest.js", async (importOriginal) => ({
   fetchBondOhlcv: vi.fn(),
   fetchCryptoOhlcv: vi.fn(),
   fetchFundCategoryHistory: vi.fn(),
+  fetchQuote: vi.fn(),
+  fetchCryptoQuote: vi.fn(),
+  fetchFixedincomeQuote: vi.fn(),
 }))
 
 import {
@@ -39,6 +44,9 @@ import {
   fetchBondOhlcv,
   fetchCryptoOhlcv,
   fetchFundCategoryHistory,
+  fetchQuote,
+  fetchCryptoQuote,
+  fetchFixedincomeQuote,
   UpstreamError,
 } from "../adapters/cachest.js"
 
@@ -46,6 +54,9 @@ const mockFetchOhlcv = vi.mocked(fetchOhlcv)
 const mockFetchBondOhlcv = vi.mocked(fetchBondOhlcv)
 const mockFetchCryptoOhlcv = vi.mocked(fetchCryptoOhlcv)
 const mockFetchFundCategoryHistory = vi.mocked(fetchFundCategoryHistory)
+const mockFetchQuote = vi.mocked(fetchQuote)
+const mockFetchCryptoQuote = vi.mocked(fetchCryptoQuote)
+const mockFetchFixedincomeQuote = vi.mocked(fetchFixedincomeQuote)
 
 async function seedStooq(db: DB, symbol: string, rows: Array<[string, string]>) {
   for (const [date, close] of rows) {
@@ -869,5 +880,91 @@ describe("upsertOverflowBars — refuses an impossible bar instead of writing it
   it("has no opinion on the first write for a symbol", async () => {
     const report = await upsertOverflowBars(db, "GUARD4", [{ date: "2026-01-02", close: "820.00000000" }])
     expect(report).toEqual({ written: 1, rejected: [] })
+  })
+})
+
+describe("§102 — the provider-declared currency is the series label", () => {
+  let db: DB
+  let client: Awaited<ReturnType<typeof createTestDb>>["client"]
+
+  const ref = (ticker: string, exchange: string, countryCode: string, assetType = "Stock") =>
+    db.insert(tickerReference).values({
+      listingKey: `${exchange}::${ticker}`,
+      ticker,
+      exchange,
+      countryCode,
+      name: ticker,
+      assetType,
+    })
+
+  beforeAll(async () => {
+    const t = await createTestDb()
+    db = t.db
+    client = t.client
+    for (const stmt of LOCAL_PRICE_BARS_SETUP_SQL) {
+      await db.execute(sql.raw(stmt))
+    }
+  })
+
+  afterAll(async () => {
+    await client.close()
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("the quote currency outranks a disagreeing venue guess (MFC: USD bars, TSX row implies CAD)", async () => {
+    // The §102 defect: the bar is the provider's USD number, but the local
+    // resolver answers CAD from the TSX listing. The label was CAD, so every
+    // consumer converted a correct number into a wrong one.
+    await ref("MFC", "TSX", "CA")
+    expect(await resolveInstrumentCurrency(db, "MFC")).toBe("CAD") // precondition
+    mockFetchQuote.mockResolvedValue({ currency: "USD" })
+    await seedStooq(db, "MFC", [["2026-07-09", "17.290000000000000"]])
+    const res = await getPriceBarSeries(db, "MFC", "2026-07-01", "2026-07-10", new Date("2026-07-10T00:00:00Z"))
+    expect(res.baseCurrency).toBe("USD")
+    expect(res.currency).toBe("USD")
+    expect(res.closes).toEqual([17.29])
+  })
+
+  it("the local resolver still decides when the provider is silent", async () => {
+    await ref("CANCO", "TSX", "CA")
+    mockFetchQuote.mockResolvedValue({}) // answered, no currency declared
+    await seedStooq(db, "CANCO", [["2026-07-09", "10.000000000000000"]])
+    const res = await getPriceBarSeries(db, "CANCO", "2026-07-01", "2026-07-10", new Date("2026-07-10T00:00:00Z"))
+    expect(res.baseCurrency).toBe("CAD")
+    expect(res.currency).toBe("CAD")
+  })
+
+  it("a quote 404 falls through to the caller's declared base", async () => {
+    // Unlisted, no quote — both sources silent, so the §63.10.5 caller
+    // declaration (the currency the position already knows) is honoured.
+    mockFetchQuote.mockRejectedValue(new UpstreamError("http://cachest/equity/quote/MYST", 404))
+    await seedStooq(db, "MYST", [["2026-07-09", "5.000000000000000"]])
+    const res = await getPriceBarSeries(db, "MYST", "2026-07-01", "2026-07-10", new Date("2026-07-10T00:00:00Z"), {
+      baseCcy: "PLN",
+    })
+    expect(res.baseCurrency).toBe("PLN")
+    expect(res.currency).toBe("PLN")
+  })
+
+  it("normalizes the pence declaration GBp to the ISO code GBP (DCC.L)", async () => {
+    await ref("DCC.L", "LSE", "GB")
+    mockFetchQuote.mockResolvedValue({ currency: "GBp" })
+    await seedStooq(db, "DCC.L", [["2026-07-09", "0.800000000000000"]])
+    const res = await getPriceBarSeries(db, "DCC.L", "2026-07-01", "2026-07-10", new Date("2026-07-10T00:00:00Z"))
+    expect(res.baseCurrency).toBe("GBP")
+    expect(res.currency).toBe("GBP")
+  })
+
+  it("seriesBaseCurrency reports the provenance of the label", async () => {
+    await ref("SRC1", "TSX", "CA")
+    mockFetchQuote.mockResolvedValue({ currency: "USD" })
+    expect(await seriesBaseCurrency(db, "SRC1")).toEqual({ currency: "USD", currencySource: "provider" })
+    mockFetchQuote.mockResolvedValue({})
+    expect(await seriesBaseCurrency(db, "SRC1")).toEqual({ currency: "CAD", currencySource: "estimated" })
+    mockFetchQuote.mockRejectedValue(new UpstreamError("http://cachest/equity/quote/NOPE", 404))
+    expect(await seriesBaseCurrency(db, "NOPE")).toEqual({ currency: null, currencySource: "unknown" })
   })
 })
