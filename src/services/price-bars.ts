@@ -24,7 +24,8 @@ import {
   UpstreamError,
 } from "../adapters/cachest.js"
 import { providerSymbol, venueFreeSymbol } from "../adapters/symbol.js"
-import { resolveInstrumentCurrency } from "./instrument-currency.js"
+import { resolveInstrumentCurrency, normalizeProviderDeclaration } from "./instrument-currency.js"
+import { fetchQuoteByAssetClass } from "./quote-dispatch.js"
 
 // D81/34 — the asset-class helpers live in db/tickerref-queries.ts (shared
 // with the quote dispatch); re-exported here for existing importers.
@@ -625,6 +626,43 @@ export function upstreamFor(
 }
 
 /**
+ * §102 — the currency the provider says it serves this symbol's series in, or
+ * null when it cannot be determined.
+ *
+ * This is the SAME source openst uses for its pence decision
+ * (`_symbol_currency` → `get_quote(ticker).currency`), so it is a fact about the
+ * bars this route serves, not a guess. Best-effort: a quote failure or a
+ * non-string value returns null and the caller keeps the local resolution.
+ */
+async function providerSeriesCurrency(db: DB | null, symbol: string): Promise<string | null> {
+  try {
+    const quote = await fetchQuoteByAssetClass(db, symbol)
+    const raw = quote?.currency
+    if (typeof raw !== "string") return null
+    return normalizeProviderDeclaration(raw)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * §102 — the label currency for a served price series, with its provenance.
+ *
+ * Provider first (see {@link providerSeriesCurrency} and the §102 note in
+ * {@link getPriceBarSeries}), local venue resolver only as the fallback. Shared
+ * by the `/price-bars` and `/history` legs so both label a symbol identically.
+ */
+export async function seriesBaseCurrency(
+  db: DB | null,
+  symbol: string,
+): Promise<{ currency: string | null; currencySource: "provider" | "estimated" | "unknown" }> {
+  const provider = await providerSeriesCurrency(db, symbol)
+  if (provider) return { currency: provider, currencySource: "provider" }
+  const local = await resolveInstrumentCurrency(db, symbol)
+  return local ? { currency: local, currencySource: "estimated" } : { currency: null, currencySource: "unknown" }
+}
+
+/**
  * Read-through daily close series. Returns the current DB state with a
  * `stale` flag. When stale and upstream is not cooling down, fills the gap.
  *
@@ -642,6 +680,22 @@ export async function getPriceBarSeries(
   opts: { targetCcy?: string | null; baseCcy?: string | null; includePrevious?: boolean } = {},
 ): Promise<PriceBarSeriesResult> {
   const resolvedBase = await resolveInstrumentCurrency(db, symbol)
+  // §102 — the series label is the provider's declared currency when it has one.
+  //
+  // §47.4 ranks the local, instrument-aware resolver ABOVE a provider mismatch,
+  // and §72.4 documents why: for a cross-listed ticker a provider declares the
+  // issuer's primary listing, so `resolveCurrency` treats the declaration as a
+  // hint and lets the venue guess win. That precedence is right for a *profile*
+  // ("what currency is this instrument"), but wrong for a *series label*: the
+  // bars served here are the provider's own series, in the provider's own
+  // currency — openst normalizes pence using the very same declaration — so a
+  // venue guess that disagrees is describing a different listing. Left to the
+  // resolver, `MFC` (bar 17.29 in USD, venue guess CAD from the TSX row) served
+  // CAD and every consumer converted a correct number into a wrong one (§102).
+  // So for the series label the provider outranks the local guess; the local
+  // resolver still decides when the provider is silent (crypto 404s, funds, and
+  // any symbol with no quote).
+  const providerBase = await providerSeriesCurrency(db, symbol)
   // §63.10.5 — the caller's declared base wins ONLY where the local resolver is
   // silent. plan §48.3b already established that a caller which knows an
   // instrument's currency (wallets reads it off the position/transaction) fetches
@@ -667,7 +721,7 @@ export async function getPriceBarSeries(
   // the resolver is venue-aware and the caller's value is whatever last wrote the
   // position; that is an argument to keep hardening the resolver (§71 removed
   // its two guesses), not an argument to hand authority to the caller.
-  const baseCcy = resolvedBase ?? declared
+  const baseCcy = providerBase ?? resolvedBase ?? declared
   const target = opts.targetCcy?.toUpperCase() ?? null
   const convertTo =
     target && baseCcy && target !== baseCcy.toUpperCase()
