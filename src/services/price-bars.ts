@@ -92,7 +92,8 @@ export interface PriceBarSeriesResult {
  * read path keeps both (the importer needs them), but their relative order for
  * an equal date is otherwise planner-dependent — make it deterministic by
  * sorting split-adjusted `stooq` rows ahead of `openst` overflow rows, so
- * callers that index-of a date see the stooq value first.
+ * callers that index-of a date see the stooq value first. The series endpoint
+ * collapses the pair to the single stooq-first close (`dedupeByDate`).
  */
 export async function queryView(
   db: DB,
@@ -108,6 +109,35 @@ export async function queryView(
     order by date asc, case when source = 'stooq' then 0 else 1 end
   `)
   return rowsOf<PriceBarRow>(result)
+}
+
+/**
+ * Keep one authoritative close per date — the FIRST occurrence.
+ *
+ * `price_bars_all` is a UNION ALL, so when an openst overflow write lands on a
+ * date stooq already covers, the view carries both rows for that date. The read
+ * is ordered stooq-first (see {@link queryView} / {@link conversionJoinSql}), so
+ * the first occurrence IS the split-adjusted stooq close — the value this series
+ * must serve.
+ *
+ * Applied to the series the `/price-bars` endpoint hands out, not to `queryView`
+ * itself: a positional `dates[]`/`closes[]` response containing a date twice is
+ * not a series, and every last-wins `Map` built from it (the wallets valuation
+ * grid, the transfer close, the price audit) silently valued the day at the
+ * lower-priority overflow close, overwriting the split-adjusted stooq one
+ * (pfire-docs#84). `/history`'s local fallback (`localHistoryRows`) already
+ * dropped the same duplicates stooq-first; this is the same rule for the
+ * series leg.
+ */
+export function dedupeByDate<T extends { date: string }>(rows: readonly T[]): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const r of rows) {
+    if (seen.has(r.date)) continue
+    seen.add(r.date)
+    out.push(r)
+  }
+  return out
 }
 
 /**
@@ -864,6 +894,11 @@ export async function getPriceBarSeries(
     const previous = await previousBar(db, symbol, from, convertTo)
     if (previous) rows = [previous, ...rows]
   }
+
+  // pfire-docs#84 — one authoritative close per date. The view may carry a
+  // stooq/overflow pair for the same date; the served series keeps the
+  // stooq-first occurrence, so no consumer ever sees the date twice.
+  rows = dedupeByDate(rows)
 
   // §48.2 — bars with no fx row for their date stay in the base currency;
   // fxFrom marks the first converted date (null when nothing converted).

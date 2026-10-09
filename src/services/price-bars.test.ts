@@ -101,6 +101,25 @@ describe("price-bars (H3) service", () => {
     ])
   })
 
+  it("getPriceBarSeries serves one authoritative close per overlapping date (stooq wins)", async () => {
+    // pfire-docs#84 — the view carries both rows for the date; the series
+    // response must not. The split-adjusted stooq close is authoritative.
+    await seedStooq(db, "OVR84", [["2026-07-30", "58.02500000000000"]])
+    await db.execute(sql.raw(`
+      INSERT INTO instruments.price_bars (symbol, date, close, source)
+      VALUES ('OVR84', '2026-07-30', 333.43000000, 'openst');
+    `))
+    const series = await getPriceBarSeries(
+      db,
+      "OVR84",
+      "2026-07-30",
+      "2026-07-30",
+      new Date("2026-07-31T00:00:00Z"),
+    )
+    expect(series.dates).toEqual(["2026-07-30"])
+    expect(series.closes).toEqual([58.025])
+  })
+
   it("queryView unifies stooq and overflow rows into an ordered series", async () => {
     await seedStooq(db, "AAPL", [["2026-01-02", "200.00000000"], ["2026-01-05", "205.00000000"]])
     await db.execute(sql.raw(`
