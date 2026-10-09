@@ -1,15 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-const { db, rows } = vi.hoisted(() => {
-  const rows = vi.fn()
+const { db, selectQueries } = vi.hoisted(() => {
+  const selectQueries: string[] = []
   const db = vi.fn(async (parts: TemplateStringsArray) => {
     const query = Array.from(parts).join("?")
-    if (query.includes("SELECT DISTINCT symbol")) return [{ symbol: "DNP.WA" }, { symbol: "NVDA" }]
+    if (query.includes("SELECT DISTINCT symbol")) {
+      selectQueries.push(query)
+      // DNP.WA: open position. NVDA: CLOSED position (is_open = false, quantity 0)
+      // — the #110 regression: post-close splits must still be detected.
+      return [{ symbol: "DNP.WA" }, { symbol: "NVDA" }]
+    }
     if (query.includes("RETURNING status")) return [{ status: "pending" }]
     return []
   }) as any
   db.end = vi.fn()
-  return { db, rows }
+  return { db, selectQueries }
 })
 
 vi.mock("postgres", () => ({ default: vi.fn(() => db) }))
@@ -18,7 +23,7 @@ describe("split sync", () => {
   const originalFetch = globalThis.fetch
 
   beforeEach(() => {
-    rows.mockReset()
+    selectQueries.length = 0
     db.mockClear()
     globalThis.fetch = vi.fn(async (input: string | URL) => {
       const url = String(input)
@@ -44,7 +49,7 @@ describe("split sync", () => {
     globalThis.fetch = originalFetch
   })
 
-  it("scans distinct open-stock symbols, stages coverage gaps, and applies confirmed events", async () => {
+  it("scans distinct stock symbols, stages coverage gaps, and applies confirmed events", async () => {
     const { runSplitSync } = await import("./split-sync.js")
     const summary = await runSplitSync()
 
@@ -58,5 +63,30 @@ describe("split sync", () => {
       expect.objectContaining({ method: "POST" }),
     )
     expect(db).toHaveBeenCalled()
+  })
+
+  it("#110 — the scan covers closed positions: no is_open or quantity filter", async () => {
+    const { runSplitSync } = await import("./split-sync.js")
+    await runSplitSync()
+
+    expect(selectQueries.length).toBe(1)
+    const query = selectQueries[0]
+    // The symbol source must be the whole stock history, not the open lots.
+    expect(query).not.toMatch(/is_open/i)
+    expect(query).not.toMatch(/quantity\s*<>?\s*0/i)
+    expect(query).toMatch(/asset_type\s*=\s*'STOCK'/i)
+    // The closed position's symbol (NVDA) was still fetched and its confirmed
+    // split applied.
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/splits/NVDA"),
+      expect.any(Object),
+    )
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/internal/apply-split"),
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"symbol":"NVDA"'),
+      }),
+    )
   })
 })
