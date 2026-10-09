@@ -82,12 +82,18 @@ async function applyConfirmed(symbol: string, event: ProviderEvent, status: stri
 }
 
 export async function runSplitSync() {
+  // #110 — scan every stock position we have EVER held, not just the open
+  // ones. A split on a closed position still has to restate its historical
+  // transactions (quantity*cum, price/cum), and the open-position scan was the
+  // only detection path: a symbol bought and sold in 2022 (e.g. NOW, 5:1)
+  // never entered split_events, so the price audit compared pre-split trades
+  // against split-adjusted bars. is_open/quantity filters are gone on purpose;
+  // a fully-closed lot (quantity 0) is exactly the case this exists for.
   const positions = await sql`
     SELECT DISTINCT symbol
       FROM portfolios.positions
-     WHERE is_open = true
-       AND asset_type = 'STOCK'
-       AND quantity <> 0
+     WHERE asset_type = 'STOCK'
+       AND symbol IS NOT NULL
      ORDER BY symbol
   `
   const summary = { symbols: positions.length, confirmed: 0, applied: 0, manual: 0, failed: 0 }
