@@ -2125,6 +2125,115 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/listing-overrides": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List and search curated listing overrides
+         * @description Admin-facing list of curated venue overrides. Search matches ticker,
+         *     venue and listing key; `status` filters active/disabled. Each row
+         *     carries `upstreamPresent`, `tickerConflict` and `precedence` so the
+         *     reviewer sees how it relates to the upstream GitHub reference.
+         */
+        get: operations["listAdminListingOverrides"];
+        put?: never;
+        /** Create a curated listing override */
+        post: operations["createAdminListingOverride"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/listing-overrides/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview upstream conflict and precedence for a prospective override
+         * @description Resolves the upstream/conflict picture for a ticker+venue *before* an
+         *     override is saved, so the reviewer can see the upstream currency and any
+         *     ambiguity the override would take precedence over.
+         */
+        get: operations["previewAdminListingOverride"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/listing-overrides/{listingKey}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `<EXCHANGE>::<TICKER>` (URL-encoded) */
+                listingKey: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** Edit a curated listing override */
+        put: operations["updateAdminListingOverride"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/listing-overrides/{listingKey}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `<EXCHANGE>::<TICKER>` (URL-encoded) */
+                listingKey: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disable a curated listing override
+         * @description Flips status to `disabled`; the row and its history are retained.
+         */
+        post: operations["disableAdminListingOverride"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/listing-overrides/{listingKey}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `<EXCHANGE>::<TICKER>` (URL-encoded) */
+                listingKey: string;
+            };
+            cookie?: never;
+        };
+        /** Audit history for a curated listing override */
+        get: operations["getAdminListingOverrideHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/apply-split": {
         parameters: {
             query?: never;
@@ -2819,7 +2928,7 @@ export interface components {
             sumOfCurrentPositions: number;
             sumOfCurrentPositionsValue: number;
         };
-        /** @description Instrument research dividend history (`history`) OR the portfolio's own dividend rows (`totalDividends`/`count`/`items`) — see the exposing endpoint. For portfolio items, gross = quantity × price, taxes is the withholding tax, amount is the NET (gross − taxes) per the example-service convention, and convertedAmount is amount in the display currency. The research `/dividends` endpoint always also sets `currency` + `currencySource` (plan §49.6, currency is never null); the portfolio endpoint does not. */
+        /** @description Instrument research dividend history (`history`) OR the portfolio's own dividend rows (`totalDividends`/`count`/`items`) — see the exposing endpoint. For portfolio items, gross = quantity × price, taxes is the withholding tax, amount is the NET (gross − taxes), and convertedAmount is amount in the display currency. The research `/dividends` endpoint always also sets `currency` + `currencySource` (plan §49.6, currency is never null); the portfolio endpoint does not. */
         DividendsData: {
             history?: {
                 date: string;
@@ -3087,16 +3196,19 @@ export interface components {
             userId: string;
             name: string;
             description?: string | null;
-            strategy: string;
-            type: string;
             baseCurrency?: string;
             capitalBasis: number;
             currentValue: number;
             isPublic: boolean;
+            /** @description Read-only view over the instruments carrying `labelId`. Always false on a casual portfolio. */
+            isVirtual?: boolean;
+            /**
+             * Format: uuid
+             * @description The label whose instruments a virtual portfolio mirrors. Always set when `isVirtual` is true; null on a casual portfolio.
+             */
+            labelId?: string | null;
             cashLegOnTrade?: boolean;
             isMarginEnabled: boolean;
-            marginRate?: number | null;
-            maintenanceMarginRate?: number | null;
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
@@ -3109,12 +3221,27 @@ export interface components {
             /** @description Portfolio-native cash position (plan §62) */
             cash?: components["schemas"]["PortfolioCash"];
         };
+        /**
+         * @description Body for both POST /portfolios and PATCH /portfolios/{id}.
+         *     Virtual portfolios (`isVirtual: true`) are read-only views over the instruments carrying `labelId` — they have no cash ledger. A virtual request therefore REQUIRES `labelId` (an existing label owned by the caller); a casual portfolio (the default — `isVirtual` false or absent) MUST NOT carry one. A virtual create without a label is rejected 422.
+         *     Update semantics: a virtual portfolio's `cashLegOnTrade` is always false, so PATCH rejects enabling the cash leg on a virtual portfolio (422). PATCH also rejects an update that would leave the virtual/casual state invalid — a `labelId` on a casual portfolio, or clearing a virtual portfolio's `labelId` (both 422).
+         *     OpenAPI 3.0 cannot express a conditional requirement like this without changing the shape every consumer compiles against, so the rule is declared here and enforced server-side by the wallets zod refinement and route guards. `scripts_check_spec.py` asserts these fields stay declared.
+         */
         CreatePortfolioRequest: {
             name: string;
             description?: string | null;
-            strategy?: string;
             currency?: string;
             isPublic?: boolean;
+            /**
+             * @description True for a virtual portfolio; see the schema description for the label requirement.
+             * @default false
+             */
+            isVirtual: boolean;
+            /**
+             * Format: uuid
+             * @description Required when `isVirtual` is true, forbidden otherwise. Null on a casual portfolio.
+             */
+            labelId?: string | null;
             cashLegOnTrade?: boolean;
         };
         /**
@@ -3610,7 +3737,7 @@ export interface components {
                 issues?: Record<string, never>[];
             };
         };
-        /** @description A portfolio transaction row. For `type: DIVIDEND` the example-service convention applies (verified against the live API 2026-09-26): `price` is the per-share gross dividend, `quantity × price` is the gross total, `taxes` is the withholding tax, and `totalAmount` is the **net** (gross − taxes). BUY/SELL rows keep `totalAmount = quantity × price + fees`. `TRANSFER_OUT`/`TRANSFER_IN` rows are an in-kind movement of the instrument between portfolios: `price` is the source lot's cost carried over unchanged, `totalAmount` is informational, `realizedGainLoss` is absent because nothing was disposed of, and the row has **no cash effect and is not an external flow**. It must not be read as a trade. */
+        /** @description A portfolio transaction row. For `type: DIVIDEND`, `price` is the per-share gross dividend, `quantity × price` is the gross total, `taxes` is the withholding tax, and `totalAmount` is the **net** (gross − taxes). BUY/SELL rows keep `totalAmount = quantity × price + fees`. `TRANSFER_OUT`/`TRANSFER_IN` rows are an in-kind movement of the instrument between portfolios: `price` is the source lot's cost carried over unchanged, `totalAmount` is informational, `realizedGainLoss` is absent because nothing was disposed of, and the row has **no cash effect and is not an external flow**. It must not be read as a trade. */
         Transaction: components["schemas"]["FeeFxFields"] & {
             /** Format: uuid */
             id: string;
@@ -3632,19 +3759,20 @@ export interface components {
             priceCurrency: string;
             instrumentCurrency: string;
             assetType: string;
-            isGift: boolean;
-            synthesizedOpeningLot: boolean;
             /** Format: date-time */
             executedAt: string;
             /** Format: date-time */
             createdAt: string;
+            /** @description Currency used to display and total the row; the owning portfolio's base currency */
             displayCurrency: string;
             convertedTotalAmount: number;
             convertedPrice: number;
             convertedFees: number;
             convertedRealizedGainLoss?: number | null;
-            sector?: string;
-            country?: string;
+            /** @description Sector of the transaction's position (read from the position, not stored on the row) */
+            sector?: string | null;
+            /** @description Country of the position's instrument, read from the position */
+            country?: string | null;
             /** @description Import provenance tag; NULL for manually-created rows */
             externalSource?: string | null;
             /** @description Importer-supplied dedup key; unique per externalSource */
@@ -3699,7 +3827,6 @@ export interface components {
             currency?: string;
             description?: string;
             transactionDate?: string;
-            paymentMethod?: string;
         };
         TransferCashRequest: components["schemas"]["FeeFxFields"] & {
             amount: number;
@@ -3731,12 +3858,10 @@ export interface components {
             type: string;
             amount: number;
             currency: string;
-            status: string;
             /** Format: date-time */
             createdAt: string;
             description?: string | null;
             transactionDate?: string | null;
-            paymentMethod?: string | null;
             fees?: number | null;
             feesType?: string | null;
             /** Format: uuid */
@@ -3846,8 +3971,6 @@ export interface components {
             description?: string | null;
             /** Format: date */
             transactionDate?: string | null;
-            status?: string;
-            paymentMethod?: string | null;
             fees?: number | null;
             /** @enum {string|null} */
             feesType?: "fixed" | "pct" | null;
@@ -4159,6 +4282,91 @@ export interface components {
         AdminFxRatesResponse: {
             items: components["schemas"]["AdminFxRate"][];
             pagination: components["schemas"]["AdminPagination"];
+        };
+        AdminListingOverride: {
+            /** @description `<EXCHANGE>::<TICKER>` — the venue-qualified primary key. */
+            listingKey: string;
+            ticker: string;
+            /** @description Venue/exchange code (e.g. NYSE, LSE, TSX). */
+            exchange: string;
+            /** @description ISO-4217 quote currency for this listing. */
+            quoteCurrency: string;
+            assetType: string;
+            /** @enum {string} */
+            status: "active" | "disabled";
+            /** @description Why the override exists (required; reviewed with the row). */
+            rationale: string;
+            /** @description Where the fact came from (issue ref, analyst, source URL). */
+            provenance: string;
+            /**
+             * @description Which writer won — `admin` for an admin edit, or the curated
+             *     source version string when seeded from the versioned source.
+             */
+            sourceVersion: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** @description A GitHub ticker-reference row exists for the same listingKey. */
+            upstreamPresent: boolean;
+            /** @description More than one upstream row shares this ticker (venue ambiguity). */
+            tickerConflict: boolean;
+            /**
+             * @description Curated always outranks upstream. Surfaced explicitly so a conflict
+             *     is visible rather than silently resolved.
+             * @enum {string}
+             */
+            precedence: "curated";
+        };
+        AdminListingOverrideInput: {
+            ticker: string;
+            exchange: string;
+            quoteCurrency: string;
+            assetType: string;
+            /**
+             * @default active
+             * @enum {string}
+             */
+            status: "active" | "disabled";
+            rationale: string;
+            provenance: string;
+        };
+        AdminListingOverridesResponse: {
+            items: components["schemas"]["AdminListingOverride"][];
+            pagination: components["schemas"]["AdminPagination"];
+        };
+        AdminListingOverrideHistoryEntry: {
+            id: number;
+            listingKey: string;
+            /** @enum {string} */
+            action: "created" | "updated" | "disabled";
+            /** @description The override row as written, verbatim (free-form JSON). */
+            snapshot?: unknown;
+            /** @description `<user-id> <email>` of the writer. */
+            actor: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        AdminListingOverrideHistoryResponse: {
+            items: components["schemas"]["AdminListingOverrideHistoryEntry"][];
+        };
+        AdminListingOverridePreview: {
+            listingKey: string;
+            ticker: string;
+            exchange: string;
+            /** @description An upstream GitHub row exists for this exact listing key. */
+            upstreamPresent: boolean;
+            /** @description More than one upstream row shares this ticker. */
+            tickerConflict: boolean;
+            /**
+             * @description Quote currency the upstream reference currently resolves for this
+             *     key, so a reviewer sees the value the override would replace.
+             */
+            upstreamCurrency?: string | null;
+            /** @description The override already stored for this key, if any. */
+            existingOverride?: components["schemas"]["AdminListingOverride"] | null;
+            /** @enum {string} */
+            precedence: "curated";
         };
         TopologyStatusResponse: {
             services: components["schemas"]["TopologyServiceStatus"][];
@@ -5662,6 +5870,8 @@ export interface operations {
                 labels?: string;
                 /** @description Filter by instrument symbol. Must be in canonical form: bare ticker for US listings (AAPL, SAP), Yahoo venue suffix for others (SAP.DE, SNT.WA). Case-insensitive exact match. */
                 instrumentSymbol?: string;
+                /** @description Case-insensitive partial match against instrument symbol or company name. */
+                search?: string;
             };
             header?: never;
             path?: never;
@@ -5993,6 +6203,8 @@ export interface operations {
                 labels?: string;
                 /** @description Filter by instrument symbol. Must be in canonical form: bare ticker for US listings (AAPL, SAP), Yahoo venue suffix for others (SAP.DE, SNT.WA). Case-insensitive exact match. */
                 instrumentSymbol?: string;
+                /** @description Case-insensitive partial match against instrument symbol or company name. */
+                search?: string;
             };
             header?: never;
             path: {
@@ -6418,6 +6630,8 @@ export interface operations {
                 limit?: number;
                 /** @description Comma-separated label ids; AND filter (entity must have all) */
                 labels?: string;
+                /** @description Case-insensitive partial match against the linked transaction's ticker or company name. */
+                search?: string;
             };
             header?: never;
             path: {
@@ -6525,6 +6739,8 @@ export interface operations {
                 sortOrder?: "asc" | "desc";
                 /** @description Comma-separated label ids; AND filter (entity must have all) */
                 labels?: string;
+                /** @description Case-insensitive partial match against the linked transaction's ticker or company name. */
+                search?: string;
             };
             header?: never;
             path?: never;
@@ -7438,6 +7654,313 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminFxRatesResponse"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not a portfoliost_admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listAdminListingOverrides: {
+        parameters: {
+            query?: {
+                page?: number;
+                per_page?: number;
+                search?: string;
+                status?: "active" | "disabled";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paginated override list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminListingOverridesResponse"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not a portfoliost_admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    createAdminListingOverride: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListingOverrideInput"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminListingOverride"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not a portfoliost_admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An override for this listing key already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    previewAdminListingOverride: {
+        parameters: {
+            query: {
+                ticker: string;
+                exchange: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Precedence and conflict metadata for the proposed key */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminListingOverridePreview"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not a portfoliost_admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Ticker or exchange missing/invalid */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    updateAdminListingOverride: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `<EXCHANGE>::<TICKER>` (URL-encoded) */
+                listingKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListingOverrideInput"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminListingOverride"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not a portfoliost_admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No override with that listing key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    disableAdminListingOverride: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `<EXCHANGE>::<TICKER>` (URL-encoded) */
+                listingKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Disabled */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminListingOverride"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not a portfoliost_admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No override with that listing key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getAdminListingOverrideHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `<EXCHANGE>::<TICKER>` (URL-encoded) */
+                listingKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description History, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminListingOverrideHistoryResponse"];
                 };
             };
             /** @description Missing or invalid token */

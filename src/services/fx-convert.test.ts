@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { RateTable } from "@marx2/contracts/fx"
+import type { RateTable } from "@marx-org/contracts/fx"
 import { convertSeries, rateTablesByDate } from "./fx-convert.js"
 
 /**

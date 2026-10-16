@@ -6,7 +6,7 @@
  * `price_bars_all ⨝ fx_rates ⨝ fx_rates`. This module serves the genuine
  * rate-only needs that cannot ride the join: the provider-fetched series
  * (`/history`) and the single price (`/price`) read the raw rates and convert
- * with `@marx2/contracts/fx` (D27 — the conversion math never lives here).
+ * with `@marx-org/contracts/fx` (D27 — the conversion math never lives here).
  */
 import { sql } from "drizzle-orm"
 import type { DB } from "./index.js"

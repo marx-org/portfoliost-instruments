@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { sql } from "drizzle-orm"
-import { convert } from "@marx2/contracts/fx"
+import { convert } from "@marx-org/contracts/fx"
 import { createTestDb } from "./test-db.js"
 import type { DB } from "./index.js"
 import { LOCAL_PRICE_BARS_SETUP_SQL } from "./price-bars.js"

@@ -3,12 +3,12 @@
  *
  * The DB read path converts inside the join (`queryViewAs` in
  * services/price-bars.ts). Provider rows are served straight from the
- * cachest fetch, so the same D27 cross-rate from `@marx2/contracts/fx` is
+ * cachest fetch, so the same D27 cross-rate from `@marx-org/contracts/fx` is
  * applied here per dated rate table. A bar whose date has no rate row stays
  * in the base currency — the same floor semantics as the SQL join (no
  * carry-forward).
  */
-import { convert, type RateTable } from "@marx2/contracts/fx"
+import { convert, type RateTable } from "@marx-org/contracts/fx"
 
 export interface FxRateRowLite {
   rateDate: string
