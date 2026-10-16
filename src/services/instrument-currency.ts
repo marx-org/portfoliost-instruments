@@ -22,7 +22,7 @@
  * DB lookups degrade to ``null``, never a guessed code: the SPA takes the
  * ``currencySource`` signal ("estimated" vs "unknown") to red-flag it.
  */
-import { CURRENCIES } from "@marx2/contracts/currencies"
+import { CURRENCIES } from "@marx-org/contracts/currencies"
 import type { DB } from "../db/index.js"
 import {
   assetTypeForSymbol,
