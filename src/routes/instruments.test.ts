@@ -33,6 +33,7 @@ vi.mock("../adapters/cachest.js", () => ({
   fetchSearch: vi.fn(),
   fetchCryptoSearch: vi.fn(),
   fetchBondSearch: vi.fn(),
+  fetchFundSearch: vi.fn(),
   fetchBondProfile: vi.fn(),
   fetchCorpBondProfile: vi.fn(),
   fetchCryptoProfile: vi.fn(),
@@ -103,6 +104,7 @@ beforeEach(() => {
   mocked.fetchSearch.mockReset()
   mocked.fetchCryptoSearch.mockReset()
   mocked.fetchBondSearch.mockReset()
+  mocked.fetchFundSearch.mockReset()
   mocked.fetchBondProfile.mockReset()
   mocked.fetchCorpBondProfile.mockReset()
   mocked.fetchCryptoProfile.mockReset()
@@ -169,6 +171,29 @@ describe("GET /api/instruments/search", () => {
         expect.objectContaining({ symbol: "ROD0938", type: "BOND", source: "OBLIGACJE", exchange: "PL" }),
       ]),
     )
+  })
+
+  it("keeps an exact reference ticker ahead of a broad fund catalogue leg", async () => {
+    const { createTestDb } = await import("../db/test-db.js")
+    const { syncTickerReference } = await import("../scripts/tickerref-sync.js")
+    const t = await createTestDb()
+    dbState.db = t.db
+    await syncTickerReference(
+      `${REF_HEADER}\nNASDAQ::KO,KO,NASDAQ,"The Coca-Cola Company",Stock,Consumer Defensive,,,US,,`,
+      t.db,
+    )
+    mocked.fetchFundSearch.mockResolvedValue(
+      Array.from({ length: 50 }, (_, i) => ({ symbol: `ARK${i}`, name: `Kor... fund ${i}` })),
+    )
+    try {
+      const res = await req("/api/instruments/search?q=ko")
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.results[0]).toMatchObject({ symbol: "KO", name: "The Coca-Cola Company", source: "TICKERDB" })
+    } finally {
+      await t.client.close()
+      dbState.db = null
+    }
   })
 
   it("serves bond results instead of 404 when the equity tier has no match", async () => {
@@ -2371,6 +2396,19 @@ describe("GET /:symbol/profile — asset-class dispatch (§86.8)", () => {
     expect(body.keyFacts.name).toBe("Bitcoin USD")
     expect(body.keyFacts.icoDate).toBe("2014-09-17")
     expect(body.keyFacts.circulatingSupply).toBe(19972590.0)
+  })
+
+  it("fills missing crypto provider identity from the reference row", async () => {
+    mocked.fetchCryptoProfile.mockResolvedValue({ ...CRYPTO_ROW, name: null, exchange: null })
+    const res = await profileWithReference(
+      `${REF_HEADER}\nCCC::BTC,BTC,CCC,"Bitcoin USD",crypto,,,,,,`,
+      "/api/instruments/BTC/profile",
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.keyFacts.name).toBe("Bitcoin USD")
+    expect(body.keyFacts.exchange).toBe("CCC")
   })
 
   it("serves a Catalyst bond even when the equity tier would have answered", async () => {
