@@ -1283,6 +1283,17 @@ export function createNewsRoutes() {
 
 // The route factories below are appended via createInstrumentsRoutes extension:
 export function registerPt2Routes(instruments: Hono) {
+  /** Quarterly income rows shared by the research consumers. */
+  async function loadQuarterlyIncome(symbol: string): Promise<Array<Record<string, unknown>>> {
+    const rows = await loadStatementsThrough(
+      getDb(),
+      symbol,
+      { statement: "income", period: "quarter" },
+      () => fetchFundamentals(symbol, "income", "quarter"),
+    )
+    return rows.map((row) => row.payload)
+  }
+
   /**
    * §79.2 — what the three statements are denominated in, and which provider
    * answered each. Both are facts the reader cannot recover: the statements come
@@ -1559,9 +1570,9 @@ export function registerPt2Routes(instruments: Hono) {
         }
         // Baseline for the earnings/revenue estimate blocks: real reported
         // quarters (analyst forward estimates are FMP-premium).
-        let quarterly: any[] = []
+        let quarterly: Array<Record<string, unknown>> = []
         try {
-          quarterly = (await fetchFundamentals(symbol, "income", "quarter")).rows as any[]
+          quarterly = await loadQuarterlyIncome(symbol)
         } catch {
           quarterly = []
         }
@@ -1689,7 +1700,7 @@ export function registerPt2Routes(instruments: Hono) {
       const quartersParam = Number(c.req.query("quarters"))
       const quarters = [5, 8, 12].includes(quartersParam) ? quartersParam : 8
       try {
-        const rows = (await fetchFundamentals(symbol, "income", "quarter")).rows
+        const rows = await loadQuarterlyIncome(symbol)
         const all = toEpsSurprises(symbol, rows)
         return c.json({ ...all, quarterly: (all.quarterly as unknown[]).slice(-quarters) })
       } catch (e) {
@@ -1713,7 +1724,7 @@ export function registerPt2Routes(instruments: Hono) {
     async (c) => {
       const symbol = providerSymbol(c.req.param("symbol").toUpperCase())
       try {
-        const rows = (await fetchFundamentals(symbol, "income", "quarter")).rows
+        const rows = await loadQuarterlyIncome(symbol)
         let filings: Array<Record<string, unknown>> | null = null
         try {
           filings = await fetchFilings(symbol)

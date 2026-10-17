@@ -1295,20 +1295,48 @@ describe("pt2 routes", () => {
   })
 
   describe("GET /:symbol/projections", () => {
+    useStoreDb()
+
     it("builds price target block and survives missing quote/consensus", async () => {
       mocked.fetchProjections.mockResolvedValue({ target_high: 400, target_low: 245, target_consensus: 340.72, target_median: 360 })
       mocked.fetchQuote.mockResolvedValue({ last_price: 309.35 })
+      mocked.fetchFundamentals.mockResolvedValue(statement("fmp", []))
       const ok = await req("/api/instruments/AAPL/projections")
       expect(ok.status).toBe(200)
       const pt = (await ok.json()).priceTarget
       expect(pt.mean).toBeCloseTo(340.72)
       expect(pt.current).toBeCloseTo(309.35)
       expect(pt.high).toBe(400)
+      expect((await (await req("/api/instruments/EMPTY/projections")).json()).earnings.avg).toBeNull()
 
       mocked.fetchQuote.mockRejectedValue(new cachest.UpstreamError("x", 404))
       const degraded = await req("/api/instruments/AAPL/projections")
       expect(degraded.status).toBe(200)
       expect((await degraded.json()).priceTarget.current).toBeNull()
+    })
+
+    it("serves quarterly income from the store on a warm read", async () => {
+      mocked.fetchProjections.mockResolvedValue({})
+      mocked.fetchQuote.mockResolvedValue({ last_price: 309.35 })
+      mocked.fetchFundamentals.mockResolvedValue(
+        statement("fmp", [{ period_ending: "2026-03-31", diluted_earnings_per_share: 2, revenue: 100 }]),
+      )
+
+      const cold = await req("/api/instruments/AAPL/projections")
+      expect(cold.status).toBe(200)
+      expect(mocked.fetchFundamentals).toHaveBeenCalledTimes(1)
+
+      const warm = await req("/api/instruments/AAPL/projections")
+      expect(warm.status).toBe(200)
+      expect(mocked.fetchFundamentals).toHaveBeenCalledTimes(1)
+    })
+
+    it("keeps an empty quarterly scope as an empty response", async () => {
+      mocked.fetchFundamentals.mockResolvedValue(statement("fmp", []))
+
+      const res = await req("/api/instruments/EMPTY/eps-surprises")
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ annual: [], quarterly: [] })
     })
   })
 
@@ -1404,6 +1432,8 @@ describe("pt2b routes", () => {
   })
 
   describe("GET /:symbol/eps-surprises", () => {
+    useStoreDb()
+
     it("derives rows with YoY-baseline estimates", async () => {
       mocked.fetchFundamentals.mockResolvedValue(statement("fmp", [
         { period_ending: "2024-03-31 00:00:00", diluted_earnings_per_share: 1.0, revenue: 900 },
@@ -1424,7 +1454,7 @@ describe("pt2b routes", () => {
     it("honors the quarters parameter", async () => {
       mocked.fetchFundamentals.mockResolvedValue(
         statement("fmp", Array.from({ length: 12 }, (_, i) => ({
-          period_ending: `20${25 + Math.floor(i / 4)}-0${(i % 4) * 3 + 1}-15 00:00:00`,
+          period_ending: `20${25 + Math.floor(i / 4)}-${String((i % 4) * 3 + 1).padStart(2, "0")}-15 00:00:00`,
           diluted_earnings_per_share: 1,
           revenue: 100,
         }))),
@@ -1432,9 +1462,38 @@ describe("pt2b routes", () => {
       const res = await req("/api/instruments/AAPL/eps-surprises?quarters=12")
       expect((await res.json()).quarterly).toHaveLength(12)
     })
+
+    it("serves quarterly income from the store on a warm read", async () => {
+      mocked.fetchFundamentals.mockResolvedValue(
+        statement("fmp", [
+          { period_ending: "2025-03-31", diluted_earnings_per_share: 1, revenue: 90 },
+          { period_ending: "2026-03-31", diluted_earnings_per_share: 2, revenue: 100 },
+        ]),
+      )
+
+      const cold = await req("/api/instruments/AAPL/eps-surprises")
+      expect(cold.status).toBe(200)
+      expect(mocked.fetchFundamentals).toHaveBeenCalledTimes(1)
+
+      const warm = await req("/api/instruments/AAPL/eps-surprises")
+      expect(warm.status).toBe(200)
+      expect(mocked.fetchFundamentals).toHaveBeenCalledTimes(1)
+      expect(await warm.json()).toEqual(await cold.json())
+    })
+
+    it("keeps an empty quarterly scope as an empty event list", async () => {
+      mocked.fetchFundamentals.mockResolvedValue(statement("fmp", []))
+      mocked.fetchFilings.mockResolvedValue([])
+
+      const res = await req("/api/instruments/EMPTY/investor-relations")
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual([])
+    })
   })
 
   describe("GET /:symbol/investor-relations", () => {
+    useStoreDb()
+
     it("lists earnings-call events per reported quarter", async () => {
       mocked.fetchFundamentals.mockResolvedValue(statement("fmp", [
         { period_ending: "2026-03-31 00:00:00" },
@@ -1505,6 +1564,22 @@ describe("pt2b routes", () => {
       const events = await res.json()
       expect(events).toHaveLength(1)
       expect(events[0].type).toBe("transcript")
+    })
+
+    it("serves quarterly income from the store on a warm read", async () => {
+      mocked.fetchFundamentals.mockResolvedValue(
+        statement("fmp", [{ period_ending: "2026-03-31" }]),
+      )
+      mocked.fetchFilings.mockResolvedValue([])
+
+      const cold = await req("/api/instruments/AAPL/investor-relations")
+      expect(cold.status).toBe(200)
+      expect(mocked.fetchFundamentals).toHaveBeenCalledTimes(1)
+
+      const warm = await req("/api/instruments/AAPL/investor-relations")
+      expect(warm.status).toBe(200)
+      expect(mocked.fetchFundamentals).toHaveBeenCalledTimes(1)
+      expect(await warm.json()).toEqual(await cold.json())
     })
 
     it("returns MD&A text body for a transcript event", async () => {
