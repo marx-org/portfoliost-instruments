@@ -381,14 +381,15 @@ export function createInstrumentsRoutes() {
           return c.json(
             // Crypto leg first so the curated exact-pair suggestion
             // (BTC-USD when typing "btc") is never occluded by the reference
-            // tier's name-match flood under the 50-result cap. Bonds are
-            // additive too (D79) — ROD/EDO emissions from the obligacje
-            // catalogue always surface alongside the reference rows.
+            // tier's name-match flood under the 50-result cap. The reference
+            // rows therefore come before the broad provider catalogue leg: an
+            // exact ticker such as KO must remain visible even when a fund-name
+            // search returns fifty "Kor..." matches ahead of it.
             mergeSearchResults(
               await cryptoSearchLeg(q),
               await bondSearchLeg(q),
-              await fundSearchLeg(q),
               toReferenceSearchResponse(rows).results ?? [],
+              await fundSearchLeg(q),
             ),
           )
         }
@@ -403,7 +404,7 @@ export function createInstrumentsRoutes() {
           bondSearchLeg(q),
           fundSearchLeg(q),
         ])
-        return c.json(mergeSearchResults(cryptoRows, fundRows, bondRows, eqRows))
+        return c.json(mergeSearchResults(cryptoRows, bondRows, eqRows, fundRows))
       } catch (e) {
         return upstreamErrorResponse(c, e)
       }
@@ -559,10 +560,30 @@ export function createInstrumentsRoutes() {
       // ordering convention is not.
       if (assetType === "corp_bond" || assetType === "crypto") {
         try {
-          const row =
+          const providerRow =
             assetType === "corp_bond"
               ? ((await fetchCorpBondProfile(symbol)) as OpenstProfile)
               : ((await fetchCryptoProfile(cryptoPairFor(symbol))) as OpenstProfile)
+          // Crypto profile metadata comes from the optional provider search
+          // leg. Local compose has no FMP key, so that leg can legitimately
+          // return only quote-derived fields. The reference row is still an
+          // authoritative local identity for the pair; fill only provider
+          // gaps so a real provider name/supply continues to win.
+          const cryptoReference =
+            assetType === "crypto" && db
+              ? (await searchTickerReference(db, symbol, 50)).find(
+                  (r) =>
+                    r.ticker.toUpperCase() === symbol.toUpperCase() ||
+                    r.ticker.toUpperCase() === cryptoPairFor(symbol).toUpperCase(),
+                )
+              : undefined
+          const row = cryptoReference && assetType === "crypto"
+            ? {
+                ...providerRow,
+                name: providerRow.name ?? cryptoReference.name,
+                exchange: providerRow.exchange ?? cryptoReference.exchange,
+              }
+            : providerRow
           const resolution = await resolveCurrency(getDb(), routeSymbol, row.currency)
           return c.json(
             toInstrumentProfile(symbol, row, resolution, { kind: assetType }),
