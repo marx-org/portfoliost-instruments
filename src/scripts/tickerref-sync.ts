@@ -268,13 +268,18 @@ export async function syncExchangeReference(venuesCsv: string, micGoSource: stri
   return { total: venues.length }
 }
 
+function approvedSourceUrl(value: string | undefined): string {
+  if (!value || value === DEFAULT_SOURCE_URL) return DEFAULT_SOURCE_URL
+  throw new Error("ticker reference source must be the approved adanos URL")
+}
+
 async function fetchOrRead(url: string, file: string): Promise<string> {
   if (file) {
     console.log(`[tickerref] reading ${file}`)
     return readFile(file, "utf8")
   }
   console.log(`[tickerref] fetching ${url}`)
-  const res = await fetch(url)
+  const res = await fetch(url, { redirect: "error" })
   if (!res.ok) {
     throw new Error(`source fetch failed: HTTP ${res.status}`)
   }
@@ -290,12 +295,14 @@ async function main() {
   // One-shot curated-only mode (plan 34.5): upsert the crypto listings
   // without re-syncing the upstream 60k-row snapshot.
   const curatedOnly = process.argv.includes("--curated-only")
-  const sourceUrl = urlBase || process.env.TICKERREF_SOURCE_URL || DEFAULT_SOURCE_URL
+  const requestedSourceUrl = urlBase || process.env.TICKERREF_SOURCE_URL
+  const sourceUrl = approvedSourceUrl(requestedSourceUrl)
 
   const db = getDb()
 
   // Tickers: seed mode reads the bundled snapshot; live mode fetches from
-  // adanos GitHub. fileBase/urlBase act as path-prefix / URL-override.
+  // adanos GitHub. fileBase remains a path-prefix override; URL overrides are
+  // accepted only when they select this exact approved source.
   let skipTickers = false
   if (curatedOnly) {
     skipTickers = true

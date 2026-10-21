@@ -1,4 +1,5 @@
 import { closeDb, getDb, type DB } from "../db/index.js"
+import { internalServiceUrl } from "../services/internal-url.js"
 
 // Syncs the analizy.pl fund-category catalogue into ticker_reference (plan §78).
 //
@@ -35,8 +36,8 @@ export const FUND_CATALOGUE_VENUE = "ANALIZY"
  * gate below is the real protection against a garbage or truncated body.
  */
 export async function fetchFundCatalogue(baseUrl: string): Promise<string> {
-  const url = `${baseUrl}/fund/catalogue`
-  const res = await fetch(url)
+  const url = `${internalServiceUrl(baseUrl, "cache")}/fund/catalogue`
+  const res = await fetch(url, { redirect: "error" })
   if (!res.ok) throw new Error(`fund catalogue fetch failed: HTTP ${res.status} for ${url}`)
   const csv = await res.text()
   const contentType = res.headers.get("content-type") ?? ""
@@ -75,7 +76,7 @@ export async function syncFundCatalogue(
 const isMain = process.argv[1]?.endsWith("fund-category-catalogue-sync.js") ?? false
 if (isMain) {
   const { syncTickerReference } = await import("./tickerref-sync.js")
-  const baseUrl = process.env.CACHEST_URL ?? process.env.OPENST_URL ?? "http://cachest:8080"
+  const baseUrl = internalServiceUrl(process.env.CACHEST_URL ?? process.env.OPENST_URL, "cache")
   const total = await syncFundCatalogue(baseUrl, (csv, db) => syncTickerReference(csv, db))
   console.log(`[fund-category-catalogue-sync] upserted ${total} fund rows into ticker_reference`)
   await closeDb()

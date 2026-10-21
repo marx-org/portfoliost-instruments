@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm"
 import type { DB } from "../db/index.js"
 import { fxRates, fxSyncState } from "../db/schema.js"
 
-export const FRANKFURTER_BASE = process.env.FRANKFURTER_BASE ?? "https://api.frankfurter.dev/v1"
+export const FRANKFURTER_BASE = "https://api.frankfurter.dev/v1"
 
 /** Currencies we import (EUR is the implicit base). Extending this list is what
  * grows the supported-currency registry on the next daily run (D26). */
@@ -22,8 +22,15 @@ interface FrankfurterResponse {
   rates: Record<string, Record<string, number>>
 }
 
-async function frankfurter(path: string): Promise<FrankfurterResponse> {
-  const res = await fetch(`${FRANKFURTER_BASE}${path}`)
+function safeDatePath(value: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error("Frankfurter dates must be ISO dates")
+  return encodeURIComponent(value)
+}
+
+async function frankfurter(start: string, symbols: string): Promise<FrankfurterResponse> {
+  const query = new URLSearchParams({ base: "EUR", symbols })
+  const url = `${FRANKFURTER_BASE}/${safeDatePath(start)}..?${query}`
+  const res = await fetch(url, { redirect: "error" })
   if (!res.ok) throw new Error(`frankfurter ${res.status}: ${await res.text()}`)
   return (await res.json()) as FrankfurterResponse
 }
@@ -69,7 +76,7 @@ export async function upsertRates(
 export async function importHistory(db: DB, opts: { start?: string } = {}) {
   const start = opts.start ?? DEFAULT_HISTORY_START
   const symbols = TRACKED_CURRENCIES.join(",")
-  const data = await frankfurter(`/${start}..?base=EUR&symbols=${symbols}`)
+  const data = await frankfurter(start, symbols)
   const entries = Object.entries(data.rates).map(([rateDate, rates]) => ({ rateDate, rates }))
   // frankfurter omits the end-date row sometimes; ensure newest table exists
   const count = await upsertRates(db, entries)
@@ -81,7 +88,7 @@ export async function importHistory(db: DB, opts: { start?: string } = {}) {
 export async function syncDaily(db: DB) {
   const symbols = TRACKED_CURRENCIES.join(",")
   try {
-    const data = await frankfurter(`/${isoDaysAgo(10)}..?base=EUR&symbols=${symbols}`)
+    const data = await frankfurter(isoDaysAgo(10), symbols)
     const entries = Object.entries(data.rates).map(([rateDate, rates]) => ({ rateDate, rates }))
     const count = await upsertRates(db, entries)
     await markSync(db, "ok", count)
@@ -94,7 +101,7 @@ export async function syncDaily(db: DB) {
 
 /** Lazy gap backfill for a single currency (D25 fallback path). */
 export async function backfillCurrency(db: DB, currency: string, sinceDays = 30) {
-  const data = await frankfurter(`/${isoDaysAgo(sinceDays)}..?base=EUR&symbols=${currency}`)
+  const data = await frankfurter(isoDaysAgo(sinceDays), currency)
   const entries = Object.entries(data.rates).map(([rateDate, rates]) => ({
     rateDate,
     rates: { [currency]: rates[currency] },

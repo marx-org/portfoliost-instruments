@@ -6,9 +6,10 @@ import type { Context } from "hono"
 import { getDb } from "../db/index.js"
 import { logos } from "../db/schema.js"
 import { fetchLogo } from "../adapters/cachest.js"
+import { externalImageUrl } from "./internal-url.js"
 
 function logosDir(): string {
-  return process.env.LOGOS_DIR ?? path.join(process.cwd(), "data", "logos")
+  return path.join(process.cwd(), "data", "logos")
 }
 const REFRESH_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -41,7 +42,9 @@ function contentTypeFor(file: string): string {
 
 async function download(remoteUrl: string): Promise<{ bytes: Buffer; ext: string } | null> {
   try {
-    const res = await fetch(remoteUrl)
+    const safeUrl = externalImageUrl(remoteUrl)
+    if (!safeUrl) return null
+    const res = await fetch(safeUrl, { redirect: "error" })
     if (!res.ok) return null
     const buf = Buffer.from(await res.arrayBuffer())
     if (buf.length === 0) return null
@@ -64,6 +67,7 @@ async function resolveAndPersist(symbol: string): Promise<PersistedLogo | null> 
   if (!downloaded) return null
 
   const canonical = symbol.toUpperCase()
+  if (!/^[A-Z0-9.-]{1,30}$/.test(canonical)) return null
   const file = `${canonical}.${downloaded.ext}`
   await mkdir(logosDir(), { recursive: true })
   await writeFile(path.join(logosDir(), file), downloaded.bytes)
@@ -102,6 +106,7 @@ async function readStored(symbol: string): Promise<StoredLogo | null> {
   }
   if (!row) return null
   try {
+    if (!/^[A-Z0-9.-]{1,30}\.(?:png|svg|ico)$/.test(row.file)) return null
     const filePath = path.join(logosDir(), row.file)
     const info = await stat(filePath)
     if (!info.isFile()) return null

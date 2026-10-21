@@ -1,4 +1,5 @@
 import postgres from "postgres"
+import { internalServiceUrl } from "../services/internal-url.js"
 
 type ProviderEvent = {
   symbol: string
@@ -17,12 +18,13 @@ type SplitResponse = {
 }
 
 const sql = postgres(process.env.DATABASE_URL ?? "postgres://portfoliost:portfoliost@postgres:5432/portfoliost")
-const cacheUrl = process.env.API_CACHest_URL ?? process.env.API_CACHEST_URL ?? "http://cachest:8080"
-const walletsUrl = process.env.API_WALLETS_URL ?? "http://wallets:3000"
+const cacheUrl = internalServiceUrl(process.env.API_CACHest_URL ?? process.env.API_CACHEST_URL, "cache")
+const walletsUrl = internalServiceUrl(process.env.API_WALLETS_URL, "wallets")
 
 async function fetchSplits(symbol: string): Promise<SplitResponse> {
   const res = await fetch(`${cacheUrl}/splits/${encodeURIComponent(symbol)}`, {
     signal: AbortSignal.timeout(120_000),
+    redirect: "error",
   })
   const body = await res.json() as SplitResponse
   if (!res.ok) throw new Error(`cachest returned ${res.status}`)
@@ -71,6 +73,7 @@ async function applyConfirmed(symbol: string, event: ProviderEvent, status: stri
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ symbol, factor: event.factor, effectiveDate: event.effectiveDate, source: `openst:${event.provider}` }),
     signal: AbortSignal.timeout(30_000),
+    redirect: "error",
   })
   if (!res.ok) throw new Error(`wallets returned ${res.status}: ${await res.text()}`)
   await sql`

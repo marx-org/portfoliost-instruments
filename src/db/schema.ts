@@ -86,7 +86,7 @@ export const curatedListingOverrideHistory = instrumentsSchema.table(
 
 /**
  * Logo cache index (logos.md D35). The row is the index; the binary lives on
- * disc at `LOGOS_DIR/{file}`. `refresh_after` drives lazy background
+ * disk at `data/logos/{file}`. `refresh_after` drives lazy background
  * revalidation on read; failures never persist (initials serve instead).
  */
 export const logos = instrumentsSchema.table("logos", {
