@@ -1,4 +1,5 @@
 import { closeDb, getDb, type DB } from "../db/index.js"
+import { internalServiceUrl } from "../services/internal-url.js"
 
 // Syncs the Catalyst corporate-bond catalogue into ticker_reference (D80 25.3).
 //
@@ -24,8 +25,8 @@ const MIN_EXPECTED_ROWS = 500
  * gate in `syncCorpBondCatalogue` is the real protection against a garbage
  * or truncated body. */
 export async function fetchCorpBondCatalogue(baseUrl: string): Promise<string> {
-  const url = `${baseUrl}/corp-bond/catalogue`
-  const res = await fetch(url)
+  const url = `${internalServiceUrl(baseUrl, "cache")}/corp-bond/catalogue`
+  const res = await fetch(url, { redirect: "error" })
   if (!res.ok) throw new Error(`catalogue fetch failed: HTTP ${res.status} for ${url}`)
   const csv = await res.text()
   const contentType = res.headers.get("content-type") ?? ""
@@ -64,7 +65,7 @@ export async function syncCorpBondCatalogue(
 const isMain = process.argv[1]?.endsWith("corp-bond-catalogue-sync.js") ?? false
 if (isMain) {
   const { syncTickerReference } = await import("./tickerref-sync.js")
-  const baseUrl = process.env.CACHEST_URL ?? process.env.OPENST_URL ?? "http://cachest:8080"
+  const baseUrl = internalServiceUrl(process.env.CACHEST_URL ?? process.env.OPENST_URL, "cache")
   const total = await syncCorpBondCatalogue(baseUrl, (csv, db) => syncTickerReference(csv, db))
   console.log(`[corp-bond-catalogue-sync] upserted ${total} corp_bond rows into ticker_reference`)
   await closeDb()

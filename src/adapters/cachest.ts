@@ -1,3 +1,5 @@
+import { internalServiceUrl } from "../services/internal-url.js"
+
 export class UpstreamError extends Error {
   constructor(
     public readonly url: string,
@@ -7,11 +9,10 @@ export class UpstreamError extends Error {
   }
 }
 
-const BASE_URL =
-  process.env.CACHEST_URL ?? process.env.OPENST_URL ?? "http://cachest:8080"
+const BASE_URL = internalServiceUrl(process.env.CACHEST_URL ?? process.env.OPENST_URL, "cache")
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url)
+  const res = await fetch(url, { redirect: "error" })
   if (!res.ok) throw new UpstreamError(url, res.status)
   return (await res.json()) as T
 }

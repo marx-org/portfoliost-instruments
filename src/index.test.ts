@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { ServerType } from "@hono/node-server"
@@ -79,16 +79,20 @@ describe("GET /internal/verify", () => {
 describe("GET /api/logos/:symbol", () => {
   const PNG = Buffer.from("89504e470d0a1a0a000000", "hex")
   let logosDir: string
+  let cwdSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(async () => {
     fetchLogo.mockReset()
-    fetchLogo.mockResolvedValue({ source: "fmp", remote_url: "https://cdn.test/aapl.png" })
-    logosDir = await mkdtemp(path.join(tmpdir(), "logos-"))
-    process.env.LOGOS_DIR = logosDir
+    fetchLogo.mockResolvedValue({ source: "fmp", remote_url: "https://images.financialmodelingprep.com/symbol/AAPL.png" })
+    const root = await mkdtemp(path.join(tmpdir(), "logos-"))
+    logosDir = path.join(root, "data", "logos")
+    await mkdir(logosDir, { recursive: true })
+    cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(root)
     await getDb().delete(logos)
   })
 
   afterEach(() => {
+    cwdSpy.mockRestore()
     vi.unstubAllGlobals()
   })
 

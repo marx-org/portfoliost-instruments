@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, readdir } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const fetchLogo = vi.fn()
 
@@ -39,19 +39,27 @@ function honoContext() {
 }
 
 let logosDir: string
+let cwdSpy: ReturnType<typeof vi.spyOn>
 
 beforeEach(async () => {
   fetchLogo.mockReset()
-  logosDir = await mkdtemp(path.join(tmpdir(), "logos-"))
-  process.env.LOGOS_DIR = logosDir
+  const root = await mkdtemp(path.join(tmpdir(), "logos-"))
+  logosDir = path.join(root, "data", "logos")
+  await mkdir(logosDir, { recursive: true })
+  cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(root)
   await getDb().delete(logos)
+})
+
+afterEach(() => {
+  cwdSpy.mockRestore()
+  vi.unstubAllGlobals()
 })
 
 const PNG = Buffer.from("89504e470d0a1a0a000000", "hex")
 
 describe("serveLogo", () => {
   it("resolves via cachest, persists file and metadata row", async () => {
-    fetchLogo.mockResolvedValue({ source: "fmp", remote_url: "https://cdn.test/aapl.png" })
+    fetchLogo.mockResolvedValue({ source: "fmp", remote_url: "https://images.financialmodelingprep.com/symbol/AAPL.png" })
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response(new Uint8Array(PNG), { status: 200, headers: { "Content-Type": "image/png" } })),
@@ -69,7 +77,7 @@ describe("serveLogo", () => {
   })
 
   it("serves stored file without calling upstream again", async () => {
-    fetchLogo.mockResolvedValue({ source: "fmp", remote_url: "https://cdn.test/aapl.png" })
+    fetchLogo.mockResolvedValue({ source: "fmp", remote_url: "https://images.financialmodelingprep.com/symbol/AAPL.png" })
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response(new Uint8Array(PNG), { status: 200, headers: { "Content-Type": "image/png" } })),
@@ -100,7 +108,7 @@ describe("serveLogo", () => {
   })
 
   it("deduplicates concurrent resolutions via single-flight", async () => {
-    fetchLogo.mockResolvedValue({ source: "fmp", remote_url: "https://cdn.test/aapl.png" })
+    fetchLogo.mockResolvedValue({ source: "fmp", remote_url: "https://images.financialmodelingprep.com/symbol/MSFT.png" })
     let releaseFetch!: (v: Response) => void
     const fetchMock = vi.fn(
       () =>
@@ -119,6 +127,18 @@ describe("serveLogo", () => {
     await Promise.all([first, second])
 
     expect(fetchLogo).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not fetch an unapproved logo destination", async () => {
+    fetchLogo.mockResolvedValue({ source: "fmp", remote_url: "http://127.0.0.1:8080/secrets" })
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    const res = await serveLogo(honoContext().ctx, "AAPL")
+
+    expect(res.status).toBe(200)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(await res.text()).toContain(">AAP<")
   })
 
   it("initialsSvg is deterministic per symbol", () => {

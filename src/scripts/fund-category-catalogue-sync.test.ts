@@ -49,7 +49,7 @@ describe("fetchFundCatalogue", () => {
     }))
     vi.stubGlobal("fetch", fetchMock)
     expect(await fetchFundCatalogue("http://cachest:8080")).toContain(HEADER)
-    expect(fetchMock).toHaveBeenCalledWith("http://cachest:8080/fund/catalogue")
+    expect(fetchMock).toHaveBeenCalledWith("http://cachest:8080/fund/catalogue", { redirect: "error" })
   })
 
   it("accepts text/plain, because cachest re-serialises every proxied body", async () => {
