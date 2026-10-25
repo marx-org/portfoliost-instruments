@@ -66,6 +66,8 @@ export interface PriceBarRow {
   date: string
   close: string
   source: string
+  /** Dataset precedence: US stooq rows beat other stooq datasets, then overflow. */
+  sourcePriority?: number
 }
 
 /** Compact daily close series (mirrors the PriceBarSeries contract). */
@@ -91,9 +93,10 @@ export interface PriceBarSeriesResult {
  * the passive write-through (openst) lands on a date stooq already covers. The
  * read path keeps both (the importer needs them), but their relative order for
  * an equal date is otherwise planner-dependent — make it deterministic by
- * sorting split-adjusted `stooq` rows ahead of `openst` overflow rows, so
- * callers that index-of a date see the stooq value first. The series endpoint
- * collapses the pair to the single stooq-first close (`dedupeByDate`).
+ * sorting US stooq rows ahead of other stooq datasets and `openst` overflow
+ * rows, so callers that index-of a date see the canonical listing first. The
+ * series endpoint collapses the pair to the single highest-priority close
+ * (`dedupeByDate`).
  */
 export async function queryView(
   db: DB,
@@ -102,11 +105,11 @@ export async function queryView(
   to: string,
 ): Promise<PriceBarRow[]> {
   const result = await db.execute(sql`
-    select symbol, date, close, source
+    select symbol, date, close, source, source_priority as "sourcePriority"
     from instruments.price_bars_all
     where symbol = ${symbol}
       and date between ${from} and ${to}
-    order by date asc, case when source = 'stooq' then 0 else 1 end
+    order by date asc, source_priority asc
   `)
   return rowsOf<PriceBarRow>(result)
 }
@@ -194,7 +197,8 @@ export function conversionJoinSql(
     select b.symbol,
       b.date,
       case when ${convertible} then b.close * f.rate / ${baseRate} else b.close end as close,
-      b.source,
+       b.source,
+       b.source_priority as "sourcePriority",
       min(case when ${convertible} then b.date end) over () as "fxFrom"
     from instruments.price_bars_all b
     left join instruments.fx_rates f
@@ -204,7 +208,7 @@ export function conversionJoinSql(
     where b.symbol = ${symbol}
       and b.date between ${from} and ${to}
       and (${hasRates})
-    order by b.date asc, case when b.source = 'stooq' then 0 else 1 end
+    order by b.date asc, b.source_priority asc
   `
 }
 

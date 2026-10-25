@@ -71,6 +71,13 @@
       "when": 1791452939552,
       "tag": "0009_wide_jack_murdock",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792926254546,
+      "tag": "0010_price_bars_source_priority",
+      "breakpoints": true
     }
   ]
 }

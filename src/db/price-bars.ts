@@ -66,7 +66,10 @@ export const LOCAL_STOOQ_INDEX_SQL: string[] = [
  * The `price_bars_all` view. Stooq US tickers carry a '.US' suffix that is
  * stripped to the system symbol; all other datasets pass tickers through
  * as-is. Admin-approved split factors (split_adjustments) are applied via
- * LEFT JOIN on the symbol. Overflow (price_bars) rows pass through directly.
+ * LEFT JOIN on the symbol. US stooq rows get priority 0 so a symbol collision
+ * with another stooq dataset (for example DIA in world data) cannot replace the
+ * US listing. Other stooq rows get priority 1 and overflow rows priority 2.
+ * Overflow (price_bars) rows pass through directly.
  * Idempotent (CREATE OR REPLACE).
  */
 export const PRICE_BARS_ALL_VIEW_SQL = `
@@ -75,7 +78,8 @@ SELECT
   replace(s."ticker", '.US', '') AS "symbol",
   s."date",
   s."close" * COALESCE(adj."factor", 1) AS "close",
-  'stooq' AS "source"
+  'stooq' AS "source",
+  0 AS "source_priority"
 FROM "instruments"."stooq_daily_us" s
 LEFT JOIN "instruments"."split_adjustments" adj
   ON replace(s."ticker", '.US', '') = adj."symbol"
@@ -84,7 +88,8 @@ SELECT
   s."ticker" AS "symbol",
   s."date",
   s."close" * COALESCE(adj."factor", 1) AS "close",
-  'stooq' AS "source"
+  'stooq' AS "source",
+  1 AS "source_priority"
 FROM "instruments"."stooq_daily_pl" s
 LEFT JOIN "instruments"."split_adjustments" adj
   ON s."ticker" = adj."symbol"
@@ -93,7 +98,8 @@ SELECT
   s."ticker" AS "symbol",
   s."date",
   s."close" * COALESCE(adj."factor", 1) AS "close",
-  'stooq' AS "source"
+  'stooq' AS "source",
+  1 AS "source_priority"
 FROM "instruments"."stooq_daily_jp" s
 LEFT JOIN "instruments"."split_adjustments" adj
   ON s."ticker" = adj."symbol"
@@ -102,7 +108,8 @@ SELECT
   s."ticker" AS "symbol",
   s."date",
   s."close" * COALESCE(adj."factor", 1) AS "close",
-  'stooq' AS "source"
+  'stooq' AS "source",
+  1 AS "source_priority"
 FROM "instruments"."stooq_daily_world" s
 LEFT JOIN "instruments"."split_adjustments" adj
   ON s."ticker" = adj."symbol"
@@ -111,7 +118,8 @@ SELECT
   s."ticker" AS "symbol",
   s."date",
   s."close" * COALESCE(adj."factor", 1) AS "close",
-  'stooq' AS "source"
+  'stooq' AS "source",
+  1 AS "source_priority"
 FROM "instruments"."stooq_daily_uk" s
 LEFT JOIN "instruments"."split_adjustments" adj
   ON s."ticker" = adj."symbol"
@@ -120,7 +128,8 @@ SELECT
   s."ticker" AS "symbol",
   s."date",
   s."close" * COALESCE(adj."factor", 1) AS "close",
-  'stooq' AS "source"
+  'stooq' AS "source",
+  1 AS "source_priority"
 FROM "instruments"."stooq_daily_hk" s
 LEFT JOIN "instruments"."split_adjustments" adj
   ON s."ticker" = adj."symbol"
@@ -129,7 +138,8 @@ SELECT
   s."ticker" AS "symbol",
   s."date",
   s."close" * COALESCE(adj."factor", 1) AS "close",
-  'stooq' AS "source"
+  'stooq' AS "source",
+  1 AS "source_priority"
 FROM "instruments"."stooq_daily_hu" s
 LEFT JOIN "instruments"."split_adjustments" adj
   ON s."ticker" = adj."symbol"
@@ -138,12 +148,13 @@ SELECT
   s."ticker" AS "symbol",
   s."date",
   s."close" * COALESCE(adj."factor", 1) AS "close",
-  'stooq' AS "source"
+  'stooq' AS "source",
+  1 AS "source_priority"
 FROM "instruments"."stooq_daily_macro" s
 LEFT JOIN "instruments"."split_adjustments" adj
   ON s."ticker" = adj."symbol"
 UNION ALL
-SELECT "symbol", "date", "close", "source"
+SELECT "symbol", "date", "close", "source", 2 AS "source_priority"
 FROM "instruments"."price_bars";
 `
 
