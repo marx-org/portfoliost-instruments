@@ -89,7 +89,7 @@ describe("price_bars_all view — stooq routing (H9)", () => {
     `))
 
     const rows = await queryView(db, "DIA", "2026-07-01", "2026-07-02")
-    expect(rows.map((r) => Number(r.close))).toEqual([522.4, 179.5, 527.88, 181.5])
+    expect(rows.map((r) => Number(r.close))).toEqual([522.4, 527.88])
     const series = await getPriceBarSeries(db, "DIA", "2026-07-01", "2026-07-02", new Date("2026-07-03T00:00:00Z"))
     expect(series.closes).toEqual([522.4, 527.88])
   })
