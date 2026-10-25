@@ -14,6 +14,7 @@ import { sql } from "drizzle-orm"
 import { createTestDb } from "../db/test-db.js"
 import type { DB } from "../db/index.js"
 import { LOCAL_PRICE_BARS_SETUP_SQL } from "../db/price-bars.js"
+import { getPriceBarSeries, queryView } from "./price-bars.js"
 
 describe("price_bars_all view — stooq routing (H9)", () => {
   let db: DB
@@ -70,6 +71,27 @@ describe("price_bars_all view — stooq routing (H9)", () => {
     expect(r).toHaveLength(1)
     expect(r[0].symbol).toBe("MSFT")
     expect(Number(r[0].close)).toBeCloseTo(420)
+  })
+
+  it("prefers the US dataset when a world ticker collides with a US symbol", async () => {
+    // DIA is present in both stooq_daily_us (DIA.US, ~$520) and the world
+    // dataset (DIA, ~$180). Both become symbol DIA in the unified view; the US
+    // ETF row is the authoritative one for the benchmark symbol.
+    await db.execute(sql.raw(`
+      INSERT INTO instruments.stooq_daily_us (ticker, period, date, close) VALUES
+        ('DIA.US', 'd', '2026-07-01', 522.40),
+        ('DIA.US', 'd', '2026-07-02', 527.88);
+    `))
+    await db.execute(sql.raw(`
+      INSERT INTO instruments.stooq_daily_world (ticker, period, date, close) VALUES
+        ('DIA', 'd', '2026-07-01', 179.50),
+        ('DIA', 'd', '2026-07-02', 181.50);
+    `))
+
+    const rows = await queryView(db, "DIA", "2026-07-01", "2026-07-02")
+    expect(rows.map((r) => Number(r.close))).toEqual([522.4, 179.5, 527.88, 181.5])
+    const series = await getPriceBarSeries(db, "DIA", "2026-07-01", "2026-07-02", new Date("2026-07-03T00:00:00Z"))
+    expect(series.closes).toEqual([522.4, 527.88])
   })
 
   it("PL ticker passthrough — CDR.WA remains CDR.WA", async () => {
