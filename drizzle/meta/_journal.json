@@ -78,6 +78,13 @@
       "when": 1792926254546,
       "tag": "0010_price_bars_source_priority",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792928107977,
+      "tag": "0011_exclude_world_rows_for_us_symbols",
+      "breakpoints": true
     }
   ]
 }
